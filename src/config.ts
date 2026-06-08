@@ -1,4 +1,4 @@
-import 'dotenv/config';
+﻿import 'dotenv/config';
 
 function required(name: string): string {
   const v = process.env[name];
@@ -14,7 +14,7 @@ function required(name: string): string {
  * Like `required`, but for credentials sent as HTTP headers (API keys, JWTs,
  * bot tokens). These never legitimately contain whitespace, yet copy-paste
  * (e.g. a wrapped line in a hosting dashboard's env editor) can inject a stray
- * newline or zero-width space mid-string — which `.trim()` can't remove and
+ * newline or zero-width space mid-string â€” which `.trim()` can't remove and
  * which makes `fetch` throw "invalid header value". Strip ALL whitespace.
  */
 function requiredToken(name: string): string {
@@ -34,7 +34,7 @@ function intEnv(name: string, fallback: number): number {
   return n;
 }
 
-/** GitHub Pages credentials — whose account a deploy lands in. */
+/** GitHub Pages credentials â€” whose account a deploy lands in. */
 export interface GithubCreds {
   token: string;
   username: string;
@@ -43,7 +43,7 @@ export interface GithubCreds {
 /**
  * A "guest" deploy-only bot: a separate Telegram bot, sharing this one app and
  * its Anthropic key, but with NONE of the Keeper's memory/touchpoints. All a
- * guest can do is send an .html file and get back a GitHub Pages link — deployed
+ * guest can do is send an .html file and get back a GitHub Pages link â€” deployed
  * to THEIR own GitHub, never Philip's. This is how Philip lets his brother /
  * friends use the deploy feature without each needing their own Railway.
  */
@@ -56,14 +56,19 @@ export interface GuestBot {
 }
 
 /**
- * Parse GUEST_BOTS — a single JSON-array env var (easy to paste into a hosting
+ * Parse GUEST_BOTS â€” a single JSON-array env var (easy to paste into a hosting
  * dashboard as one variable). Each entry:
  *   { "name": "...", "telegramToken": "...", "githubToken": "...",
  *     "githubUsername": "...", "chatId": "optional" }
  */
 function parseGuestBots(): GuestBot[] {
-  const raw = (process.env.GUEST_BOTS ?? '').trim();
-  if (!raw) return [];
+  const rawEnv = (process.env.GUEST_BOTS ?? '').trim();
+  if (!rawEnv) return [];
+  // Hosting dashboards (e.g. Railway) can inject stray newlines/control chars
+  // when pasting a long value. Those are illegal inside JSON string literals and
+  // crash JSON.parse ("Bad control character"). Our token/name fields never
+  // legitimately contain control chars, so strip them before parsing.
+  const raw = rawEnv.replace(/[\x00-\x1F]+/g, '');
   let arr: unknown;
   try {
     arr = JSON.parse(raw);
@@ -115,7 +120,7 @@ export const config = {
   historyLimit: intEnv('HISTORY_LIMIT', 20),
 };
 
-/** Current wall-clock hour (0–23) in the configured timezone. */
+/** Current wall-clock hour (0â€“23) in the configured timezone. */
 export function localHour(date = new Date()): number {
   const s = new Intl.DateTimeFormat('en-GB', {
     timeZone: config.timezone,
@@ -143,7 +148,7 @@ export function localTimeString(date = new Date()): string {
 
 /**
  * True if `date` falls inside the quiet window (no proactive messages).
- * Handles windows that wrap past midnight (e.g. 23 → 7).
+ * Handles windows that wrap past midnight (e.g. 23 â†’ 7).
  */
 export function isQuietHours(date = new Date()): boolean {
   const h = localHour(date);
