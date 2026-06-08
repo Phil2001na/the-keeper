@@ -60,8 +60,9 @@ export const toolDefinitions: Anthropic.Tool[] = [
   {
     name: 'schedule_touchpoint',
     description:
-      'Schedule your OWN next proactive reach-out. This is how you stay alive between conversations. ' +
-      'After essentially every interaction, decide when you should next surface and why, then record it here.',
+      'Schedule your OWN next proactive reach-out — how you stay alive between conversations. ' +
+      'Use sparingly: only when nothing suitable is already pending, or when new information means the timing/topic must change. ' +
+      'Do NOT add one after every message; aim to keep at most one sensible next touchpoint pending. Cancel-and-replace rather than stacking duplicates.',
     input_schema: {
       type: 'object',
       properties: {
