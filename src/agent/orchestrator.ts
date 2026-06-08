@@ -47,6 +47,20 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
   }
 
   let silent = false;
+  // The model often writes its reply in the SAME turn as a tool call (e.g.
+  // "got it 👍" alongside schedule_touchpoint). That turn's stop_reason is
+  // "tool_use", so we must capture text from every turn, not just the final
+  // one — otherwise the reply is silently dropped and the user is left on read.
+  const textParts: string[] = [];
+
+  const collectText = (content: Anthropic.ContentBlock[]) => {
+    const t = content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n')
+      .trim();
+    if (t) textParts.push(t);
+  };
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const response = await anthropic.messages.create({
@@ -58,6 +72,7 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
     });
 
     messages.push({ role: 'assistant', content: response.content });
+    collectText(response.content);
 
     if (response.stop_reason === 'tool_use') {
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -78,28 +93,25 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
       continue;
     }
 
-    // Final turn — gather any text the model produced.
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('\n')
-      .trim();
-
-    if (silent || text === '') {
-      return { message: null, silent: true };
-    }
-
-    await interactions.log({
-      role: 'agent',
-      content: text,
-      trigger: trigger.kind === 'touchpoint' ? `touchpoint:${trigger.touchpoint.id}` : 'inbound',
-    });
-    return { message: text, silent: false };
+    // Final turn — the model is done. Assemble everything it said.
+    break;
   }
 
-  // Safety valve: too many tool rounds.
-  return {
-    message: silent ? null : "(I got tangled up thinking just now — give me a nudge?)",
-    silent,
-  };
+  const text = textParts.join('\n\n').trim();
+
+  // Silence only ever applies to a proactive touchpoint (the agent deciding a
+  // due check-in isn't worth interrupting him, via stay_silent or empty text).
+  // A direct inbound message must ALWAYS get a reply — never leave him on read.
+  if (trigger.kind === 'touchpoint' && (silent || text === '')) {
+    return { message: null, silent: true };
+  }
+
+  const message = text === '' ? '(hm, i blanked for a second there — say that again?)' : text;
+
+  await interactions.log({
+    role: 'agent',
+    content: message,
+    trigger: trigger.kind === 'touchpoint' ? `touchpoint:${trigger.touchpoint.id}` : 'inbound',
+  });
+  return { message, silent: false };
 }
