@@ -1,20 +1,29 @@
 import TelegramBot from 'node-telegram-bot-api';
-import { config } from '../config.js';
+import { config, type GuestBot } from '../config.js';
 import { runAgent } from '../agent/orchestrator.js';
 import { transcribeFromUrl, transcriptionEnabled } from './transcribe.js';
-import { githubEnabled, setPendingHtml } from '../deploy/github.js';
+import {
+  githubEnabled,
+  githubCredsValid,
+  setPendingHtml,
+  deployHtml,
+} from '../deploy/github.js';
 
 /**
  * Telegram transport. Long-polling for local dev — no public URL needed.
- * To deploy behind a webhook later, swap `polling: true` for webhook setup;
- * the agent code below doesn't change.
+ *
+ * This one app runs MULTIPLE bots off a single process:
+ *  - The KEEPER bot (Philip): the full proactive agent with memory + touchpoints.
+ *  - Zero or more GUEST bots: deploy-only. They can publish an .html file to
+ *    their OWN GitHub Pages and nothing else — no memory, no agent, no access
+ *    to Philip's life. Configured via GUEST_BOTS (see config.ts).
  */
-const bot = new TelegramBot(config.telegramBotToken, { polling: true });
+const keeperBot = new TelegramBot(config.telegramBotToken, { polling: true });
 const OWNER = String(config.telegramOwnerChatId);
 
-/** Send a message to the owner. Used by both reactive and proactive paths. */
+/** Send a message to the owner (Philip). Used by reactive + proactive paths. */
 export async function sendToOwner(text: string): Promise<void> {
-  await bot.sendMessage(OWNER, text);
+  await keeperBot.sendMessage(OWNER, text);
 }
 
 /**
@@ -34,8 +43,8 @@ async function extractText(msg: TelegramBot.Message): Promise<string | null> {
       return null;
     }
     try {
-      await bot.sendChatAction(OWNER, 'typing');
-      const fileUrl = await bot.getFileLink(media.file_id);
+      await keeperBot.sendChatAction(OWNER, 'typing');
+      const fileUrl = await keeperBot.getFileLink(media.file_id);
       const transcript = await transcribeFromUrl(fileUrl);
       console.log(`[telegram] transcribed voice note (${transcript.length} chars).`);
       return transcript;
@@ -49,8 +58,16 @@ async function extractText(msg: TelegramBot.Message): Promise<string | null> {
   return null; // stickers, photos, etc. — nothing to act on
 }
 
-export function startTelegram(): void {
-  bot.on('message', async (msg) => {
+/** Download a Telegram document and return its text contents. */
+async function downloadText(bot: TelegramBot, fileId: string): Promise<string> {
+  const fileUrl = await bot.getFileLink(fileId);
+  const res = await fetch(fileUrl);
+  return res.text();
+}
+
+/** The KEEPER bot — Philip only, full agent. */
+function startKeeperBot(): void {
+  keeperBot.on('message', async (msg) => {
     const chatId = String(msg.chat.id);
     // Single-user agent: ignore anyone who isn't the owner.
     if (chatId !== OWNER) {
@@ -62,7 +79,7 @@ export function startTelegram(): void {
     if (!text) return;
 
     try {
-      await bot.sendChatAction(OWNER, 'typing');
+      await keeperBot.sendChatAction(OWNER, 'typing');
       const result = await runAgent({ kind: 'inbound', text });
       if (result.message) await sendToOwner(result.message);
     } catch (err) {
@@ -72,7 +89,7 @@ export function startTelegram(): void {
   });
 
   // HTML upload → stash it, then let the agent deploy it via the deploy_html tool.
-  bot.on('document', async (msg) => {
+  keeperBot.on('document', async (msg) => {
     const chatId = String(msg.chat.id);
     if (chatId !== OWNER) return;
 
@@ -89,10 +106,8 @@ export function startTelegram(): void {
     }
 
     try {
-      await bot.sendChatAction(OWNER, 'typing');
-      const fileUrl = await bot.getFileLink(doc.file_id);
-      const res = await fetch(fileUrl);
-      const html = await res.text();
+      await keeperBot.sendChatAction(OWNER, 'typing');
+      const html = await downloadText(keeperBot, doc.file_id);
       setPendingHtml({
         filename: name,
         contentBase64: Buffer.from(html).toString('base64'),
@@ -110,7 +125,79 @@ export function startTelegram(): void {
     }
   });
 
-  bot.on('polling_error', (err) => console.error('[telegram] polling error:', err.message));
+  keeperBot.on('polling_error', (err) => console.error('[telegram] polling error:', err.message));
+  console.log('[telegram] keeper bot listening (long-polling).');
+}
 
-  console.log('[telegram] listening (long-polling).');
+/**
+ * A GUEST deploy-only bot. No agent, no memory — send an .html file, get back a
+ * GitHub Pages link on the guest's own account. Optionally locked to one chat.
+ */
+function startGuestBot(g: GuestBot): void {
+  const bot = new TelegramBot(g.telegramBotToken, { polling: true });
+  const enabled = githubCredsValid(g.github);
+  const allowed = (chatId: string) => !g.chatId || chatId === g.chatId;
+  const tag = `telegram:${g.name}`;
+
+  bot.on('document', async (msg) => {
+    const chatId = String(msg.chat.id);
+    if (!allowed(chatId)) {
+      console.warn(`[${tag}] ignoring document from chat ${chatId}`);
+      return;
+    }
+
+    const doc = msg.document;
+    if (!doc) return;
+    const name = doc.file_name ?? '';
+    if (!name.toLowerCase().endsWith('.html')) {
+      await bot.sendMessage(chatId, "send me an .html file and i'll publish it to your github pages.");
+      return;
+    }
+    if (!enabled) {
+      await bot.sendMessage(chatId, "this bot isn't set up to deploy yet — its github access is missing.");
+      return;
+    }
+
+    try {
+      await bot.sendChatAction(chatId, 'typing');
+      const html = await downloadText(bot, doc.file_id);
+      const res = await deployHtml(g.github, {
+        filename: name,
+        contentBase64: Buffer.from(html).toString('base64'),
+        sizeBytes: html.length,
+      });
+      if (res.ok) {
+        await bot.sendMessage(chatId, `done ✅ your site is live in ~30–60s:\n${res.url}`);
+      } else {
+        await bot.sendMessage(chatId, `couldn't deploy that — ${res.error}`);
+      }
+    } catch (err) {
+      console.error(`[${tag}] document handler failed:`, err);
+      await bot.sendMessage(chatId, `couldn't deploy that — ${(err as Error).message}`);
+    }
+  });
+
+  bot.on('message', async (msg) => {
+    if (msg.document) return; // handled above
+    const chatId = String(msg.chat.id);
+    if (!allowed(chatId)) return;
+    await bot.sendMessage(
+      chatId,
+      `hey — send me an .html file and i'll publish it to your github pages and send you the link. that's all i do here.`
+    );
+  });
+
+  bot.on('polling_error', (err) => console.error(`[${tag}] polling error:`, err.message));
+  console.log(
+    `[telegram] guest deploy bot "${g.name}" listening${g.chatId ? ` (locked to chat ${g.chatId})` : ''}` +
+      `${enabled ? '' : ' — WARNING: github creds missing, deploys disabled'}.`
+  );
+}
+
+export function startTelegram(): void {
+  startKeeperBot();
+  for (const g of config.guestBots) startGuestBot(g);
+  if (config.guestBots.length > 0) {
+    console.log(`[telegram] ${config.guestBots.length} guest bot(s) started.`);
+  }
 }

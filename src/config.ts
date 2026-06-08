@@ -34,6 +34,57 @@ function intEnv(name: string, fallback: number): number {
   return n;
 }
 
+/** GitHub Pages credentials — whose account a deploy lands in. */
+export interface GithubCreds {
+  token: string;
+  username: string;
+}
+
+/**
+ * A "guest" deploy-only bot: a separate Telegram bot, sharing this one app and
+ * its Anthropic key, but with NONE of the Keeper's memory/touchpoints. All a
+ * guest can do is send an .html file and get back a GitHub Pages link — deployed
+ * to THEIR own GitHub, never Philip's. This is how Philip lets his brother /
+ * friends use the deploy feature without each needing their own Railway.
+ */
+export interface GuestBot {
+  name: string;
+  telegramBotToken: string;
+  /** Optional: lock the bot to a single Telegram chat id. Blank = anyone who finds it. */
+  chatId?: string;
+  github: GithubCreds;
+}
+
+/**
+ * Parse GUEST_BOTS — a single JSON-array env var (easy to paste into a hosting
+ * dashboard as one variable). Each entry:
+ *   { "name": "...", "telegramToken": "...", "githubToken": "...",
+ *     "githubUsername": "...", "chatId": "optional" }
+ */
+function parseGuestBots(): GuestBot[] {
+  const raw = (process.env.GUEST_BOTS ?? '').trim();
+  if (!raw) return [];
+  let arr: unknown;
+  try {
+    arr = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`GUEST_BOTS must be a valid JSON array. Parse error: ${(e as Error).message}`);
+  }
+  if (!Array.isArray(arr)) throw new Error('GUEST_BOTS must be a JSON array.');
+  return arr.map((g, i) => {
+    const o = g as Record<string, unknown>;
+    const strip = (v: unknown) => String(v ?? '').replace(/\s+/g, '');
+    const telegramBotToken = strip(o.telegramToken ?? o.telegramBotToken);
+    if (!telegramBotToken) throw new Error(`GUEST_BOTS[${i}] is missing "telegramToken".`);
+    return {
+      name: String(o.name ?? `guest-${i + 1}`),
+      telegramBotToken,
+      chatId: o.chatId ? String(o.chatId).replace(/\s+/g, '') : undefined,
+      github: { token: strip(o.githubToken), username: strip(o.githubUsername) },
+    };
+  });
+}
+
 export const config = {
   anthropicApiKey: requiredToken('ANTHROPIC_API_KEY'),
   model: optional('MODEL', 'claude-sonnet-4-6'),
@@ -53,6 +104,9 @@ export const config = {
   // those tools stay dormant and the agent says it can't deploy yet.
   githubToken: (process.env.GITHUB_TOKEN ?? '').replace(/\s+/g, ''),
   githubUsername: (process.env.GITHUB_USERNAME ?? '').replace(/\s+/g, ''),
+
+  // Optional deploy-only guest bots (Philip's brother, friends). See GuestBot.
+  guestBots: parseGuestBots(),
 
   timezone: optional('TIMEZONE', 'Africa/Windhoek'),
   quietStart: intEnv('QUIET_START', 23),
