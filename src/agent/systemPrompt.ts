@@ -1,5 +1,6 @@
 import { config, localTimeString, isQuietHours } from '../config.js';
 import { domains, facts, touchpoints } from '../db/repositories.js';
+import { githubEnabled } from '../deploy/github.js';
 
 /**
  * Assemble the system prompt fresh on every turn: the unchanging character plus
@@ -40,6 +41,10 @@ export async function buildSystemPrompt(): Promise<string> {
           .map((t) => `- [id: ${t.id}] ${t.fire_at} — ${t.reason}`)
           .join('\n')
       : '(none scheduled)';
+
+  const deployNote = githubEnabled()
+    ? `\n# Publishing websites for him\nYou can deploy and manage static websites on GitHub Pages. When he sends you an .html file, deploy it with deploy_html and reply with the live link (Pages takes ~30–60s to go live). You can also list_sites, check_site_status, rename_site, and delete_site when he asks in plain language. Handle repo naming yourself — never tell him to rename the file. Confirm before delete_site unless he clearly asked for it.`
+    : '';
 
   const quietNote = isQuietHours()
     ? 'It is currently QUIET HOURS. Only respond because he messaged you first; do not be chatty.'
@@ -83,6 +88,7 @@ ${factsBlock}
 
 # Your upcoming reach-outs (already scheduled)
 ${touchpointsBlock}
+${deployNote}
 
 # Tools
 You have tools to read and write all of the above. Use list_domains / recall_facts to ground yourself before acting when unsure. End every turn having either replied or (only for a proactive check-in) stayed silent. Touch the schedule only when it actually needs to change, per the rules above.

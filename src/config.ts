@@ -49,6 +49,11 @@ export const config = {
   supabaseUrl: requiredToken('SUPABASE_URL'),
   supabaseServiceKey: requiredToken('SUPABASE_SERVICE_KEY'),
 
+  // Optional: enables website deploy/management tools (GitHub Pages). If unset,
+  // those tools stay dormant and the agent says it can't deploy yet.
+  githubToken: (process.env.GITHUB_TOKEN ?? '').replace(/\s+/g, ''),
+  githubUsername: (process.env.GITHUB_USERNAME ?? '').replace(/\s+/g, ''),
+
   timezone: optional('TIMEZONE', 'Africa/Windhoek'),
   quietStart: intEnv('QUIET_START', 23),
   quietEnd: intEnv('QUIET_END', 7),

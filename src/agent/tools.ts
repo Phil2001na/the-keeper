@@ -1,5 +1,13 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { domains, facts, touchpoints } from '../db/repositories.js';
+import {
+  githubEnabled,
+  deployPending,
+  listSites,
+  checkSiteStatus,
+  renameSite,
+  deleteSite,
+} from '../deploy/github.js';
 
 /**
  * The tools the orchestrator can call. The database is the agent's hands:
@@ -93,6 +101,50 @@ export const toolDefinitions: Anthropic.Tool[] = [
     input_schema: {
       type: 'object',
       properties: { note: { type: 'string', description: 'Private note on why you stayed silent.' } },
+    },
+  },
+  // ─── Website deployment (GitHub Pages) ───────────────────────────────────
+  {
+    name: 'deploy_html',
+    description:
+      'Publish the HTML file Philip most recently sent you to GitHub Pages. The repo is named after the ' +
+      'uploaded filename (a numbered suffix is added if that name is taken — just report the final name/link). ' +
+      'Returns the live URL. Pages takes ~30–60s to go live after deploy.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'list_sites',
+    description: "List Philip's most recently created GitHub repositories (his deployed sites) with their live URLs.",
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'check_site_status',
+    description: "Check whether a site's GitHub Pages build is live yet.",
+    input_schema: {
+      type: 'object',
+      properties: { repo: { type: 'string', description: 'Repository name.' } },
+      required: ['repo'],
+    },
+  },
+  {
+    name: 'rename_site',
+    description: 'Rename a repository (which also changes its Pages URL).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Current repo name.' },
+        to: { type: 'string', description: 'New repo name.' },
+      },
+      required: ['from', 'to'],
+    },
+  },
+  {
+    name: 'delete_site',
+    description: 'Delete a repository permanently. Use to clean up empty/failed repos. Confirm with Philip first unless he clearly asked.',
+    input_schema: {
+      type: 'object',
+      properties: { repo: { type: 'string', description: 'Repository name to delete.' } },
+      required: ['repo'],
     },
   },
 ];
@@ -205,6 +257,28 @@ export async function dispatchTool(
 
     case 'stay_silent': {
       return { output: 'Staying silent.', silent: true };
+    }
+
+    // ─── Website deployment ────────────────────────────────────────────────
+    case 'deploy_html': {
+      if (!githubEnabled()) return { output: 'Website deploy is not configured (missing GITHUB_TOKEN / GITHUB_USERNAME).' };
+      return { output: JSON.stringify(await deployPending()) };
+    }
+    case 'list_sites': {
+      if (!githubEnabled()) return { output: 'Website deploy is not configured.' };
+      return { output: JSON.stringify(await listSites()) };
+    }
+    case 'check_site_status': {
+      if (!githubEnabled()) return { output: 'Website deploy is not configured.' };
+      return { output: JSON.stringify(await checkSiteStatus(input.repo as string)) };
+    }
+    case 'rename_site': {
+      if (!githubEnabled()) return { output: 'Website deploy is not configured.' };
+      return { output: JSON.stringify(await renameSite(input.from as string, input.to as string)) };
+    }
+    case 'delete_site': {
+      if (!githubEnabled()) return { output: 'Website deploy is not configured.' };
+      return { output: JSON.stringify(await deleteSite(input.repo as string)) };
     }
 
     default:

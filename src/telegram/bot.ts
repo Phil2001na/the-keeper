@@ -2,6 +2,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import { config } from '../config.js';
 import { runAgent } from '../agent/orchestrator.js';
 import { transcribeFromUrl, transcriptionEnabled } from './transcribe.js';
+import { githubEnabled, setPendingHtml } from '../deploy/github.js';
 
 /**
  * Telegram transport. Long-polling for local dev — no public URL needed.
@@ -67,6 +68,45 @@ export function startTelegram(): void {
     } catch (err) {
       console.error('[telegram] runAgent failed:', err);
       await sendToOwner('(something glitched on my end — try me again in a sec)');
+    }
+  });
+
+  // HTML upload → stash it, then let the agent deploy it via the deploy_html tool.
+  bot.on('document', async (msg) => {
+    const chatId = String(msg.chat.id);
+    if (chatId !== OWNER) return;
+
+    const doc = msg.document;
+    if (!doc) return;
+    const name = doc.file_name ?? '';
+    if (!name.toLowerCase().endsWith('.html')) {
+      await sendToOwner("if you want me to publish a site, send me an .html file and i'll deploy it.");
+      return;
+    }
+    if (!githubEnabled()) {
+      await sendToOwner("i can't deploy sites yet — i need GITHUB_TOKEN and GITHUB_USERNAME in my config.");
+      return;
+    }
+
+    try {
+      await bot.sendChatAction(OWNER, 'typing');
+      const fileUrl = await bot.getFileLink(doc.file_id);
+      const res = await fetch(fileUrl);
+      const html = await res.text();
+      setPendingHtml({
+        filename: name,
+        contentBase64: Buffer.from(html).toString('base64'),
+        sizeBytes: html.length,
+      });
+
+      const result = await runAgent({
+        kind: 'inbound',
+        text: `I just sent you an HTML file named "${name}" (${(html.length / 1e6).toFixed(2)} MB). Please deploy it to GitHub Pages and give me the live link.`,
+      });
+      if (result.message) await sendToOwner(result.message);
+    } catch (err) {
+      console.error('[telegram] document handler failed:', err);
+      await sendToOwner(`(couldn't deploy that file — ${(err as Error).message})`);
     }
   });
 
