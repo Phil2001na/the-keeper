@@ -8,6 +8,8 @@ import {
   renameSite,
   deleteSite,
 } from '../deploy/github.js';
+import { imageGenEnabled, generateImage } from '../generate/image.js';
+import { generatePdf } from '../generate/pdf.js';
 
 /**
  * The tools the orchestrator can call. The database is the agent's hands:
@@ -147,6 +149,36 @@ export const toolDefinitions: Anthropic.Tool[] = [
       required: ['repo'],
     },
   },
+  // ─── Media generation ─────────────────────────────────────────────────────
+  {
+    name: 'generate_image',
+    description:
+      'Generate an image from a text prompt using Imagen 4 and send it to Philip as a photo. ' +
+      'Write a detailed, vivid prompt — the more specific, the better the result.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Detailed description of the image to generate.' },
+        filename: { type: 'string', description: 'Optional filename for the image (no extension needed).' },
+      },
+      required: ['prompt'],
+    },
+  },
+  {
+    name: 'generate_pdf',
+    description:
+      'Generate a PDF document and send it to Philip as a file. ' +
+      'Use for reports, summaries, structured notes, plans — anything that benefits from a proper document format.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Document title (shown as the heading).' },
+        body: { type: 'string', description: 'Full document body text. Use newlines for paragraphs.' },
+        filename: { type: 'string', description: 'Optional filename (without .pdf extension).' },
+      },
+      required: ['title', 'body'],
+    },
+  },
 ];
 
 export interface ToolResult {
@@ -279,6 +311,27 @@ export async function dispatchTool(
     case 'delete_site': {
       if (!githubEnabled()) return { output: 'Website deploy is not configured.' };
       return { output: JSON.stringify(await deleteSite(input.repo as string)) };
+    }
+
+    // ─── Media generation ──────────────────────────────────────────────────
+    case 'generate_image': {
+      if (!imageGenEnabled()) return { output: 'Image generation not configured (missing GEMINI_API_KEY).' };
+      const result = await generateImage(input.prompt as string);
+      if (!result.ok) return { output: `Image generation failed: ${result.error}` };
+      const { enqueueMedia } = await import('../generate/queue.js');
+      const rawName = ((input.filename as string | undefined) ?? 'image').replace(/[^a-z0-9_-]/gi, '_');
+      enqueueMedia({ kind: 'photo', buffer: Buffer.from(result.pngBase64!, 'base64') });
+      return { output: `Image generated successfully (${rawName}.png). It will be sent to Philip as a photo.` };
+    }
+
+    case 'generate_pdf': {
+      const result = await generatePdf(input.title as string, input.body as string);
+      if (!result.ok) return { output: `PDF generation failed: ${result.error}` };
+      const { enqueueMedia } = await import('../generate/queue.js');
+      const rawName = ((input.filename as string | undefined) ?? (input.title as string))
+        .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'document';
+      enqueueMedia({ kind: 'document', buffer: result.buffer!, filename: `${rawName}.pdf` });
+      return { output: `PDF "${input.title}" generated successfully. It will be sent to Philip as a document.` };
     }
 
     default:

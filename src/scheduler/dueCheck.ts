@@ -1,7 +1,7 @@
 import { config, isQuietHours } from '../config.js';
 import { touchpoints } from '../db/repositories.js';
 import { runAgent } from '../agent/orchestrator.js';
-import { sendToOwner } from '../telegram/bot.js';
+import { sendToOwner, flushMediaToOwner } from '../telegram/bot.js';
 
 let running = false;
 
@@ -27,6 +27,7 @@ async function tick(): Promise<void> {
         } else {
           console.log(`[scheduler] fired touchpoint ${tp.id}, agent stayed silent.`);
         }
+        await flushMediaToOwner();
       } catch (err) {
         console.error(`[scheduler] touchpoint ${tp.id} failed:`, err);
         // leave it pending so it retries next tick

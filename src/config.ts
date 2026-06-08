@@ -110,6 +110,9 @@ export const config = {
   githubToken: (process.env.GITHUB_TOKEN ?? '').replace(/\s+/g, ''),
   githubUsername: (process.env.GITHUB_USERNAME ?? '').replace(/\s+/g, ''),
 
+  // Optional: enables image generation via Imagen 4. Leave blank to disable.
+  geminiApiKey: (process.env.GEMINI_API_KEY ?? '').replace(/\s+/g, ''),
+
   // Optional deploy-only guest bots (Philip's brother, friends). See GuestBot.
   guestBots: parseGuestBots(),
 

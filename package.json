@@ -15,17 +15,20 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
+    "@google/genai": "^2.8.0",
     "@octokit/rest": "^21.1.1",
     "@supabase/supabase-js": "^2.45.4",
     "dotenv": "^16.4.5",
     "node-telegram-bot-api": "^0.66.0",
     "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.19.0",
     "tsx": "^4.19.1"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/node-telegram-bot-api": "^0.64.7",
     "@types/pdf-parse": "^1.1.5",
+    "@types/pdfkit": "^0.17.6",
     "typescript": "^5.6.2"
   }
 }
