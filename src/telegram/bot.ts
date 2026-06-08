@@ -8,6 +8,7 @@ import {
   setPendingHtml,
   deployHtml,
 } from '../deploy/github.js';
+import { extractPdfText } from './parsePdf.js';
 
 /**
  * Telegram transport. Long-polling for local dev — no public URL needed.
@@ -88,7 +89,7 @@ function startKeeperBot(): void {
     }
   });
 
-  // HTML upload → stash it, then let the agent deploy it via the deploy_html tool.
+  // Document uploads: .html → deploy to GitHub Pages; .pdf → extract + agent.
   keeperBot.on('document', async (msg) => {
     const chatId = String(msg.chat.id);
     if (chatId !== OWNER) return;
@@ -96,33 +97,57 @@ function startKeeperBot(): void {
     const doc = msg.document;
     if (!doc) return;
     const name = doc.file_name ?? '';
-    if (!name.toLowerCase().endsWith('.html')) {
-      await sendToOwner("if you want me to publish a site, send me an .html file and i'll deploy it.");
-      return;
-    }
-    if (!githubEnabled()) {
-      await sendToOwner("i can't deploy sites yet — i need GITHUB_TOKEN and GITHUB_USERNAME in my config.");
+    const ext = name.toLowerCase().match(/\.\w+$/)?.[0] ?? '';
+
+    if (ext === '.html') {
+      if (!githubEnabled()) {
+        await sendToOwner("i can't deploy sites yet — i need GITHUB_TOKEN and GITHUB_USERNAME in my config.");
+        return;
+      }
+      try {
+        await keeperBot.sendChatAction(OWNER, 'typing');
+        const html = await downloadText(keeperBot, doc.file_id);
+        setPendingHtml({
+          filename: name,
+          contentBase64: Buffer.from(html).toString('base64'),
+          sizeBytes: html.length,
+        });
+        const result = await runAgent({
+          kind: 'inbound',
+          text: `I just sent you an HTML file named "${name}" (${(html.length / 1e6).toFixed(2)} MB). Please deploy it to GitHub Pages and give me the live link.`,
+        });
+        if (result.message) await sendToOwner(result.message);
+      } catch (err) {
+        console.error('[telegram] html deploy failed:', err);
+        await sendToOwner(`(couldn't deploy that file — ${(err as Error).message})`);
+      }
       return;
     }
 
-    try {
-      await keeperBot.sendChatAction(OWNER, 'typing');
-      const html = await downloadText(keeperBot, doc.file_id);
-      setPendingHtml({
-        filename: name,
-        contentBase64: Buffer.from(html).toString('base64'),
-        sizeBytes: html.length,
-      });
-
-      const result = await runAgent({
-        kind: 'inbound',
-        text: `I just sent you an HTML file named "${name}" (${(html.length / 1e6).toFixed(2)} MB). Please deploy it to GitHub Pages and give me the live link.`,
-      });
-      if (result.message) await sendToOwner(result.message);
-    } catch (err) {
-      console.error('[telegram] document handler failed:', err);
-      await sendToOwner(`(couldn't deploy that file — ${(err as Error).message})`);
+    if (ext === '.pdf') {
+      try {
+        await keeperBot.sendChatAction(OWNER, 'typing');
+        const fileUrl = await keeperBot.getFileLink(doc.file_id);
+        const pdf = await extractPdfText(fileUrl);
+        const truncNote = pdf.truncated
+          ? `\n\n(note: pdf was long — only the first ~24k characters are included above)`
+          : '';
+        const result = await runAgent({
+          kind: 'inbound',
+          text:
+            `I sent you a PDF named "${name}" (${pdf.pages} page${pdf.pages === 1 ? '' : 's'}). Here's its text content:\n\n` +
+            pdf.text +
+            truncNote,
+        });
+        if (result.message) await sendToOwner(result.message);
+      } catch (err) {
+        console.error('[telegram] pdf parse failed:', err);
+        await sendToOwner(`(couldn't read that PDF — ${(err as Error).message})`);
+      }
+      return;
     }
+
+    // Any other file type — nothing to act on silently.
   });
 
   keeperBot.on('polling_error', (err) => console.error('[telegram] polling error:', err.message));
