@@ -77,7 +77,7 @@ export async function deployHtml(creds: GithubCreds, file: PendingHtml): Promise
     let repoName = baseName;
     while (true) {
       try {
-        created = await octokit.repos.createForAuthenticatedUser({ name: repoName, private: false, auto_init: false });
+        created = await octokit.repos.createForAuthenticatedUser({ name: repoName, private: false, auto_init: true });
         break;
       } catch (e) {
         const err = e as { status?: number; response?: { data?: { errors?: { field?: string }[] } } };
@@ -90,11 +90,17 @@ export async function deployHtml(creds: GithubCreds, file: PendingHtml): Promise
     }
     const branch = created.data.default_branch || 'main';
 
-    // 2. Push index.html via the Git Data API (handles files > 1 MB).
+    // 2. Get the HEAD commit that auto_init created, so we can build on top of it.
+    const refData = await octokit.git.getRef({ owner: OWNER, repo: repoName, ref: `heads/${branch}` });
+    const headSha = refData.data.object.sha;
+    const headCommit = await octokit.git.getCommit({ owner: OWNER, repo: repoName, commit_sha: headSha });
+    const baseTreeSha = headCommit.data.tree.sha;
+
+    // 3. Push index.html via the Git Data API (handles files > 1 MB).
     const blob = await octokit.git.createBlob({ owner: OWNER, repo: repoName, content: file.contentBase64, encoding: 'base64' });
-    const tree = await octokit.git.createTree({ owner: OWNER, repo: repoName, tree: [{ path: 'index.html', mode: '100644', type: 'blob', sha: blob.data.sha }] });
-    const commit = await octokit.git.createCommit({ owner: OWNER, repo: repoName, message: 'Deploy via THE KEEPER', tree: tree.data.sha, parents: [] });
-    await octokit.git.createRef({ owner: OWNER, repo: repoName, ref: `refs/heads/${branch}`, sha: commit.data.sha });
+    const tree = await octokit.git.createTree({ owner: OWNER, repo: repoName, base_tree: baseTreeSha, tree: [{ path: 'index.html', mode: '100644', type: 'blob', sha: blob.data.sha }] });
+    const commit = await octokit.git.createCommit({ owner: OWNER, repo: repoName, message: 'Deploy via THE KEEPER', tree: tree.data.sha, parents: [headSha] });
+    await octokit.git.updateRef({ owner: OWNER, repo: repoName, ref: `heads/${branch}`, sha: commit.data.sha });
 
     // 3. Enable GitHub Pages.
     await octokit.repos.createPagesSite({ owner: OWNER, repo: repoName, source: { branch, path: '/' } });
