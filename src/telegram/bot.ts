@@ -172,8 +172,11 @@ function startKeeperBot(): void {
   keeperBot.on('polling_error', (err) => {
     console.error('[telegram] polling error:', err.message);
     if ((err as NodeJS.ErrnoException).code === 'EFATAL') {
-      console.error('[telegram] fatal network error — restarting process so Railway can reconnect.');
-      process.exit(1);
+      console.error('[telegram] fatal network error — restarting polling in 20s...');
+      keeperBot.stopPolling()
+        .then(() => new Promise<void>((r) => setTimeout(r, 20_000)))
+        .then(() => keeperBot.startPolling())
+        .catch((e) => { console.error('[telegram] polling restart failed, exiting:', e); process.exit(1); });
     }
   });
   console.log('[telegram] keeper bot listening (long-polling).');
@@ -240,8 +243,11 @@ function startGuestBot(g: GuestBot): void {
   bot.on('polling_error', (err) => {
     console.error(`[${tag}] polling error:`, err.message);
     if ((err as NodeJS.ErrnoException).code === 'EFATAL') {
-      console.error(`[${tag}] fatal network error — restarting process.`);
-      process.exit(1);
+      console.error(`[${tag}] fatal network error — restarting polling in 20s...`);
+      bot.stopPolling()
+        .then(() => new Promise<void>((r) => setTimeout(r, 20_000)))
+        .then(() => bot.startPolling())
+        .catch((e) => { console.error(`[${tag}] polling restart failed, exiting:`, e); process.exit(1); });
     }
   });
   console.log(
