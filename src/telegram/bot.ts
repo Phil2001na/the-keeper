@@ -169,7 +169,13 @@ function startKeeperBot(): void {
     // Any other file type — nothing to act on silently.
   });
 
-  keeperBot.on('polling_error', (err) => console.error('[telegram] polling error:', err.message));
+  keeperBot.on('polling_error', (err) => {
+    console.error('[telegram] polling error:', err.message);
+    if ((err as NodeJS.ErrnoException).code === 'EFATAL') {
+      console.error('[telegram] fatal network error — restarting process so Railway can reconnect.');
+      process.exit(1);
+    }
+  });
   console.log('[telegram] keeper bot listening (long-polling).');
 }
 
@@ -231,7 +237,13 @@ function startGuestBot(g: GuestBot): void {
     );
   });
 
-  bot.on('polling_error', (err) => console.error(`[${tag}] polling error:`, err.message));
+  bot.on('polling_error', (err) => {
+    console.error(`[${tag}] polling error:`, err.message);
+    if ((err as NodeJS.ErrnoException).code === 'EFATAL') {
+      console.error(`[${tag}] fatal network error — restarting process.`);
+      process.exit(1);
+    }
+  });
   console.log(
     `[telegram] guest deploy bot "${g.name}" listening${g.chatId ? ` (locked to chat ${g.chatId})` : ''}` +
       `${enabled ? '' : ' — WARNING: github creds missing, deploys disabled'}.`
