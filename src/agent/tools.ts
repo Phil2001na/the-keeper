@@ -10,6 +10,9 @@ import {
 } from '../deploy/github.js';
 import { imageGenEnabled, generateImage } from '../generate/image.js';
 import { generatePdf } from '../generate/pdf.js';
+import { googleEnabled, getOAuth2Client as _auth } from '../integrations/google.js';
+import { listEmails, readEmail, sendEmail } from '../integrations/gmail.js';
+import { listDriveFiles, readDriveFile } from '../integrations/drive.js';
 
 /**
  * The tools the orchestrator can call. The database is the agent's hands:
@@ -147,6 +150,65 @@ export const toolDefinitions: Anthropic.Tool[] = [
       type: 'object',
       properties: { repo: { type: 'string', description: 'Repository name to delete.' } },
       required: ['repo'],
+    },
+  },
+  // ─── Gmail ────────────────────────────────────────────────────────────────
+  {
+    name: 'list_emails',
+    description:
+      "List Philip's recent emails. Use a Gmail search query to filter (e.g. 'is:unread', 'from:boss@example.com', 'subject:invoice'). Returns sender, subject, date, and a short snippet.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: "Gmail search query (default: 'in:inbox')." },
+        max_results: { type: 'number', description: 'Max emails to return (default 10, max 20).' },
+      },
+    },
+  },
+  {
+    name: 'read_email',
+    description: 'Read the full body of a specific email by its message id (from list_emails).',
+    input_schema: {
+      type: 'object',
+      properties: { message_id: { type: 'string' } },
+      required: ['message_id'],
+    },
+  },
+  {
+    name: 'send_email',
+    description:
+      "Send an email from Philip's Gmail account. Always confirm with him before sending unless he explicitly asked you to send it.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'Recipient email address.' },
+        subject: { type: 'string' },
+        body: { type: 'string', description: 'Plain text email body.' },
+      },
+      required: ['to', 'subject', 'body'],
+    },
+  },
+  // ─── Google Drive ──────────────────────────────────────────────────────────
+  {
+    name: 'list_drive_files',
+    description:
+      "List files in Philip's Google Drive, most recently modified first. Optionally filter with a Drive query (e.g. \"name contains 'invoice'\", \"mimeType='application/pdf'\").",
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Drive query string (optional).' },
+        max_results: { type: 'number', description: 'Max files to return (default 15).' },
+      },
+    },
+  },
+  {
+    name: 'read_drive_file',
+    description:
+      'Read the text content of a Google Drive file (Docs, Sheets, plain text, etc.) by its file id (from list_drive_files).',
+    input_schema: {
+      type: 'object',
+      properties: { file_id: { type: 'string' } },
+      required: ['file_id'],
     },
   },
   // ─── Media generation ─────────────────────────────────────────────────────
@@ -311,6 +373,56 @@ export async function dispatchTool(
     case 'delete_site': {
       if (!githubEnabled()) return { output: 'Website deploy is not configured.' };
       return { output: JSON.stringify(await deleteSite(input.repo as string)) };
+    }
+
+    // ─── Gmail ─────────────────────────────────────────────────────────────
+    case 'list_emails': {
+      if (!googleEnabled()) return { output: 'Gmail not configured (missing Google credentials).' };
+      const emails = await listEmails(
+        (input.query as string | undefined) ?? 'in:inbox',
+        Math.min((input.max_results as number | undefined) ?? 10, 20)
+      );
+      if (emails.length === 0) return { output: 'No emails found.' };
+      return {
+        output: emails.map((e) =>
+          `[${e.id}] ${e.date} | From: ${e.from} | Subject: ${e.subject}\n  ${e.snippet}`
+        ).join('\n\n'),
+      };
+    }
+
+    case 'read_email': {
+      if (!googleEnabled()) return { output: 'Gmail not configured.' };
+      const email = await readEmail(input.message_id as string);
+      return {
+        output: `From: ${email.from}\nDate: ${email.date}\nSubject: ${email.subject}\n\n${email.body}`,
+      };
+    }
+
+    case 'send_email': {
+      if (!googleEnabled()) return { output: 'Gmail not configured.' };
+      const res = await sendEmail(input.to as string, input.subject as string, input.body as string);
+      return { output: res.ok ? `Email sent (id: ${res.messageId}).` : `Failed to send: ${res.error}` };
+    }
+
+    // ─── Google Drive ───────────────────────────────────────────────────────
+    case 'list_drive_files': {
+      if (!googleEnabled()) return { output: 'Google Drive not configured.' };
+      const files = await listDriveFiles(
+        input.query as string | undefined,
+        (input.max_results as number | undefined) ?? 15
+      );
+      if (files.length === 0) return { output: 'No files found.' };
+      return {
+        output: files.map((f) =>
+          `[${f.id}] ${f.name} (${f.mimeType}) — modified ${f.modifiedTime}`
+        ).join('\n'),
+      };
+    }
+
+    case 'read_drive_file': {
+      if (!googleEnabled()) return { output: 'Google Drive not configured.' };
+      const res = await readDriveFile(input.file_id as string);
+      return { output: res.ok ? `File: ${res.name}\n\n${res.content}` : `Error: ${res.error}` };
     }
 
     // ─── Media generation ──────────────────────────────────────────────────

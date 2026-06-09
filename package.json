@@ -11,6 +11,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "seed": "tsx src/seed/seed.ts",
+    "google-auth": "tsx scripts/google-auth.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "@octokit/rest": "^21.1.1",
     "@supabase/supabase-js": "^2.45.4",
     "dotenv": "^16.4.5",
+    "googleapis": "^173.0.0",
     "node-telegram-bot-api": "^0.66.0",
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.19.0",

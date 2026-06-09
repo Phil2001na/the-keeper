@@ -113,6 +113,12 @@ export const config = {
   // Optional: enables image generation via Imagen 4. Leave blank to disable.
   geminiApiKey: (process.env.GEMINI_API_KEY ?? '').replace(/\s+/g, ''),
 
+  // Optional: enables Gmail + Google Drive access. Run `npm run google-auth`
+  // once to get the refresh token, then add all three to .env and Railway.
+  googleClientId: (process.env.GOOGLE_CLIENT_ID ?? '').replace(/\s+/g, ''),
+  googleClientSecret: (process.env.GOOGLE_CLIENT_SECRET ?? '').replace(/\s+/g, ''),
+  googleRefreshToken: (process.env.GOOGLE_REFRESH_TOKEN ?? '').replace(/\s+/g, ''),
+
   // Optional deploy-only guest bots (Philip's brother, friends). See GuestBot.
   guestBots: parseGuestBots(),
 

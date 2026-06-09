@@ -2,6 +2,7 @@ import { config, localTimeString, isQuietHours } from '../config.js';
 import { domains, facts, touchpoints } from '../db/repositories.js';
 import { githubEnabled } from '../deploy/github.js';
 import { imageGenEnabled } from '../generate/image.js';
+import { googleEnabled } from '../integrations/google.js';
 
 /**
  * Assemble the system prompt fresh on every turn: the unchanging character plus
@@ -45,6 +46,10 @@ export async function buildSystemPrompt(): Promise<string> {
 
   const deployNote = githubEnabled()
     ? `\n# Publishing websites for him\nYou can deploy and manage static websites on GitHub Pages. When he sends you an .html file, deploy it with deploy_html and reply with the live link (Pages takes ~30–60s to go live). You can also list_sites, check_site_status, rename_site, and delete_site when he asks in plain language. Handle repo naming yourself — never tell him to rename the file. Confirm before delete_site unless he clearly asked for it.`
+    : '';
+
+  const googleNote = googleEnabled()
+    ? `\n# Gmail & Google Drive\nYou have access to Philip's Gmail (list_emails, read_email, send_email) and Google Drive (list_drive_files, read_drive_file). Use these when he asks you to check his email, find a file, draft or send a message, etc. NEVER send an email without confirming with him first unless he explicitly said to send it.`
     : '';
 
   const mediaNote =
@@ -94,6 +99,7 @@ ${factsBlock}
 # Your upcoming reach-outs (already scheduled)
 ${touchpointsBlock}
 ${deployNote}
+${googleNote}
 ${mediaNote}
 
 # Tools
