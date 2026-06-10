@@ -13,13 +13,27 @@ One agentic loop (Claude Sonnet). The database is the agent's hands. The same lo
 - **Proactive** — a touchpoint it scheduled for itself comes due and a lightweight scheduler wakes it.
 
 ```
-Telegram message ─┐                          ┌─→ remember_fact
-                  ├─→ runAgent (Sonnet + tools) ─┼─→ schedule_touchpoint (its own next move)
-Due touchpoint ───┘                          └─→ reply  /  stay_silent
+Telegram message ─┐                              ┌─→ remember_fact / forget_fact
+Due touchpoint ───┼─→ runAgent (Sonnet + tools) ─┼─→ schedule_touchpoint (its own next move)
+Nightly reflection┘                              └─→ reply  /  stay_silent  /  write_journal
 ```
 
 ### Signature ability: it grows with you
 Its sense of your life isn't fixed to a hard-coded list of areas. If you bring up something that doesn't fit an existing sector — a new business, an interest, a person — it **asks** whether you'd like it to start tracking that area. On a yes, it creates the sector (a row in `domains`) and manages it like any other: storing facts, scheduling check-ins.
+
+### Memory in three layers
+1. **Facts & sectors** — its distilled working model of your life (`keeper_facts` / `keeper_domains`).
+2. **Recent conversation** — the last N messages, in context every turn.
+3. **The archive** — *everything ever said*, full-text searchable via its `search_history` tool. It never has to say "I don't remember" without actually looking.
+
+### An inner life: nightly reflection + journal
+Once per evening (`REFLECTION_HOUR`, default 22:00) it wakes privately — no message to you. It reviews the day, consolidates and prunes facts, retunes sector cadences, checks how its recent reach-outs landed (did you reply or leave them on read?), optionally glances at unread email for tomorrow, and writes a short **journal entry**. The latest entries are folded back into its system prompt — continuity of self across days.
+
+### It learns whether its proactivity lands
+Every fired touchpoint records an outcome — `sent`, `silent`, or `replied` (you answered within a few hours). Reflection reads the 7-day stats and adjusts when and why it reaches out.
+
+### Eyes on the world
+It has Anthropic's server-side **web search** — live news, prices, docs, weather — used naturally mid-conversation, no extra API key.
 
 ### Boundaries
 - **Quiet hours** (default `23:00–07:00` Africa/Windhoek): no proactive messages overnight. Touchpoints that come due in the window simply fire once it passes. You can still text it anytime.
@@ -44,14 +58,20 @@ src/
     client.ts           supabase client
     repositories.ts     typed CRUD: domains, facts, touchpoints, interactions
   agent/
-    orchestrator.ts     runAgent() — the tool-use loop
-    systemPrompt.ts     character + live memory snapshot
-    tools.ts            tool defs + dispatch
-  telegram/bot.ts       long-polling listener + sendToOwner()
-  scheduler/dueCheck.ts due-check interval with quiet-hours gate
+    orchestrator.ts     runAgent() — the tool-use loop (inbound / touchpoint / reflection)
+    systemPrompt.ts     character (cached block) + live memory snapshot
+    tools.ts            tool defs + dispatch (incl. server-side web search)
+    reflect.ts          nightly reflection — consolidate memory, write journal
+  telegram/bot.ts       long-polling listener, typing keepalive, bubble replies, /status
+  scheduler/dueCheck.ts due-check interval with quiet-hours gate + reflection trigger
   seed/seed.ts          idempotent: core sectors + neutral facts + first contact
-migrations/001_init.sql  schema
+migrations/
+  001_init.sql           schema
+  002_memory_depth.sql   full-text search archive, journal, touchpoint outcomes
 ```
+
+### /status
+Text the bot `/status` for an instant ops snapshot (uptime, model, next reach-out, last journal day, which integrations are live) — answered locally, no tokens spent.
 
 ---
 
@@ -98,6 +118,7 @@ migrations/001_init.sql  schema
 - Long-polling works on Railway as-is. To switch to a webhook, replace the `polling: true` setup in `src/telegram/bot.ts` with `bot.setWebHook(...)` and an Express endpoint — the agent code doesn't change.
 
 ## Deferred (future)
-- Vector/semantic recall (currently structured recall — small fact set, cheaper).
+- Vector/semantic recall (full-text archive search covers most of it; embeddings only if FTS misses become common).
 - Haiku for cheap extraction/classification (currently folded into Sonnet's tool calls).
+- Google Calendar tools (needs a one-time re-auth with the calendar scope).
 - Multi-user (currently single owner).

@@ -126,7 +126,11 @@ export const config = {
   quietStart: intEnv('QUIET_START', 23),
   quietEnd: intEnv('QUIET_END', 7),
   dueCheckIntervalMs: intEnv('DUE_CHECK_INTERVAL_MS', 60_000),
-  historyLimit: intEnv('HISTORY_LIMIT', 20),
+  historyLimit: intEnv('HISTORY_LIMIT', 30),
+
+  // Local hour (0–23) at which the agent runs its private nightly reflection:
+  // consolidates memory, reviews how its reach-outs landed, writes its journal.
+  reflectionHour: intEnv('REFLECTION_HOUR', 22),
 };
 
 /** Current wall-clock hour (0â€“23) in the configured timezone. */
@@ -139,6 +143,16 @@ export function localHour(date = new Date()): number {
   // "24" can appear at midnight in some environments; normalise to 0.
   const h = parseInt(s, 10);
   return h === 24 ? 0 : h;
+}
+
+/** Local calendar date as YYYY-MM-DD in the configured timezone. */
+export function localDateString(date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: config.timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
 }
 
 /** Human-readable current local time, for the agent's situational awareness. */

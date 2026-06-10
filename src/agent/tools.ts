@@ -1,5 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import { domains, facts, touchpoints } from '../db/repositories.js';
+import { localDateString } from '../config.js';
+import { domains, facts, touchpoints, interactions, journal } from '../db/repositories.js';
 import {
   githubEnabled,
   deployPending,
@@ -17,8 +18,10 @@ import { listDriveFiles, readDriveFile } from '../integrations/drive.js';
 /**
  * The tools the orchestrator can call. The database is the agent's hands:
  * everything it knows and everything it plans lives in these calls.
+ * (ToolUnion, not Tool: the last entry is Anthropic's server-side web search,
+ * which executes inside the API — it never reaches dispatchTool.)
  */
-export const toolDefinitions: Anthropic.Tool[] = [
+export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
   {
     name: 'list_domains',
     description:
@@ -96,6 +99,71 @@ export const toolDefinitions: Anthropic.Tool[] = [
       type: 'object',
       properties: { id: { type: 'string' } },
       required: ['id'],
+    },
+  },
+  {
+    name: 'forget_fact',
+    description:
+      'Delete a stored fact that is stale, wrong, or superseded. Use during reflection to keep memory clean — ' +
+      'a memory full of dead facts is worse than a small sharp one.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        domain_slug: { type: 'string', description: 'Sector the fact lives in. Omit for general (no-domain) facts.' },
+        key: { type: 'string', description: 'The fact key to delete.' },
+      },
+      required: ['key'],
+    },
+  },
+  {
+    name: 'update_domain',
+    description:
+      "Update a sector you already track: refine its description or cadence as his life shifts, change its priority, " +
+      "or set active=false to retire a sector that's gone dormant. Keeps your map of his life honest.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        slug: { type: 'string', description: 'Sector to update.' },
+        description: { type: 'string' },
+        cadence_hint: { type: 'string' },
+        priority: { type: 'number', description: '1 (high) to 5 (low).' },
+        active: { type: 'boolean', description: 'false retires the sector.' },
+      },
+      required: ['slug'],
+    },
+  },
+  {
+    name: 'search_history',
+    description:
+      'Search EVERYTHING the two of you have ever said — your long-term episodic memory beyond the recent messages in view. ' +
+      'Use it whenever he references something not in front of you ("that thing we discussed", a name, a plan, "last week"). ' +
+      "Don't guess about the past when you can look it up. Provide query, around_date, or both.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Words or "quoted phrases" to find (websearch syntax; -word excludes).',
+        },
+        around_date: {
+          type: 'string',
+          description: 'YYYY-MM-DD — instead of (or as well as) a query, pull the conversation from that day ±1 day.',
+        },
+      },
+    },
+  },
+  {
+    name: 'write_journal',
+    description:
+      "Write today's entry in your PRIVATE journal (he never sees it). Normally done once, during your nightly reflection: " +
+      'a few honest lines on the state of him, what changed today, and what you are watching. Writing again the same day replaces the entry. ' +
+      'Your latest entries are shown back to you every turn — this is your continuity of self.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        entry: { type: 'string', description: 'The journal entry text.' },
+      },
+      required: ['entry'],
     },
   },
   {
@@ -241,6 +309,12 @@ export const toolDefinitions: Anthropic.Tool[] = [
       required: ['title', 'body'],
     },
   },
+  // ─── Web search (server-side — executes inside the Anthropic API) ─────────
+  {
+    type: 'web_search_20250305',
+    name: 'web_search',
+    max_uses: 4,
+  },
 ];
 
 export interface ToolResult {
@@ -347,6 +421,75 @@ export async function dispatchTool(
     case 'cancel_touchpoint': {
       await touchpoints.setStatus(input.id as string, 'cancelled');
       return { output: `Cancelled touchpoint ${input.id}.` };
+    }
+
+    case 'forget_fact': {
+      const slug = input.domain_slug as string | undefined;
+      let domainId: string | null = null;
+      if (slug) {
+        const d = await domains.getBySlug(slug);
+        if (!d) return { output: `No domain with slug "${slug}".` };
+        domainId = d.id;
+      }
+      const removed = await facts.remove(domainId, input.key as string);
+      return {
+        output: removed
+          ? `Forgot fact "${input.key}".`
+          : `No fact "${input.key}" found${slug ? ` in ${slug}` : ''} — nothing to forget.`,
+      };
+    }
+
+    case 'update_domain': {
+      const patch: { description?: string; cadence_hint?: string; priority?: number; active?: boolean } = {};
+      if (typeof input.description === 'string') patch.description = input.description;
+      if (typeof input.cadence_hint === 'string') patch.cadence_hint = input.cadence_hint;
+      if (typeof input.priority === 'number') patch.priority = input.priority;
+      if (typeof input.active === 'boolean') patch.active = input.active;
+      if (Object.keys(patch).length === 0) return { output: 'Nothing to update — pass at least one field.' };
+      const d = await domains.update(input.slug as string, patch);
+      if (!d) return { output: `No domain with slug "${input.slug}".` };
+      return { output: `Updated sector "${d.slug}"${patch.active === false ? ' (retired)' : ''}.` };
+    }
+
+    case 'search_history': {
+      const query = (input.query as string | undefined)?.trim();
+      const aroundDate = (input.around_date as string | undefined)?.trim();
+      if (!query && !aroundDate) {
+        return { output: 'Provide a query, an around_date, or both.' };
+      }
+      let rows;
+      if (aroundDate) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(aroundDate)) {
+          return { output: `around_date must be YYYY-MM-DD, got "${aroundDate}".` };
+        }
+        const from = new Date(`${aroundDate}T00:00:00Z`);
+        from.setUTCDate(from.getUTCDate() - 1);
+        const to = new Date(`${aroundDate}T00:00:00Z`);
+        to.setUTCDate(to.getUTCDate() + 2);
+        rows = await interactions.window(from.toISOString(), to.toISOString());
+        if (query) {
+          const q = query.toLowerCase();
+          rows = rows.filter((r) => r.content.toLowerCase().includes(q));
+        }
+      } else {
+        rows = await interactions.search(query!);
+      }
+      if (rows.length === 0) return { output: 'Nothing found in the archive for that.' };
+      return {
+        output: rows
+          .map((r) => {
+            const when = r.created_at.slice(0, 16).replace('T', ' ');
+            const who = r.role === 'user' ? 'him' : 'you';
+            const text = r.content.length > 400 ? r.content.slice(0, 400) + '…' : r.content;
+            return `[${when} UTC] ${who}: ${text}`;
+          })
+          .join('\n'),
+      };
+    }
+
+    case 'write_journal': {
+      await journal.upsert('nightly', localDateString(), input.entry as string);
+      return { output: 'Journal entry written.' };
     }
 
     case 'stay_silent': {
