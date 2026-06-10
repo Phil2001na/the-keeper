@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { localDateString } from '../config.js';
 import { domains, facts, touchpoints, interactions, journal } from '../db/repositories.js';
+import { bus, type PresentCard } from '../web/bus.js';
 import {
   githubEnabled,
   deployPending,
@@ -317,6 +318,42 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
   },
 ];
 
+/**
+ * The generative-UI tool. Only offered on web turns (the orchestrator appends
+ * it when the surface has a screen). The model emits a compact JSON spec; the
+ * browser owns the polished, animated components that render it — so a "view"
+ * costs a few hundred output tokens, not a page of HTML.
+ */
+export const presentToolDefinition: Anthropic.Tool = {
+  name: 'present',
+  description:
+    'Render a small visual card on his screen, alongside (never instead of) your text reply. ' +
+    'Use ONLY when a visual genuinely helps — numbers, comparisons, lists, plans, schedules, search findings. ' +
+    'Most replies need NO card; at most one per reply. Your text must stand alone without it (Telegram shows text only). ' +
+    'Compose from these block types:\n' +
+    '  {"type":"stat","label","value","delta"?,"hint"?} — one big number/fact\n' +
+    '  {"type":"keyvals","pairs":[{"k","v"}]} — label/value rows\n' +
+    '  {"type":"list","title"?,"items":[{"text","sub"?,"done"?}]} — checklist or plain list\n' +
+    '  {"type":"timeline","items":[{"when","text"}]} — moments in order\n' +
+    '  {"type":"progress","label","value":0-100,"hint"?} — a bar\n' +
+    '  {"type":"links","items":[{"title","url","desc"?}]} — sources/sites\n' +
+    '  {"type":"quote","text","by"?} — a pulled line\n' +
+    '  {"type":"text","body"} — short prose\n' +
+    'Keep it tight: a glance, not a webpage.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Optional small heading for the card.' },
+      blocks: {
+        type: 'array',
+        description: 'The blocks to render, in order. 1–6 blocks.',
+        items: { type: 'object' },
+      },
+    },
+    required: ['blocks'],
+  },
+};
+
 export interface ToolResult {
   output: string;
   /** Set by stay_silent so the orchestrator knows not to send anything. */
@@ -490,6 +527,19 @@ export async function dispatchTool(
     case 'write_journal': {
       await journal.upsert('nightly', localDateString(), input.entry as string);
       return { output: 'Journal entry written.' };
+    }
+
+    case 'present': {
+      const blocks = input.blocks;
+      if (!Array.isArray(blocks) || blocks.length === 0) {
+        return { output: 'present needs a non-empty blocks array.' };
+      }
+      const card: PresentCard = {
+        title: typeof input.title === 'string' ? input.title : undefined,
+        blocks: blocks.slice(0, 8),
+      };
+      bus.publish({ type: 'card', card });
+      return { output: 'Card rendered on his screen. Write your reply as if the card may not be there.' };
     }
 
     case 'stay_silent': {

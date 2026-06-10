@@ -35,6 +35,15 @@ Every fired touchpoint records an outcome — `sent`, `silent`, or `replied` (yo
 ### Eyes on the world
 It has Anthropic's server-side **web search** — live news, prices, docs, weather — used naturally mid-conversation, no extra API key.
 
+### The web surface (generative UI)
+Telegram stays as the minimal always-on interface; the **web UI** is the experimental one — same brain, same memory, one continuous conversation across both. What it adds:
+- **Live presence.** A breathing orb and a streaming activity rail show what the agent is *actually doing*, step by step, as it works ("reaching into the archive… searching the web… committing that to memory"). Driven by real tool events over SSE — zero extra tokens, and waiting stops feeling like dead air.
+- **Generative cards.** The model has a `present` tool (web turns only): it emits a compact JSON spec and the browser renders it with polished animated components — stats, lists, timelines, progress bars, link cards, quotes. A "view" costs a few hundred output tokens, not a page of HTML. The prompt keeps it honest: most replies need no card, and the text reply must always stand alone (Telegram parity).
+- **The mind panel.** Sectors, facts, planned reach-outs, and the latest journal entry — read straight from the DB, no tokens.
+- **Media inline.** Generated images render in the stream; PDFs arrive as downloads.
+
+Setup: set `KEEPER_WEB_TOKEN` to a long random string (it's the only lock on the door), and on Railway: Settings → Networking → **Generate Domain**. Open the URL, paste the token once. Leave the var blank and no HTTP server starts at all.
+
 ### Boundaries
 - **Quiet hours** (default `23:00–07:00` Africa/Windhoek): no proactive messages overnight. Touchpoints that come due in the window simply fire once it passes. You can still text it anytime.
 - **Silence is allowed.** If a due touchpoint isn't worth interrupting you, it stays silent (and usually schedules a better next one).
@@ -63,6 +72,10 @@ src/
     tools.ts            tool defs + dispatch (incl. server-side web search)
     reflect.ts          nightly reflection — consolidate memory, write journal
   telegram/bot.ts       long-polling listener, typing keepalive, bubble replies, /status
+  web/
+    server.ts           HTTP + SSE server (UI, /events, /send, /api/snapshot)
+    ui.html             the whole frontend — single file, no build step
+    bus.ts              in-process event bus: agent loop → browser narration
   scheduler/dueCheck.ts due-check interval with quiet-hours gate + reflection trigger
   seed/seed.ts          idempotent: core sectors + neutral facts + first contact
 migrations/

@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { startTelegram } from './telegram/bot.js';
 import { startScheduler } from './scheduler/dueCheck.js';
+import { startWebServer } from './web/server.js';
 
 /**
  * THE KEEPER — entry point.
@@ -15,8 +16,9 @@ function main() {
 
   startTelegram();
   startScheduler();
+  startWebServer();
 
-  console.log('THE KEEPER — up. Reactive (Telegram) + proactive (scheduler) both live.');
+  console.log('THE KEEPER — up. Reactive (Telegram + web) + proactive (scheduler) live.');
 }
 
 // The agent is a long-running daemon: a stray Telegram polling error or a

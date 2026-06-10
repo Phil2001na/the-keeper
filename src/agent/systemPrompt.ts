@@ -80,7 +80,7 @@ Whatever you write as your final text message is sent to Philip verbatim over Te
   return staticBlock;
 }
 
-async function buildDynamicBlock(): Promise<string> {
+async function buildDynamicBlock(surface?: 'telegram' | 'web'): Promise<string> {
   const [domainList, factList, pendingTouchpoints, journalEntries] = await Promise.all([
     domains.list(),
     facts.all(),
@@ -128,6 +128,11 @@ async function buildDynamicBlock(): Promise<string> {
     ? 'It is currently QUIET HOURS. Only respond because he messaged you first; do not be chatty.'
     : `Quiet hours are ${config.quietStart}:00–${config.quietEnd}:00 local; never schedule proactive touchpoints to land inside that window.`;
 
+  const surfaceNote =
+    surface === 'web'
+      ? `\n\n# Where he is right now\nHe's talking to you from your web app (a screen, not Telegram). You have the present tool to add ONE small visual card beside a reply when a visual genuinely helps. Most replies still need no card.`
+      : '';
+
   return `# Current time
 Local: ${localTimeString()} (${config.timezone}).
 UTC: ${new Date().toISOString()} — schedule_touchpoint takes UTC timestamps.
@@ -143,17 +148,19 @@ ${factsBlock}
 ${touchpointsBlock}
 
 # Your journal (latest entries, newest first — private)
-${journalBlock}`;
+${journalBlock}${surfaceNote}`;
 }
 
 /** Assemble the system prompt: cached character block + live snapshot block. */
-export async function buildSystemPrompt(): Promise<Anthropic.TextBlockParam[]> {
+export async function buildSystemPrompt(
+  surface?: 'telegram' | 'web'
+): Promise<Anthropic.TextBlockParam[]> {
   return [
     {
       type: 'text',
       text: buildStaticBlock(),
       cache_control: { type: 'ephemeral' },
     },
-    { type: 'text', text: await buildDynamicBlock() },
+    { type: 'text', text: await buildDynamicBlock(surface) },
   ];
 }

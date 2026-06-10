@@ -1,20 +1,28 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { interactions, touchpoints, type Interaction, type Touchpoint } from '../db/repositories.js';
+import { bus, stepLabel } from '../web/bus.js';
 import { buildSystemPrompt } from './systemPrompt.js';
-import { toolDefinitions, dispatchTool } from './tools.js';
+import { toolDefinitions, presentToolDefinition, dispatchTool } from './tools.js';
 
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
 const MAX_TOOL_ROUNDS = 12;
 
+/** Which surface a turn talks back to. Touchpoints/reflection aren't surfaces. */
+export type Surface = 'telegram' | 'web';
+
 // If the API ever rejects the server-side web_search tool (org setting, model
 // mismatch), strip it and carry on without — a degraded keeper beats a dead one.
 let serverToolsDisabled = false;
 
-function activeTools(): Anthropic.Messages.ToolUnion[] {
-  if (!serverToolsDisabled) return toolDefinitions;
-  return toolDefinitions.filter((t) => !('type' in t && t.type === 'web_search_20250305'));
+function activeTools(surface?: Surface): Anthropic.Messages.ToolUnion[] {
+  let tools = toolDefinitions;
+  if (serverToolsDisabled) {
+    tools = tools.filter((t) => !('type' in t && t.type === 'web_search_20250305'));
+  }
+  // The present tool only exists where a screen exists.
+  return surface === 'web' ? [...tools, presentToolDefinition] : tools;
 }
 
 /** An image Philip sent over Telegram, ready to hand to Claude's vision. */
@@ -24,7 +32,7 @@ export interface InboundImage {
 }
 
 export type Trigger =
-  | { kind: 'inbound'; text: string; images?: InboundImage[] }
+  | { kind: 'inbound'; text: string; images?: InboundImage[]; surface?: Surface }
   | { kind: 'touchpoint'; touchpoint: Touchpoint }
   /** Private nightly reflection — never messages him, never logged as conversation. */
   | { kind: 'reflection'; brief: string };
@@ -54,12 +62,24 @@ export interface AgentResult {
 }
 
 /**
- * The single agentic loop. Serves both an inbound message (reactive) and a
- * fired touchpoint (proactive). Runs Sonnet with tools until it produces a
- * final text reply or explicitly stays silent.
+ * The single agentic loop. Serves an inbound message (reactive), a fired
+ * touchpoint (proactive), or the nightly reflection. Runs Sonnet with tools
+ * until it produces a final text reply or explicitly stays silent.
  */
 export async function runAgent(trigger: Trigger): Promise<AgentResult> {
-  const system = await buildSystemPrompt();
+  // Narrate the turn to the web UI (no-op when no browser is connected).
+  const source = trigger.kind === 'inbound' ? `inbound:${trigger.surface ?? 'telegram'}` : trigger.kind;
+  bus.publish({ type: 'turn', phase: 'start', source });
+  try {
+    return await runTurn(trigger);
+  } finally {
+    bus.publish({ type: 'turn', phase: 'end', source });
+  }
+}
+
+async function runTurn(trigger: Trigger): Promise<AgentResult> {
+  const surface = trigger.kind === 'inbound' ? trigger.surface ?? 'telegram' : undefined;
+  const system = await buildSystemPrompt(surface);
   const history = await interactions.recent(config.historyLimit);
 
   const messages: Anthropic.MessageParam[] = history.map((h) => ({
@@ -76,6 +96,7 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
     const logText =
       trigger.text || (trigger.images?.length ? '(sent an image)' : trigger.text);
     await interactions.log({ role: 'user', content: logText, trigger: 'inbound' });
+    bus.publish({ type: 'message', role: 'user', content: logText, ts: new Date().toISOString() });
 
     if (trigger.images?.length) {
       const content: Array<Anthropic.ImageBlockParam | Anthropic.TextBlockParam> = [
@@ -126,7 +147,7 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
         model: config.model,
         max_tokens: 1024,
         system,
-        tools: activeTools(),
+        tools: activeTools(surface),
         messages,
       });
     } catch (err) {
@@ -143,6 +164,13 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
     messages.push({ role: 'assistant', content: response.content });
     collectText(response.content);
 
+    // web_search runs inside the API — surface it as a live step anyway.
+    for (const block of response.content) {
+      if (block.type === 'server_tool_use') {
+        bus.publish({ type: 'step', label: stepLabel(block.name) });
+      }
+    }
+
     // Server-side tools (web_search) can pause a long turn — resume by sending
     // the partial assistant content back and calling again, no tool results.
     if (response.stop_reason === 'pause_turn') continue;
@@ -151,6 +179,7 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
       for (const block of response.content) {
         if (block.type !== 'tool_use') continue;
+        bus.publish({ type: 'step', label: stepLabel(block.name) });
         // A tool that throws (network blip, expired Google token, etc.) must
         // NEVER take down the whole turn — feed the error back to the model as a
         // tool_result so it can recover and still reply, instead of leaving him
@@ -199,5 +228,6 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
     content: message,
     trigger: trigger.kind === 'touchpoint' ? `touchpoint:${trigger.touchpoint.id}` : 'inbound',
   });
+  bus.publish({ type: 'message', role: 'agent', content: message, ts: new Date().toISOString() });
   return { message, silent: false };
 }

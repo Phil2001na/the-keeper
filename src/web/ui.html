@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d10">
+<title>THE KEEPER</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --ink: #0b0d10;
+    --ink-2: #12151a;
+    --ink-3: #1a1e25;
+    --line: #232830;
+    --text: #e7e4dc;
+    --text-dim: #8b9099;
+    --text-faint: #565b63;
+    --amber: #e8a849;
+    --amber-dim: #b97f2e;
+    --amber-glow: rgba(232, 168, 73, 0.18);
+    --good: #7fc18a;
+    --bad: #d97f7f;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--ink);
+    color: var(--text);
+    font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overscroll-behavior: none;
+  }
+  body::before { /* faint vignette so the canvas feels lit, not flat */
+    content: ""; position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(120% 80% at 50% -10%, rgba(232,168,73,0.05), transparent 60%);
+  }
+
+  /* ── shell ─────────────────────────────────────────── */
+  #app { display: flex; flex-direction: column; height: 100dvh; max-width: 760px; margin: 0 auto; }
+
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 18px 12px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(11,13,16,0.9), rgba(11,13,16,0.75));
+    backdrop-filter: blur(10px);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .wordmark { font-size: 12px; letter-spacing: 0.32em; color: var(--text-dim); font-weight: 600; }
+  #statusline {
+    font-size: 12.5px; color: var(--text-faint); margin-top: 2px;
+    transition: color 0.4s, opacity 0.3s;
+    min-height: 1.2em;
+  }
+  body.busy #statusline { color: var(--amber); }
+  .head-text { flex: 1; min-width: 0; }
+  #mindbtn {
+    background: none; border: 1px solid var(--line); color: var(--text-dim);
+    border-radius: 999px; padding: 7px 14px; font-size: 12.5px; cursor: pointer;
+    transition: border-color 0.25s, color 0.25s;
+  }
+  #mindbtn:hover { border-color: var(--amber-dim); color: var(--amber); }
+
+  /* ── the orb: presence ─────────────────────────────── */
+  #orb {
+    width: 38px; height: 38px; border-radius: 50%; position: relative; flex: none;
+    background: radial-gradient(circle at 32% 30%, #f5cf8d 0%, var(--amber) 35%, #6e4d1b 80%, #3a2a10 100%);
+    box-shadow: 0 0 18px var(--amber-glow), inset 0 0 8px rgba(0,0,0,0.35);
+    animation: breathe 4.8s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { transform: scale(1); box-shadow: 0 0 14px var(--amber-glow), inset 0 0 8px rgba(0,0,0,0.35); }
+    50%      { transform: scale(1.07); box-shadow: 0 0 26px var(--amber-glow), inset 0 0 8px rgba(0,0,0,0.35); }
+  }
+  #orb::after { /* working ring */
+    content: ""; position: absolute; inset: -6px; border-radius: 50%;
+    background: conic-gradient(from 0deg, transparent 0 70%, var(--amber) 92%, transparent 100%);
+    -webkit-mask: radial-gradient(circle, transparent 58%, #000 60%);
+            mask: radial-gradient(circle, transparent 58%, #000 60%);
+    opacity: 0; transition: opacity 0.4s;
+  }
+  body.busy #orb { animation: breathe 1.6s ease-in-out infinite; }
+  body.busy #orb::after { opacity: 0.9; animation: spin 1.1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── stream ────────────────────────────────────────── */
+  main { flex: 1; overflow-y: auto; padding: 22px 18px 12px; scroll-behavior: smooth; }
+  .msg {
+    max-width: 86%; padding: 10px 14px; border-radius: var(--radius); margin-bottom: 10px;
+    white-space: pre-wrap; word-wrap: break-word;
+    animation: mount 0.26s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+  }
+  @keyframes mount { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+  .msg.user {
+    margin-left: auto; background: linear-gradient(160deg, #2b2113, #241c12);
+    border: 1px solid rgba(232,168,73,0.22); border-bottom-right-radius: 5px;
+  }
+  .msg.agent {
+    margin-right: auto; background: var(--ink-2);
+    border: 1px solid var(--line); border-bottom-left-radius: 5px;
+  }
+  .msg a { color: var(--amber); text-decoration: none; border-bottom: 1px solid var(--amber-dim); }
+  .msg code { background: var(--ink-3); border-radius: 5px; padding: 1px 6px; font-size: 0.92em; }
+  .stamp { font-size: 10.5px; color: var(--text-faint); margin: -4px 4px 12px; }
+  .stamp.user { text-align: right; }
+
+  /* ── live activity (the "it's up to something" rail) ── */
+  .activity {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    margin: 2px 0 12px; min-height: 26px;
+    animation: mount 0.3s both;
+  }
+  .activity .tag { font-size: 11px; color: var(--text-faint); letter-spacing: 0.08em; margin-right: 2px; }
+  .chip {
+    font-size: 12px; color: var(--text-dim);
+    border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px;
+    background: var(--ink-2); position: relative; overflow: hidden;
+    animation: mount 0.25s both;
+  }
+  .chip.live { color: var(--amber); border-color: rgba(232,168,73,0.35); }
+  .chip.live::after { /* shimmer sweep while this step is the current one */
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(100deg, transparent 20%, rgba(232,168,73,0.16) 50%, transparent 80%);
+    transform: translateX(-100%); animation: sweep 1.4s ease-in-out infinite;
+  }
+  @keyframes sweep { to { transform: translateX(100%); } }
+  .activity.done { min-height: 0; }
+  .activity.done .chip { display: none; }
+  .activity .summary { font-size: 11.5px; color: var(--text-faint); font-style: italic; }
+  .dots::after { content: ""; animation: dots 1.4s steps(4) infinite; }
+  @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+
+  /* ── generative cards ──────────────────────────────── */
+  .card {
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: linear-gradient(170deg, var(--ink-3), var(--ink-2));
+    padding: 16px 18px; margin: 4px 0 14px; max-width: 92%;
+    animation: cardmount 0.45s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+  }
+  @keyframes cardmount {
+    from { opacity: 0; transform: translateY(12px) scale(0.985); filter: blur(5px); }
+    to   { opacity: 1; transform: none; filter: blur(0); }
+  }
+  .card > * { animation: mount 0.35s both; }
+  .card .c-title {
+    font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--amber); margin-bottom: 12px;
+  }
+  .b-stat { margin: 10px 0; }
+  .b-stat .label { font-size: 12px; color: var(--text-dim); letter-spacing: 0.05em; }
+  .b-stat .value { font-size: 30px; font-weight: 650; letter-spacing: -0.01em; margin: 2px 0; }
+  .b-stat .delta { font-size: 13px; margin-left: 8px; font-weight: 500; }
+  .b-stat .delta.up { color: var(--good); } .b-stat .delta.down { color: var(--bad); }
+  .b-stat .hint { font-size: 12px; color: var(--text-faint); }
+  .b-keyvals { margin: 8px 0; }
+  .b-keyvals .row { display: flex; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+  .b-keyvals .row:last-child { border-bottom: 0; }
+  .b-keyvals .k { color: var(--text-dim); font-size: 13px; }
+  .b-keyvals .v { text-align: right; font-size: 13.5px; }
+  .b-list { margin: 8px 0; }
+  .b-list .lt { font-size: 12px; color: var(--text-dim); letter-spacing: 0.05em; margin-bottom: 6px; }
+  .b-list .item { display: flex; gap: 10px; padding: 5px 0; align-items: baseline; }
+  .b-list .bullet { color: var(--amber); flex: none; }
+  .b-list .item.done { color: var(--text-faint); text-decoration: line-through; }
+  .b-list .sub { display: block; font-size: 12px; color: var(--text-faint); }
+  .b-timeline { margin: 10px 0 10px 6px; border-left: 1px solid var(--line); }
+  .b-timeline .item { position: relative; padding: 4px 0 10px 18px; }
+  .b-timeline .item::before {
+    content: ""; position: absolute; left: -4.5px; top: 11px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--amber-dim);
+  }
+  .b-timeline .when { font-size: 11.5px; color: var(--amber); letter-spacing: 0.05em; }
+  .b-progress { margin: 12px 0; }
+  .b-progress .label { font-size: 13px; color: var(--text-dim); display: flex; justify-content: space-between; }
+  .b-progress .track { height: 7px; background: var(--ink); border-radius: 99px; margin-top: 6px; overflow: hidden; border: 1px solid var(--line); }
+  .b-progress .fill {
+    height: 100%; border-radius: 99px; width: 0;
+    background: linear-gradient(90deg, var(--amber-dim), var(--amber));
+    transition: width 0.9s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .b-progress .hint { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; }
+  .b-links .link {
+    display: block; padding: 9px 12px; margin: 6px 0; border: 1px solid var(--line);
+    border-radius: 10px; text-decoration: none; color: var(--text); transition: border-color 0.2s;
+  }
+  .b-links .link:hover { border-color: var(--amber-dim); }
+  .b-links .lt { color: var(--amber); font-size: 13.5px; }
+  .b-links .ld { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .b-quote { border-left: 3px solid var(--amber-dim); padding: 4px 14px; margin: 10px 0; font-style: italic; color: var(--text-dim); }
+  .b-quote .by { display: block; font-style: normal; font-size: 12px; color: var(--text-faint); margin-top: 4px; }
+  .b-text { font-size: 14px; color: var(--text); margin: 6px 0; white-space: pre-wrap; }
+
+  .media-img { max-width: 92%; border-radius: var(--radius); margin: 4px 0 14px; border: 1px solid var(--line); animation: cardmount 0.45s both; }
+  .media-doc {
+    display: inline-flex; gap: 10px; align-items: center; padding: 10px 16px; margin: 4px 0 14px;
+    border: 1px solid var(--line); border-radius: 10px; color: var(--amber); text-decoration: none;
+    background: var(--ink-2); animation: mount 0.3s both;
+  }
+
+  /* ── composer ──────────────────────────────────────── */
+  footer {
+    display: flex; gap: 10px; align-items: flex-end;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line); background: var(--ink);
+  }
+  #box {
+    flex: 1; resize: none; max-height: 130px;
+    background: var(--ink-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px; padding: 11px 14px;
+    font: inherit; outline: none; transition: border-color 0.25s;
+  }
+  #box:focus { border-color: var(--amber-dim); }
+  #sendbtn {
+    background: var(--amber); color: #1c1405; border: 0; border-radius: 12px;
+    width: 44px; height: 44px; font-size: 17px; cursor: pointer; flex: none;
+    transition: transform 0.15s, opacity 0.2s;
+  }
+  #sendbtn:active { transform: scale(0.92); }
+  #sendbtn:disabled { opacity: 0.45; cursor: default; }
+
+  /* ── mind drawer ───────────────────────────────────── */
+  #mind {
+    position: fixed; top: 0; right: 0; height: 100dvh; width: min(380px, 92vw);
+    background: var(--ink-2); border-left: 1px solid var(--line); z-index: 20;
+    transform: translateX(102%); transition: transform 0.38s cubic-bezier(0.2, 0.9, 0.25, 1);
+    overflow-y: auto; padding: 20px 20px 40px;
+  }
+  #mind.open { transform: none; box-shadow: -24px 0 60px rgba(0,0,0,0.5); }
+  #mind h2 { font-size: 12px; letter-spacing: 0.3em; color: var(--text-dim); margin-bottom: 4px; }
+  #mind .sub { font-size: 12px; color: var(--text-faint); margin-bottom: 18px; }
+  #mind section { margin-bottom: 22px; }
+  #mind h3 { font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--amber); margin-bottom: 9px; }
+  .sector { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; font-size: 13.5px; }
+  .sector .pri { color: var(--amber-dim); font-size: 10px; letter-spacing: 2px; }
+  .sector .desc { color: var(--text-faint); font-size: 12px; display: block; }
+  .fact { padding: 5px 0; font-size: 13px; border-bottom: 1px dashed var(--line); }
+  .fact .fk { color: var(--text-dim); }
+  .fact .fd { color: var(--amber-dim); font-size: 10.5px; letter-spacing: 0.06em; margin-right: 6px; }
+  .tp { padding: 6px 0; font-size: 13px; }
+  .tp .when { color: var(--amber); font-size: 12px; }
+  .journal-entry { font-size: 13px; color: var(--text-dim); font-style: italic; white-space: pre-wrap; }
+  #mindclose { position: absolute; top: 14px; right: 16px; background: none; border: 0; color: var(--text-dim); font-size: 20px; cursor: pointer; }
+  #scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 15; opacity: 0; pointer-events: none; transition: opacity 0.3s; }
+  #scrim.show { opacity: 1; pointer-events: auto; }
+
+  /* ── gate ──────────────────────────────────────────── */
+  #gate {
+    position: fixed; inset: 0; z-index: 50; background: var(--ink);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+  }
+  #gate .g-orb { width: 64px; height: 64px; }
+  #gate .wordmark { font-size: 14px; }
+  #gate input {
+    width: min(320px, 80vw); background: var(--ink-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+    font: inherit; text-align: center; outline: none;
+  }
+  #gate input:focus { border-color: var(--amber-dim); }
+  #gate .err { color: var(--bad); font-size: 13px; min-height: 1.2em; }
+  #gate.hidden, .hidden { display: none !important; }
+
+  #toast {
+    position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--ink-3); border: 1px solid var(--line); color: var(--text-dim);
+    border-radius: 99px; padding: 9px 18px; font-size: 13px; opacity: 0; transition: all 0.3s; z-index: 40;
+    pointer-events: none; white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%); }
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <div id="orb-gate" class="g-orb" style="border-radius:50%;background:radial-gradient(circle at 32% 30%, #f5cf8d 0%, #e8a849 35%, #6e4d1b 80%, #3a2a10 100%);box-shadow:0 0 30px rgba(232,168,73,0.25);animation:breathe 4.8s ease-in-out infinite;"></div>
+  <div class="wordmark">THE KEEPER</div>
+  <input id="tokeninput" type="password" placeholder="access token" autocomplete="off">
+  <div class="err" id="gateerr"></div>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div id="orb"></div>
+    <div class="head-text">
+      <div class="wordmark">THE KEEPER</div>
+      <div id="statusline">here</div>
+    </div>
+    <button id="mindbtn">mind</button>
+  </header>
+  <main id="stream"></main>
+  <footer>
+    <textarea id="box" rows="1" placeholder="talk to it"></textarea>
+    <button id="sendbtn" title="send">↑</button>
+  </footer>
+</div>
+
+<div id="scrim"></div>
+<aside id="mind">
+  <button id="mindclose">×</button>
+  <h2>ITS MIND</h2>
+  <div class="sub">what it holds about your life — read straight from memory, no tokens spent</div>
+  <div id="mindbody">loading…</div>
+</aside>
+
+<div id="toast"></div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const stream = $('stream');
+
+  let token = localStorage.getItem('keeper_token') || '';
+  let es = null;
+  let activity = null;        // current turn's activity element
+  let activitySteps = [];
+  let turnStarted = 0;
+  let currentChip = null;
+
+  // ── tiny helpers ──────────────────────────────────────
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // markdown-lite for agent text: escape first, then bold / code / links
+  function fmt(s) {
+    let h = esc(s);
+    h = h.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+    h = h.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+    return h;
+  }
+
+  const nearBottom = () => stream.scrollHeight - stream.scrollTop - stream.clientHeight < 160;
+  function append(el) {
+    const stick = nearBottom();
+    stream.appendChild(el);
+    if (stick) stream.scrollTop = stream.scrollHeight;
+  }
+
+  function toast(text) {
+    const t = $('toast');
+    t.textContent = text;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2600);
+  }
+
+  function el(tag, cls, html) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html !== undefined) e.innerHTML = html;
+    return e;
+  }
+
+  function timeStr(ts) {
+    try {
+      return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch { return ''; }
+  }
+
+  // ── stream rendering ──────────────────────────────────
+  function addMessage(role, content, ts) {
+    append(el('div', 'msg ' + role, fmt(content)));
+    append(el('div', 'stamp ' + role, esc(timeStr(ts))));
+  }
+
+  function setStatus(text) { $('statusline').textContent = text; }
+
+  function sourceTag(source) {
+    if (source === 'reflection') return 'reflecting';
+    if (source === 'touchpoint') return 'reaching out';
+    return '';
+  }
+
+  function beginTurn(source) {
+    document.body.classList.add('busy');
+    setStatus('thinking');
+    turnStarted = Date.now();
+    activitySteps = [];
+    currentChip = null;
+    activity = el('div', 'activity');
+    const tag = sourceTag(source);
+    if (tag) activity.appendChild(el('span', 'tag', esc(tag.toUpperCase())));
+    const thinking = el('span', 'chip live', 'thinking<span class="dots"></span>');
+    activity.appendChild(thinking);
+    currentChip = thinking;
+    append(activity);
+  }
+
+  function addStep(label) {
+    if (!activity) return;
+    if (currentChip) {
+      currentChip.classList.remove('live');
+      if (currentChip.textContent.startsWith('thinking')) currentChip.remove();
+    }
+    activitySteps.push(label);
+    currentChip = el('span', 'chip live', esc(label) + '<span class="dots"></span>');
+    const stick = nearBottom();
+    activity.appendChild(currentChip);
+    if (stick) stream.scrollTop = stream.scrollHeight;
+    setStatus(label);
+  }
+
+  function endTurn() {
+    document.body.classList.remove('busy');
+    setStatus('here');
+    if (activity) {
+      const secs = Math.max(1, Math.round((Date.now() - turnStarted) / 1000));
+      const uniq = [...new Set(activitySteps)];
+      const what = uniq.length ? uniq.join(' · ') : 'thought it over';
+      activity.classList.add('done');
+      activity.appendChild(el('span', 'summary', esc(what + ' — ' + secs + 's')));
+      activity = null; currentChip = null;
+    }
+  }
+
+  // ── generative card renderer ──────────────────────────
+  const blockRenderers = {
+    stat(b) {
+      const d = b.delta ? '<span class="delta ' + (String(b.delta).trim().startsWith('-') ? 'down' : 'up') + '">' + esc(b.delta) + '</span>' : '';
+      return '<div class="b-stat"><div class="label">' + esc(b.label) + '</div>' +
+        '<div class="value">' + esc(b.value) + d + '</div>' +
+        (b.hint ? '<div class="hint">' + esc(b.hint) + '</div>' : '') + '</div>';
+    },
+    keyvals(b) {
+      const rows = (Array.isArray(b.pairs) ? b.pairs : []).map((p) =>
+        '<div class="row"><span class="k">' + esc(p.k) + '</span><span class="v">' + esc(p.v) + '</span></div>').join('');
+      return '<div class="b-keyvals">' + rows + '</div>';
+    },
+    list(b) {
+      const items = (Array.isArray(b.items) ? b.items : []).map((i) =>
+        '<div class="item' + (i.done ? ' done' : '') + '"><span class="bullet">' + (i.done ? '✓' : '•') + '</span><span>' +
+        esc(i.text) + (i.sub ? '<span class="sub">' + esc(i.sub) + '</span>' : '') + '</span></div>').join('');
+      return '<div class="b-list">' + (b.title ? '<div class="lt">' + esc(b.title) + '</div>' : '') + items + '</div>';
+    },
+    timeline(b) {
+      const items = (Array.isArray(b.items) ? b.items : []).map((i) =>
+        '<div class="item"><div class="when">' + esc(i.when) + '</div><div>' + esc(i.text) + '</div></div>').join('');
+      return '<div class="b-timeline">' + items + '</div>';
+    },
+    progress(b) {
+      const v = Math.max(0, Math.min(100, Number(b.value) || 0));
+      return '<div class="b-progress"><div class="label"><span>' + esc(b.label) + '</span><span>' + v + '%</span></div>' +
+        '<div class="track"><div class="fill" data-w="' + v + '"></div></div>' +
+        (b.hint ? '<div class="hint">' + esc(b.hint) + '</div>' : '') + '</div>';
+    },
+    links(b) {
+      const items = (Array.isArray(b.items) ? b.items : []).map((i) => {
+        const url = /^https?:\/\//i.test(String(i.url ?? '')) ? i.url : '#';
+        return '<a class="link" href="' + esc(url) + '" target="_blank" rel="noopener"><div class="lt">' + esc(i.title) + '</div>' +
+          (i.desc ? '<div class="ld">' + esc(i.desc) + '</div>' : '') + '</a>';
+      }).join('');
+      return '<div class="b-links">' + items + '</div>';
+    },
+    quote(b) {
+      return '<div class="b-quote">' + esc(b.text) + (b.by ? '<span class="by">— ' + esc(b.by) + '</span>' : '') + '</div>';
+    },
+    text(b) { return '<div class="b-text">' + fmt(b.body) + '</div>'; },
+  };
+
+  function addCard(card) {
+    const wrap = el('div', 'card');
+    if (card.title) wrap.appendChild(el('div', 'c-title', esc(card.title)));
+    const blocks = Array.isArray(card.blocks) ? card.blocks : [];
+    blocks.forEach((b, i) => {
+      const render = blockRenderers[b && b.type];
+      if (!render) return;
+      const holder = el('div');
+      try { holder.innerHTML = render(b); } catch { return; }
+      const inner = holder.firstChild;
+      if (!inner) return;
+      inner.style.animationDelay = (0.08 + i * 0.07) + 's';
+      wrap.appendChild(inner);
+    });
+    if (wrap.children.length === 0) return;
+    append(wrap);
+    // progress bars animate to width after mount
+    requestAnimationFrame(() =>
+      wrap.querySelectorAll('.fill').forEach((f) => { f.style.width = f.dataset.w + '%'; }));
+  }
+
+  function addMedia(m) {
+    if (m.kind === 'photo') {
+      const img = el('img', 'media-img');
+      img.src = m.dataUrl;
+      append(img);
+    } else {
+      const a = el('a', 'media-doc', '📄 ' + esc(m.filename || 'document.pdf'));
+      a.href = m.dataUrl;
+      a.download = m.filename || 'document.pdf';
+      append(a);
+    }
+  }
+
+  // ── events ────────────────────────────────────────────
+  function handleEvent(ev) {
+    if (ev.type === 'turn') { ev.phase === 'start' ? beginTurn(ev.source) : endTurn(); return; }
+    if (ev.type === 'step') { addStep(ev.label); return; }
+    if (ev.type === 'message') { addMessage(ev.role, ev.content, ev.ts); return; }
+    if (ev.type === 'card') { addCard(ev.card); return; }
+    if (ev.type === 'media') { addMedia(ev); return; }
+  }
+
+  function connect() {
+    if (es) es.close();
+    es = new EventSource('/events?t=' + encodeURIComponent(token));
+    es.onmessage = (e) => { try { handleEvent(JSON.parse(e.data)); } catch {} };
+    es.onerror = () => setStatus('reconnecting…'); // EventSource auto-retries
+    es.onopen = () => { if (!document.body.classList.contains('busy')) setStatus('here'); };
+  }
+
+  // ── boot / auth ───────────────────────────────────────
+  async function snapshot() {
+    const res = await fetch('/api/snapshot', { headers: { Authorization: 'Bearer ' + token } });
+    if (!res.ok) throw new Error(String(res.status));
+    return res.json();
+  }
+
+  function renderHistory(history) {
+    stream.innerHTML = '';
+    for (const h of history) addMessage(h.role === 'user' ? 'user' : 'agent', h.content, h.ts);
+    stream.scrollTop = stream.scrollHeight;
+  }
+
+  async function enter() {
+    let snap;
+    try { snap = await snapshot(); }
+    catch {
+      localStorage.removeItem('keeper_token');
+      $('gate').classList.remove('hidden');
+      $('app').classList.add('hidden');
+      $('gateerr').textContent = token ? 'that token didn’t open it' : '';
+      token = '';
+      return;
+    }
+    localStorage.setItem('keeper_token', token);
+    $('gate').classList.add('hidden');
+    $('app').classList.remove('hidden');
+    renderHistory(snap.history || []);
+    window._snap = snap;
+    connect();
+  }
+
+  $('tokeninput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      token = $('tokeninput').value.trim();
+      if (token) enter();
+    }
+  });
+
+  // ── composer ──────────────────────────────────────────
+  const box = $('box');
+  const sendbtn = $('sendbtn');
+
+  function autosize() { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 130) + 'px'; }
+  box.addEventListener('input', autosize);
+
+  async function send() {
+    const text = box.value.trim();
+    if (!text) return;
+    box.value = ''; autosize();
+    sendbtn.disabled = true;
+    try {
+      const res = await fetch('/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401) { token = ''; enter(); }
+        else toast(data.error || 'that didn’t go through');
+      }
+    } catch {
+      toast('no connection — it didn’t get that');
+    } finally {
+      sendbtn.disabled = false;
+      box.focus();
+    }
+  }
+  sendbtn.addEventListener('click', send);
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+
+  // ── mind drawer ───────────────────────────────────────
+  function renderMind(snap) {
+    const pri = (p) => '●'.repeat(Math.max(1, 6 - (p || 3))).padEnd(5, '○');
+    const sectors = (snap.domains || []).map((d) =>
+      '<div class="sector"><span class="pri">' + pri(d.priority) + '</span><span>' + esc(d.name) +
+      (d.description ? '<span class="desc">' + esc(d.description) + '</span>' : '') + '</span></div>').join('');
+    const facts = (snap.facts || []).map((f) =>
+      '<div class="fact"><span class="fd">' + esc(f.domain.toUpperCase()) + '</span><span class="fk">' + esc(f.key) + ':</span> ' + esc(f.value) + '</div>').join('');
+    const tps = (snap.touchpoints || []).length
+      ? snap.touchpoints.map((t) =>
+        '<div class="tp"><div class="when">' + esc(new Date(t.fireAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })) + '</div>' + esc(t.reason) + '</div>').join('')
+      : '<div class="tp" style="color:var(--text-faint)">nothing planned — it’s giving you space</div>';
+    const j = snap.journal
+      ? '<div class="journal-entry"><b style="font-style:normal;color:var(--amber)">' + esc(snap.journal.day) + '</b><br>' + esc(snap.journal.entry) + '</div>'
+      : '<div class="journal-entry">no entries yet — it reflects nightly at 22:00</div>';
+    $('mindbody').innerHTML =
+      '<section><h3>sectors of your life</h3>' + sectors + '</section>' +
+      '<section><h3>what it knows</h3>' + facts + '</section>' +
+      '<section><h3>planned reach-outs</h3>' + tps + '</section>' +
+      '<section><h3>last journal entry</h3>' + j + '</section>';
+  }
+
+  async function openMind() {
+    $('mind').classList.add('open');
+    $('scrim').classList.add('show');
+    try { renderMind(await snapshot()); } catch { $('mindbody').textContent = 'couldn’t read its mind just now'; }
+  }
+  function closeMind() { $('mind').classList.remove('open'); $('scrim').classList.remove('show'); }
+  $('mindbtn').addEventListener('click', openMind);
+  $('mindclose').addEventListener('click', closeMind);
+  $('scrim').addEventListener('click', closeMind);
+
+  // ── go ────────────────────────────────────────────────
+  if (token) enter();
+})();
+</script>
+</body>
+</html>

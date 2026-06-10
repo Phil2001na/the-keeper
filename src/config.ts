@@ -122,6 +122,12 @@ export const config = {
   // Optional deploy-only guest bots (Philip's brother, friends). See GuestBot.
   guestBots: parseGuestBots(),
 
+  // Optional: enables the web UI. Set a long random string; the browser asks
+  // for it once. Leave blank to run Telegram-only (no HTTP server at all).
+  webToken: (process.env.KEEPER_WEB_TOKEN ?? '').trim(),
+  // Railway injects PORT automatically when the service has a domain.
+  port: intEnv('PORT', 8080),
+
   timezone: optional('TIMEZONE', 'Africa/Windhoek'),
   quietStart: intEnv('QUIET_START', 23),
   quietEnd: intEnv('QUIET_END', 7),
