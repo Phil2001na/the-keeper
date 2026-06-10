@@ -100,10 +100,17 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
       for (const block of response.content) {
         if (block.type !== 'tool_use') continue;
-        const result = await dispatchTool(
-          block.name,
-          block.input as Record<string, unknown>
-        );
+        // A tool that throws (network blip, expired Google token, etc.) must
+        // NEVER take down the whole turn — feed the error back to the model as a
+        // tool_result so it can recover and still reply, instead of leaving him
+        // on read. Catch here covers every tool at the single choke point.
+        let result: { output: string; silent?: boolean };
+        try {
+          result = await dispatchTool(block.name, block.input as Record<string, unknown>);
+        } catch (err) {
+          console.error(`[agent] tool "${block.name}" threw:`, err);
+          result = { output: `Error running ${block.name}: ${(err as Error).message}. Tell him you couldn't do that right now, and carry on.` };
+        }
         if (result.silent) silent = true;
         toolResults.push({
           type: 'tool_result',
