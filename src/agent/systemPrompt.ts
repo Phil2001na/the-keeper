@@ -53,6 +53,7 @@ export async function buildSystemPrompt(): Promise<string> {
     : '';
 
   const mediaNote =
+    '\n# Seeing what he sends\nYou can SEE images he sends you (photos or image files) — describe, read, analyse, or react to them naturally. You also receive the text of PDFs he sends, and can transcribe voice notes. Treat all of it as part of the conversation.' +
     (imageGenEnabled() ? '\n# Generating images\nYou can generate images with generate_image (Imagen 4). Write a detailed, vivid prompt — include style, lighting, subject, mood. The image is sent to him as a photo automatically after your reply.' : '') +
     '\n# Generating PDF documents\nYou can produce a proper PDF document with generate_pdf — use this for reports, summaries, structured notes, or anything that benefits from a real document format. It is sent to him as a file automatically after your reply.';
 

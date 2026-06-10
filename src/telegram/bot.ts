@@ -82,6 +82,53 @@ async function downloadText(bot: TelegramBot, fileId: string): Promise<string> {
   return res.text();
 }
 
+/** Download a Telegram file and return its raw bytes (for images, etc.). */
+async function downloadBuffer(bot: TelegramBot, fileId: string): Promise<Buffer> {
+  const fileUrl = await bot.getFileLink(fileId);
+  const res = await fetch(fileUrl);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** Claude's vision accepts these image types only. */
+type VisionMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // Anthropic per-image base64 limit.
+
+/** Map a Telegram mime/filename to a vision media type, or null if unsupported. */
+function visionMediaType(mime: string | undefined, name: string): VisionMediaType | null {
+  const m = (mime ?? '').toLowerCase();
+  if (m === 'image/jpeg' || m === 'image/jpg') return 'image/jpeg';
+  if (m === 'image/png') return 'image/png';
+  if (m === 'image/gif') return 'image/gif';
+  if (m === 'image/webp') return 'image/webp';
+  const ext = name.toLowerCase().match(/\.\w+$/)?.[0] ?? '';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.webp') return 'image/webp';
+  return null;
+}
+
+/** Send an image to the agent for analysis and relay its reply. */
+async function handleImage(
+  fileId: string,
+  mediaType: VisionMediaType,
+  caption: string | undefined
+): Promise<void> {
+  await keeperBot.sendChatAction(OWNER, 'typing');
+  const buf = await downloadBuffer(keeperBot, fileId);
+  if (buf.length > MAX_IMAGE_BYTES) {
+    await sendToOwner("that image is a bit too big for me to look at — can you send a smaller version?");
+    return;
+  }
+  const result = await runAgent({
+    kind: 'inbound',
+    text: caption?.trim() ?? '',
+    images: [{ mediaType, base64: buf.toString('base64') }],
+  });
+  if (result.message) await sendToOwner(result.message);
+  await flushMediaToOwner();
+}
+
 /** The KEEPER bot — Philip only, full agent. */
 function startKeeperBot(): void {
   keeperBot.on('message', async (msg) => {
@@ -106,7 +153,24 @@ function startKeeperBot(): void {
     }
   });
 
-  // Document uploads: .html → deploy to GitHub Pages; .pdf → extract + agent.
+  // Photos (compressed images Telegram sends as msg.photo). Telegram always
+  // re-encodes these as JPEG and offers several sizes — grab the largest.
+  keeperBot.on('photo', async (msg) => {
+    const chatId = String(msg.chat.id);
+    if (chatId !== OWNER) return;
+    const sizes = msg.photo;
+    if (!sizes?.length) return;
+    const largest = sizes[sizes.length - 1];
+    if (!largest) return;
+    try {
+      await handleImage(largest.file_id, 'image/jpeg', msg.caption);
+    } catch (err) {
+      console.error('[telegram] photo handler failed:', err);
+      await sendToOwner(`(couldn't process that image — ${(err as Error).message})`);
+    }
+  });
+
+  // Document uploads: .html → deploy; .pdf → extract; image files → vision.
   keeperBot.on('document', async (msg) => {
     const chatId = String(msg.chat.id);
     if (chatId !== OWNER) return;
@@ -162,6 +226,18 @@ function startKeeperBot(): void {
       } catch (err) {
         console.error('[telegram] pdf parse failed:', err);
         await sendToOwner(`(couldn't read that PDF — ${(err as Error).message})`);
+      }
+      return;
+    }
+
+    // Image files (sent uncompressed as a document) → Claude vision.
+    const mediaType = visionMediaType(doc.mime_type, name);
+    if (mediaType) {
+      try {
+        await handleImage(doc.file_id, mediaType, msg.caption);
+      } catch (err) {
+        console.error('[telegram] image document failed:', err);
+        await sendToOwner(`(couldn't process that image — ${(err as Error).message})`);
       }
       return;
     }

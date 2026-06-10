@@ -8,8 +8,14 @@ const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
 const MAX_TOOL_ROUNDS = 12;
 
+/** An image Philip sent over Telegram, ready to hand to Claude's vision. */
+export interface InboundImage {
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  base64: string;
+}
+
 export type Trigger =
-  | { kind: 'inbound'; text: string }
+  | { kind: 'inbound'; text: string; images?: InboundImage[] }
   | { kind: 'touchpoint'; touchpoint: Touchpoint };
 
 export interface AgentResult {
@@ -34,8 +40,24 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
 
   // The triggering turn.
   if (trigger.kind === 'inbound') {
-    await interactions.log({ role: 'user', content: trigger.text, trigger: 'inbound' });
-    messages.push({ role: 'user', content: trigger.text });
+    // We don't persist image bytes — log a text marker so history stays clean,
+    // but send the actual image to Claude in THIS turn's content.
+    const logText =
+      trigger.text || (trigger.images?.length ? '(sent an image)' : trigger.text);
+    await interactions.log({ role: 'user', content: logText, trigger: 'inbound' });
+
+    if (trigger.images?.length) {
+      const content: Array<Anthropic.ImageBlockParam | Anthropic.TextBlockParam> = [
+        ...trigger.images.map((img) => ({
+          type: 'image' as const,
+          source: { type: 'base64' as const, media_type: img.mediaType, data: img.base64 },
+        })),
+        ...(trigger.text ? [{ type: 'text' as const, text: trigger.text }] : []),
+      ];
+      messages.push({ role: 'user', content });
+    } else {
+      messages.push({ role: 'user', content: trigger.text });
+    }
   } else {
     const tp = trigger.touchpoint;
     const wake =
