@@ -24,6 +24,7 @@ const UI_PATH = fileURLToPath(new URL('./ui.html', import.meta.url));
 const sseClients = new Set<ServerResponse>();
 
 function authed(req: IncomingMessage): boolean {
+  if (!config.webToken) return true;
   const url = new URL(req.url ?? '/', 'http://x');
   const bearer = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim();
   const token = bearer || url.searchParams.get('t') || '';
@@ -138,8 +139,7 @@ function handleEvents(res: ServerResponse): void {
 
 export function startWebServer(): void {
   if (!config.webToken) {
-    console.log('[web] KEEPER_WEB_TOKEN not set — web UI disabled (Telegram only).');
-    return;
+    console.log('[web] KEEPER_WEB_TOKEN not set — web UI running without auth.');
   }
 
   // Hold the page in memory; it's one file and never changes at runtime.
