@@ -1,9 +1,17 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { config } from '../config.js';
-import { interactions, touchpoints, type Interaction, type Touchpoint } from '../db/repositories.js';
+import { config, isQuietHours, localTimeString } from '../config.js';
+import {
+  digests,
+  interactions,
+  touchpoints,
+  type Interaction,
+  type Touchpoint,
+} from '../db/repositories.js';
 import { bus, stepLabel } from '../web/bus.js';
+import { maybeFold } from './digest.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 import { toolDefinitions, presentToolDefinition, dispatchTool } from './tools.js';
+import { logUsage } from './usage.js';
 
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
@@ -74,18 +82,88 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
     return await runTurn(trigger);
   } finally {
     bus.publish({ type: 'turn', phase: 'end', source });
+    // Window maintenance: if too much has piled up since the digest anchor,
+    // fold the overflow into the rolling digest. Async — never delays a reply.
+    maybeFold();
   }
+}
+
+/**
+ * Volatile situational facts live HERE, in the trigger message, not in the
+ * system prompt — so the system prompt (and the history before this message)
+ * stays byte-identical between turns and the prompt cache keeps hitting.
+ */
+function contextLine(history: Interaction[], anchored: boolean, surface?: Surface): string {
+  const now = `${localTimeString()} (${config.timezone}) · UTC ${new Date().toISOString().slice(0, 16)}Z`;
+  const oldest = history[0];
+  const span = oldest
+    ? `${history.length} msgs in view, back to ${oldest.created_at.slice(0, 16).replace('T', ' ')} UTC`
+    : 'no prior messages in view';
+  const beyond = anchored
+    ? 'older: rolling digest (above) → journal → search_history'
+    : 'older: search_history';
+  const quiet = isQuietHours()
+    ? 'QUIET HOURS now — he wrote first, reply, but keep it low-key'
+    : `quiet hours ${config.quietStart}:00–${config.quietEnd}:00`;
+  const where = surface === 'web' ? ' · he is on the WEB UI (present tool available)' : '';
+  return `[context: ${now} · ${span} · ${beyond} · ${quiet}${where}]`;
+}
+
+/**
+ * Prompt-cache breakpoints. The API allows 4; the system prompt carries two
+ * (character block, memory block). The other two live in the messages:
+ *  - the LAST HISTORY message — the anchored window is append-only between
+ *    folds, so this prefix hits turn after turn;
+ *  - the request TAIL — so each round of a multi-tool turn reuses the previous
+ *    round's prefix instead of re-reading the whole conversation at full price.
+ * Marks are stripped and re-applied each round (stale marks would breach the
+ * 4-breakpoint limit).
+ */
+function applyCacheMarks(messages: Anthropic.MessageParam[], histEnd: number): void {
+  type Markable = { cache_control?: { type: 'ephemeral' } };
+  for (const m of messages) {
+    if (Array.isArray(m.content)) {
+      for (const b of m.content) delete (b as Markable).cache_control;
+    }
+  }
+  const mark = (i: number): void => {
+    const m = messages[i];
+    if (!m) return;
+    if (typeof m.content === 'string') {
+      m.content = [{ type: 'text', text: m.content }];
+    }
+    const lastBlock = m.content[m.content.length - 1];
+    if (lastBlock) (lastBlock as Markable).cache_control = { type: 'ephemeral' };
+  };
+  if (histEnd > 0 && histEnd <= messages.length) mark(histEnd - 1);
+  const last = messages.length - 1;
+  // Tail-mark only after a user message (trigger / tool results) — never on
+  // assistant server-tool blocks, where cache_control isn't accepted.
+  if (last >= histEnd && messages[last]?.role === 'user') mark(last);
 }
 
 async function runTurn(trigger: Trigger): Promise<AgentResult> {
   const surface = trigger.kind === 'inbound' ? trigger.surface ?? 'telegram' : undefined;
-  const system = await buildSystemPrompt(surface);
-  const history = await interactions.recent(config.historyLimit);
+
+  // Anchored window: everything since the digest anchor rides in context
+  // verbatim — hours or days of real conversation, append-only between folds.
+  // The digest (in the system prompt) carries what came before. No anchor yet
+  // (first boot) → plain recency window until ensureAnchor lands.
+  const dig = await digests.get('rolling').catch(() => null);
+  const system = await buildSystemPrompt(dig);
+  const history = dig?.covered_until
+    ? await interactions.sinceAnchor(dig.covered_until, 200)
+    : await interactions.recent(config.historyLimit);
 
   const messages: Anthropic.MessageParam[] = history.map((h) => ({
     role: h.role === 'user' ? 'user' : 'assistant',
     content: h.content,
   }));
+  const histEnd = messages.length;
+
+  // Time, window map, quiet hours, surface — all volatile, so they ride in the
+  // trigger message (NOT the system prompt or the log) to keep caches stable.
+  const ctx = contextLine(history, Boolean(dig?.covered_until), surface);
 
   // The triggering turn.
   if (trigger.kind === 'inbound') {
@@ -104,24 +182,27 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
           type: 'image' as const,
           source: { type: 'base64' as const, media_type: img.mediaType, data: img.base64 },
         })),
-        ...(trigger.text ? [{ type: 'text' as const, text: trigger.text }] : []),
+        { type: 'text' as const, text: trigger.text ? `${ctx}\n\n${trigger.text}` : ctx },
       ];
       messages.push({ role: 'user', content });
     } else {
-      messages.push({ role: 'user', content: trigger.text });
+      messages.push({ role: 'user', content: `${ctx}\n\n${trigger.text}` });
     }
   } else if (trigger.kind === 'touchpoint') {
     const tp = trigger.touchpoint;
     const wake =
-      `[INTERNAL WAKE — not from Philip] A touchpoint you scheduled has come due.\n` +
+      `${ctx}\n\n[INTERNAL WAKE — not from Philip] A touchpoint you scheduled has come due.\n` +
       `Reason you set: "${tp.reason}"\n` +
+      (tp.recurrence
+        ? `This is a STANDING RITUAL (${tp.recurrence}) — it renews itself automatically; do not reschedule it.\n`
+        : '') +
       `Decide whether reaching out right now genuinely serves him. If yes, write the message you'd text him. ` +
-      `If it's not worth interrupting him, use stay_silent. Either way, update memory and schedule your next touchpoint.`;
+      `If it's not worth interrupting him, use stay_silent. Either way, update memory${tp.recurrence ? '' : ' and tend your next touchpoint'}.`;
     messages.push({ role: 'user', content: wake });
   } else {
     // Nightly reflection: the brief is internal and never logged — the journal
     // entry the agent writes IS the durable record of this run.
-    messages.push({ role: 'user', content: trigger.brief });
+    messages.push({ role: 'user', content: `${ctx}\n\n${trigger.brief}` });
   }
 
   let silent = false;
@@ -140,12 +221,15 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
     if (t) textParts.push(t);
   };
 
+  const usages: Anthropic.Usage[] = [];
+
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    applyCacheMarks(messages, histEnd);
     let response: Anthropic.Message;
     try {
       response = await anthropic.messages.create({
         model: config.model,
-        max_tokens: 1024,
+        max_tokens: 2048,
         system,
         tools: activeTools(surface),
         messages,
@@ -161,6 +245,7 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
       throw err;
     }
 
+    usages.push(response.usage);
     messages.push({ role: 'assistant', content: response.content });
     collectText(response.content);
 
@@ -207,6 +292,7 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
   }
 
   const text = textParts.join('\n\n').trim();
+  logUsage(trigger.kind, config.model, usages);
 
   // Reflection is always silent: it's the agent thinking, not talking. Its
   // output lives in the journal + memory writes, never in Philip's chat.

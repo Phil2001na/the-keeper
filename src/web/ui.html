@@ -180,6 +180,12 @@
     transition: width 0.9s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   .b-progress .hint { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; }
+  .b-spark { margin: 12px 0; }
+  .b-spark .label { font-size: 13px; color: var(--text-dim); display: flex; justify-content: space-between; align-items: baseline; }
+  .b-spark .last { color: var(--amber); font-size: 14px; }
+  .b-spark svg { display: block; width: 100%; height: 44px; margin-top: 6px; }
+  .b-spark polyline { fill: none; stroke: var(--amber); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .b-spark .area { fill: var(--amber); opacity: 0.08; stroke: none; }
   .b-links .link {
     display: block; padding: 9px 12px; margin: 6px 0; border: 1px solid var(--line);
     border-radius: 10px; text-decoration: none; color: var(--text); transition: border-color 0.2s;
@@ -443,6 +449,23 @@
         '<div class="track"><div class="fill" data-w="' + v + '"></div></div>' +
         (b.hint ? '<div class="hint">' + esc(b.hint) + '</div>' : '') + '</div>';
     },
+    spark(b) {
+      const pts = (Array.isArray(b.points) ? b.points : []).map(Number).filter((n) => isFinite(n));
+      if (pts.length < 2) return '';
+      const W = 240, H = 40, P = 3;
+      const min = Math.min(...pts), max = Math.max(...pts), span = max - min || 1;
+      const xy = pts.map((v, i) => {
+        const x = P + (i / (pts.length - 1)) * (W - 2 * P);
+        const y = H - P - ((v - min) / span) * (H - 2 * P);
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      });
+      const last = pts[pts.length - 1];
+      const lastLabel = (Math.abs(last) >= 1000 ? last.toLocaleString() : String(Math.round(last * 100) / 100)) + (b.unit ? ' ' + esc(b.unit) : '');
+      return '<div class="b-spark"><div class="label"><span>' + esc(b.label) + '</span><span class="last">' + lastLabel + '</span></div>' +
+        '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+        '<polygon class="area" points="' + P + ',' + (H - P) + ' ' + xy.join(' ') + ' ' + (W - P) + ',' + (H - P) + '"/>' +
+        '<polyline points="' + xy.join(' ') + '"/></svg></div>';
+    },
     links(b) {
       const items = (Array.isArray(b.items) ? b.items : []).map((i) => {
         const url = /^https?:\/\//i.test(String(i.url ?? '')) ? i.url : '#';
@@ -590,18 +613,36 @@
       (d.description ? '<span class="desc">' + esc(d.description) + '</span>' : '') + '</span></div>').join('');
     const facts = (snap.facts || []).map((f) =>
       '<div class="fact"><span class="fd">' + esc(f.domain.toUpperCase()) + '</span><span class="fk">' + esc(f.key) + ':</span> ' + esc(f.value) + '</div>').join('');
+    const goalRows = (snap.goals || []).length
+      ? snap.goals.map((g) =>
+        '<div class="fact"><span class="fk">' + esc(g.title) + '</span>' +
+        (g.target != null ? ' → ' + esc(String(g.target)) + (g.unit ? ' ' + esc(g.unit) : '') : '') +
+        (g.deadline ? ' <span style="color:var(--text-faint)">by ' + esc(g.deadline) + '</span>' : '') + '</div>').join('')
+      : '<div class="fact" style="color:var(--text-faint)">none yet — tell it what you’re aiming at</div>';
+    const nums = (snap.metrics || []).length
+      ? snap.metrics.map((m) =>
+        '<div class="fact"><span class="fk">' + esc(m.metric) + ':</span> ' + esc(String(m.value)) +
+        (m.unit ? ' ' + esc(m.unit) : '') +
+        ' <span style="color:var(--text-faint)">(' + esc(String(m.at).slice(0, 10)) + ')</span></div>').join('')
+      : '<div class="fact" style="color:var(--text-faint)">no numbers logged yet — it catches them as they pass by</div>';
     const tps = (snap.touchpoints || []).length
       ? snap.touchpoints.map((t) =>
-        '<div class="tp"><div class="when">' + esc(new Date(t.fireAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })) + '</div>' + esc(t.reason) + '</div>').join('')
+        '<div class="tp"><div class="when">' + esc(new Date(t.fireAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })) +
+        (t.recurrence ? ' <span title="standing ritual">↻ ' + esc(t.recurrence) + '</span>' : '') + '</div>' + esc(t.reason) + '</div>').join('')
       : '<div class="tp" style="color:var(--text-faint)">nothing planned — it’s giving you space</div>';
     const j = snap.journal
       ? '<div class="journal-entry"><b style="font-style:normal;color:var(--amber)">' + esc(snap.journal.day) + '</b><br>' + esc(snap.journal.entry) + '</div>'
       : '<div class="journal-entry">no entries yet — it reflects nightly at 22:00</div>';
+    const spend = typeof snap.spendTodayUsd === 'number'
+      ? '<div class="fact" style="color:var(--text-faint)">api spend today ≈ $' + snap.spendTodayUsd.toFixed(2) + '</div>'
+      : '';
     $('mindbody').innerHTML =
       '<section><h3>sectors of your life</h3>' + sectors + '</section>' +
+      '<section><h3>your goals</h3>' + goalRows + '</section>' +
+      '<section><h3>the numbers</h3>' + nums + '</section>' +
       '<section><h3>what it knows</h3>' + facts + '</section>' +
       '<section><h3>planned reach-outs</h3>' + tps + '</section>' +
-      '<section><h3>last journal entry</h3>' + j + '</section>';
+      '<section><h3>last journal entry</h3>' + j + spend + '</section>';
   }
 
   async function openMind() {

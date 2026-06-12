@@ -1,8 +1,29 @@
 import { config, isQuietHours, localHour } from '../config.js';
-import { touchpoints } from '../db/repositories.js';
+import { touchpoints, type Touchpoint } from '../db/repositories.js';
 import { runAgent } from '../agent/orchestrator.js';
+import { nextOccurrence } from '../agent/recurrence.js';
 import { runNightlyReflection, reflectionPending } from '../agent/reflect.js';
 import { sendToOwner, flushMediaToOwner } from '../telegram/bot.js';
+
+/**
+ * A fired ritual renews itself — reliability lives here, not in the model
+ * remembering to reschedule. Cancelling the pending row kills the chain.
+ */
+async function renewRitual(tp: Touchpoint): Promise<void> {
+  if (!tp.recurrence) return;
+  const next = nextOccurrence(tp.recurrence);
+  if (!next) {
+    console.error(`[scheduler] ritual ${tp.id} has unparseable recurrence "${tp.recurrence}" — not renewed.`);
+    return;
+  }
+  await touchpoints.create({
+    fire_at: next.toISOString(),
+    domain_id: tp.domain_id,
+    reason: tp.reason,
+    recurrence: tp.recurrence,
+  });
+  console.log(`[scheduler] ritual renewed (${tp.recurrence}) → next ${next.toISOString()}.`);
+}
 
 let running = false;
 
@@ -22,6 +43,9 @@ async function tick(): Promise<void> {
         try {
           const result = await runAgent({ kind: 'touchpoint', touchpoint: tp });
           await touchpoints.markFired(tp.id, result.message ? 'sent' : 'silent');
+          await renewRitual(tp).catch((err) =>
+            console.error(`[scheduler] failed to renew ritual ${tp.id}:`, err)
+          );
           if (result.message) {
             await sendToOwner(result.message);
             console.log(`[scheduler] fired touchpoint ${tp.id}, messaged owner.`);

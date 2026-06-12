@@ -3,7 +3,17 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
 import { runAgent } from '../agent/orchestrator.js';
-import { domains, facts, touchpoints, interactions, journal } from '../db/repositories.js';
+import { localMidnightUtc } from '../agent/recurrence.js';
+import {
+  digests,
+  domains,
+  facts,
+  goals,
+  observations,
+  touchpoints,
+  interactions,
+  journal,
+} from '../db/repositories.js';
 import { drainMedia } from '../generate/queue.js';
 import { bus, type KeeperEvent } from './bus.js';
 
@@ -99,13 +109,18 @@ async function handleSend(req: IncomingMessage, res: ServerResponse): Promise<vo
 }
 
 async function handleSnapshot(res: ServerResponse): Promise<void> {
-  const [domainList, factList, pending, journalEntries, history] = await Promise.all([
-    domains.list(),
-    facts.all(),
-    touchpoints.pending(),
-    journal.recent(1),
-    interactions.recent(40),
-  ]);
+  const [domainList, factList, pending, journalEntries, history, goalList, latestObs, dayTurns, dig] =
+    await Promise.all([
+      domains.list(),
+      facts.all(),
+      touchpoints.pending(),
+      journal.recent(1),
+      interactions.recent(40),
+      goals.list(true),
+      observations.latestPerMetric(),
+      observations.series('sys.turn', localMidnightUtc().toISOString()).catch(() => []),
+      digests.get('rolling').catch(() => null),
+    ]);
   const slugById = new Map(domainList.map((d) => [d.id, d.slug]));
   json(res, 200, {
     domains: domainList.map((d) => ({
@@ -119,7 +134,25 @@ async function handleSnapshot(res: ServerResponse): Promise<void> {
       key: f.key,
       value: f.value,
     })),
-    touchpoints: pending.map((t) => ({ fireAt: t.fire_at, reason: t.reason })),
+    goals: goalList.map((g) => ({
+      title: g.title,
+      metric: g.metric,
+      target: g.target_value,
+      unit: g.unit,
+      deadline: g.deadline,
+      why: g.why,
+    })),
+    metrics: latestObs
+      .filter((o) => !o.metric.startsWith('sys.'))
+      .map((o) => ({
+        metric: o.metric,
+        value: o.value ?? o.text_value,
+        unit: o.unit,
+        at: o.observed_at,
+      })),
+    spendTodayUsd: dayTurns.reduce((a, r) => a + Number(r.value ?? 0), 0),
+    digest: dig ? { content: dig.content, coveredUntil: dig.covered_until } : null,
+    touchpoints: pending.map((t) => ({ fireAt: t.fire_at, reason: t.reason, recurrence: t.recurrence })),
     journal: journalEntries[0] ?? null,
     history: history.map((h) => ({ role: h.role, content: h.content, ts: h.created_at })),
   });

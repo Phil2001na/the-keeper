@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import { ensureAnchor } from './agent/digest.js';
 import { startTelegram } from './telegram/bot.js';
 import { startScheduler } from './scheduler/dueCheck.js';
 import { startWebServer } from './web/server.js';
@@ -13,6 +14,10 @@ function main() {
   console.log('THE KEEPER — starting up.');
   console.log(`  model: ${config.model}`);
   console.log(`  timezone: ${config.timezone}`);
+
+  // Anchor the conversation window on first boot (no-op once the digest row
+  // exists). Until it lands, turns fall back to a plain recency window.
+  void ensureAnchor().catch((err) => console.error('[keeper] ensureAnchor failed:', err));
 
   startTelegram();
   startScheduler();

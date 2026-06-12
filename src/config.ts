@@ -134,6 +134,14 @@ export const config = {
   dueCheckIntervalMs: intEnv('DUE_CHECK_INTERVAL_MS', 60_000),
   historyLimit: intEnv('HISTORY_LIMIT', 30),
 
+  // The conversation window is ANCHORED, not sliding: every message since the
+  // rolling-digest anchor rides in context verbatim (append-only, so it prompt-
+  // caches), until more than foldAt have piled up — then the oldest are folded
+  // into the digest by a cheap model, keeping the newest keepRecent in raw view.
+  digestModel: optional('DIGEST_MODEL', 'claude-haiku-4-5-20251001'),
+  foldAt: intEnv('FOLD_AT', 60),
+  keepRecent: intEnv('KEEP_RECENT', 30),
+
   // Local hour (0–23) at which the agent runs its private nightly reflection:
   // consolidates memory, reviews how its reach-outs landed, writes its journal.
   reflectionHour: intEnv('REFLECTION_HOUR', 22),

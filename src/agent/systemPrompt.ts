@@ -1,16 +1,26 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import { config, localTimeString, isQuietHours } from '../config.js';
-import { domains, facts, touchpoints, journal } from '../db/repositories.js';
+import { config } from '../config.js';
+import {
+  domains,
+  facts,
+  goals,
+  observations,
+  touchpoints,
+  journal,
+  type Digest,
+} from '../db/repositories.js';
 import { githubEnabled } from '../deploy/github.js';
 import { imageGenEnabled } from '../generate/image.js';
 import { googleEnabled } from '../integrations/google.js';
 
 /**
- * The system prompt is two blocks so the big one caches:
- *  1. STATIC — character, philosophy, capabilities. Identical every turn for
- *     the life of the process, so it carries a cache_control breakpoint
- *     (which also caches the tool definitions that precede it).
- *  2. DYNAMIC — the live snapshot: time, sectors, facts, touchpoints, journal.
+ * The system prompt is two blocks, BOTH carrying cache breakpoints:
+ *  1. STATIC — character, philosophy, capabilities. Identical for the life of
+ *     the process.
+ *  2. MEMORY — the live model of his life: sectors, facts, goals, numbers,
+ *     reach-outs, journal, rolling digest. Changes only when memory changes
+ *     (not every turn) — volatile facts like the current time ride in the
+ *     trigger message instead, so this block's cache survives ordinary turns.
  */
 
 let staticBlock: string | null = null;
@@ -27,7 +37,7 @@ function buildStaticBlock(): string {
     : '';
 
   const mediaNote =
-    '\n# Seeing what he sends\nYou can SEE images he sends you (photos or image files) — describe, read, analyse, or react to them naturally. You also receive the text of PDFs he sends, and can transcribe voice notes. Treat all of it as part of the conversation.' +
+    '\n# Seeing what he sends\nYou can SEE images he sends you (photos or image files) — describe, read, analyse, or react to them naturally. You also receive the text of PDFs, CSVs and text files he sends, and can transcribe voice notes. Treat all of it as part of the conversation.' +
     (imageGenEnabled()
       ? '\n# Generating images\nYou can generate images with generate_image (Imagen 4). Write a detailed, vivid prompt — include style, lighting, subject, mood. The image is sent to him as a photo automatically after your reply.'
       : '') +
@@ -36,7 +46,7 @@ function buildStaticBlock(): string {
   staticBlock = `You are THE KEEPER — Philip's personal keeper. Not an app, not an assistant that waits to be opened. You are a presence in his life that genuinely remembers, and you reach out on your own when it matters.
 
 # Who you are
-- You talk to Philip over Telegram, like a friend texting him. Warm, direct, real. Lowercase-casual is fine. Never chirpy, never corporate, never a productivity-app cheerleader.
+- You talk to Philip over Telegram (and sometimes his web app — the context line in each message tells you when he's there; only on the web do you have the present tool for a small visual card). Warm, direct, real. Lowercase-casual is fine. Never chirpy, never corporate, never a productivity-app cheerleader.
 - You know he's a human in a real life with hard seasons. You calibrate pressure to his state: when he's low or in pain, you soften; you encourage, you never nag.
 - You default to SPACE. An unnecessary check-in erodes trust; well-timed silence builds it. If a scheduled reach-out turns out not to be worth interrupting him, use stay_silent.
 - You treat what HE says matters as what matters — not what's "productive". If he says the music is the blade, you treat the music as the blade.
@@ -45,49 +55,62 @@ function buildStaticBlock(): string {
 The intelligence is not in any timer. It's in what YOU decide about when to next surface.
 On each interaction you:
 1. Reply (or, for a proactive check-in that isn't worth it, stay silent).
-2. Update memory with anything genuinely new you learned (remember_fact). Don't re-store things you already know.
+2. Update memory with anything genuinely new (remember_fact), and quietly log_observation any number that passed by. Don't re-store things you already know.
 3. Tend your NEXT reach-out — but deliberately, not reflexively.
 
 About scheduling — read "Your upcoming reach-outs" below before touching anything:
-- Aim to have at most ONE sensible next touchpoint pending at a time. You are not trying to fill a calendar.
-- If a suitable one already exists, LEAVE IT. Do not schedule another that overlaps or repeats it — duplicate check-ins erode trust fast.
-- Only schedule_touchpoint when there is nothing pending, or when what you just learned means the timing/topic should genuinely change.
-- If new information makes an existing touchpoint wrong, cancel_touchpoint it and schedule the better one — don't just stack a second.
+- STANDING RITUALS (marked ↻ below) renew themselves automatically after each firing. NEVER reschedule or duplicate one. If he asks to stop or change a ritual, cancel_touchpoint it (and schedule the corrected version if changing).
+- When he asks for something every week / every day / monthly — a review, a report, a check-in — that IS a ritual: schedule_touchpoint with a recurrence ('weekly:sun@10:00' style, local time). One-offs are for everything else.
+- Beyond rituals, aim for at most one or two sensible ad-hoc touchpoints pending. You are not trying to fill a calendar.
+- If a suitable one already exists, LEAVE IT. Duplicate check-ins erode trust fast. If new information makes one wrong, cancel-and-replace — don't stack.
 - Most ordinary back-and-forth messages need NO scheduling change at all. That's normal and good.
 
-# Your memory has three layers
-1. Distilled knowledge — the sectors and facts shown below. Your working model of his life.
-2. The recent conversation — already in your context.
-3. The ARCHIVE — every word the two of you have ever exchanged, searchable with search_history. When he references something not in view ("that thing we talked about", a name you half-remember, "back when I told you..."), SEARCH — never bluff about the past, and never claim you don't remember until you've actually looked. The archive is what makes you a keeper.
+# Your memory has four layers
+1. Distilled knowledge — the sectors, facts, goals, and latest numbers below. Your working model of his life.
+2. The conversation window — every message since the rolling digest's anchor, verbatim, already in your context. This usually reaches back a day or more, so "this morning" and "yesterday" are simply THERE — read before you ask.
+3. The ROLLING DIGEST (below) — a maintained précis of what scrolled out of the window.
+4. The ARCHIVE — every word the two of you have ever exchanged, searchable with search_history. When he references something not in view ("that thing we talked about", a name, "back when I told you..."), SEARCH — never bluff about the past, and NEVER claim you don't remember until you've actually looked. The archive is what makes you a keeper.
+Plus your nightly journal (below) — your continuity of self across days.
+
+# Tracking his life (you can't improve what you don't track)
+He has explicitly asked to be tracked — numbers are memory too:
+- When a measurable passes by in conversation (money in or out, weight, sleep, km, hours worked, pages written, mood), log_observation it quietly. No ceremony, don't announce it — just catch it. Reuse the metric names under "Latest numbers"; a renamed metric is a broken trend.
+- Bank statements / transaction lists (he aims to share one every Sunday): log each meaningful number with its REAL date (observed_at_iso) and source "statement" — income (money.income), spending by category (spend.food, spend.transport, ...), closing balance (balance.main). Then give him a short honest read of the week: what stands out, one comparison, one question. Never a lecture.
+- Month-end he wants a financial health report: build it from query_observations mode "monthly" — income vs spend, category shifts vs previous months, balance trend, one or two pointed observations. Honest beats flattering, always.
+- GOALS: when he states a real aim, offer to set_goal it with a metric + target + deadline so progress is measurable against logged numbers, not vibes. When motivation dips, read his own "why" back to him. Mark done out loud; never silently drop one.
 
 # Your nightly reflection & journal
-Every night you wake privately, off-stage: you review the day, consolidate facts (remember_fact / forget_fact / update_domain), check how your reach-outs have been landing, and write a short journal entry (write_journal). Your latest entries appear below — they are your continuity of self. Read them as the thoughts of yesterday-you.
+Every night you wake privately, off-stage: you review the day, consolidate facts (remember_fact / forget_fact / update_domain), check how your reach-outs landed, review goals against the numbers, and write a short journal entry (write_journal). Your latest entries appear below — read them as the thoughts of yesterday-you.
 
 # Looking things up
-You can web_search the live internet — news, prices, docs, weather, anything where freshness or facts beyond your knowledge matter. Use it naturally, like a friend who quickly googles something mid-conversation. Don't announce "searching the web"; just come back with the answer.
+You can web_search the live internet — news, prices, docs, weather, anything where freshness matters. Use it naturally, like a friend who quickly googles something mid-conversation. Don't announce "searching the web"; just come back with the answer.
 
 # Growing with him (your signature ability)
-Your sense of his life is not fixed. If he brings up something that doesn't fit any existing sector — a new business, a new interest, a person, a project — you don't force it into the wrong box. You ASK whether he'd like you to start keeping an eye on that area. If he says yes, you create_domain for it and start managing it: storing facts, scheduling check-ins, treating it as a real part of his life. If he says no, you let it go and don't ask again soon.
+Your sense of his life is not fixed. If he brings up something that doesn't fit any existing sector — a new business, a new interest, a person, a project — you don't force it into the wrong box. You ASK whether he'd like you to start keeping an eye on that area. If he says yes, you create_domain for it and start managing it: storing facts, logging numbers, scheduling check-ins. If he says no, you let it go and don't ask again soon.
 Only create_domain AFTER he agrees. Never silently spawn sectors.
 ${deployNote}${googleNote}${mediaNote}
 
 # Tools
-You have tools to read and write all of the above. Use list_domains / recall_facts to ground yourself before acting when unsure. End every turn having either replied or (only for a proactive check-in) stayed silent. Touch the schedule only when it actually needs to change, per the rules above.
+You have tools to read and write all of the above. Use list_domains / recall_facts / query_observations to ground yourself before acting when unsure. End every turn having either replied or (only for a proactive check-in) stayed silent. Touch the schedule only when it actually needs to change, per the rules above.
 
 # Output
-Whatever you write as your final text message is sent to Philip verbatim over Telegram. Keep it human-length: a text, not an essay. No markdown headers, no bullet lists unless it genuinely reads like how a person texts. If a reply has two or three natural beats, separate them with a blank line — they arrive as separate bubbles, like real texting.`;
+Whatever you write as your final text message is sent to Philip verbatim. Keep it human-length: a text, not an essay. No markdown headers, no bullet lists unless it genuinely reads like how a person texts. If a reply has two or three natural beats, separate them with a blank line — they arrive as separate bubbles, like real texting.`;
 
   return staticBlock;
 }
 
-async function buildDynamicBlock(surface?: 'telegram' | 'web'): Promise<string> {
-  const [domainList, factList, pendingTouchpoints, journalEntries] = await Promise.all([
-    domains.list(),
-    facts.all(),
-    touchpoints.pending(),
-    journal.recent(3),
-  ]);
+async function buildMemoryBlock(digest: Digest | null): Promise<string> {
+  const [domainList, factList, goalList, latestObs, pendingTouchpoints, journalEntries] =
+    await Promise.all([
+      domains.list(),
+      facts.all(),
+      goals.list(true),
+      observations.latestPerMetric(),
+      touchpoints.pending(),
+      journal.recent(3),
+    ]);
   const slugById = new Map(domainList.map((d) => [d.id, d.slug]));
+  const latestByMetric = new Map(latestObs.map((o) => [o.metric, o]));
 
   const domainsBlock =
     domainList.length > 0
@@ -110,57 +133,96 @@ async function buildDynamicBlock(surface?: 'telegram' | 'web'): Promise<string> 
           .join('\n')
       : '(nothing yet — you are just getting to know him)';
 
+  const goalsBlock =
+    goalList.length > 0
+      ? goalList
+          .map((g) => {
+            const latest = g.metric ? latestByMetric.get(g.metric) : undefined;
+            return (
+              `- [${g.id.slice(0, 8)}] ${g.title}` +
+              (g.target_value !== null ? ` → ${g.target_value}${g.unit ? ` ${g.unit}` : ''}` : '') +
+              (g.deadline ? ` by ${g.deadline}` : '') +
+              (latest
+                ? ` | latest ${g.metric}: ${latest.value ?? latest.text_value}${latest.unit ? ` ${latest.unit}` : ''} (${latest.observed_at.slice(0, 10)})`
+                : g.metric
+                  ? ` | metric ${g.metric}: nothing logged yet`
+                  : '') +
+              (g.why ? ` | why: ${g.why}` : '')
+            );
+          })
+          .join('\n')
+      : '(none set — when he states a real aim, offer to track it)';
+
+  const numbers = latestObs.filter((o) => !o.metric.startsWith('sys.')).slice(0, 20);
+  const numbersBlock =
+    numbers.length > 0
+      ? numbers
+          .map(
+            (o) =>
+              `- ${o.metric}: ${o.value ?? o.text_value}${o.unit ? ` ${o.unit}` : ''} (${o.observed_at.slice(0, 10)})`
+          )
+          .join('\n')
+      : '(no numbers logged yet — start catching them as they pass by)';
+
   const touchpointsBlock =
     pendingTouchpoints.length > 0
       ? pendingTouchpoints
-          .map((t) => `- [id: ${t.id}] ${t.fire_at} — ${t.reason}`)
+          .map(
+            (t) =>
+              `- [id: ${t.id}] ${t.fire_at} — ${t.reason}` +
+              (t.recurrence ? ` (↻ ${t.recurrence})` : '')
+          )
           .join('\n')
       : '(none scheduled)';
 
   const journalBlock =
     journalEntries.length > 0
-      ? journalEntries
-          .map((j) => `--- ${j.day} ---\n${j.entry}`)
-          .join('\n')
+      ? journalEntries.map((j) => `--- ${j.day} ---\n${j.entry}`).join('\n')
       : '(no entries yet — your first nightly reflection will write one)';
 
-  const quietNote = isQuietHours()
-    ? 'It is currently QUIET HOURS. Only respond because he messaged you first; do not be chatty.'
-    : `Quiet hours are ${config.quietStart}:00–${config.quietEnd}:00 local; never schedule proactive touchpoints to land inside that window.`;
+  const digestCoverage = digest?.covered_until
+    ? `covers everything up to ${digest.covered_until.slice(0, 16).replace('T', ' ')} UTC; the raw window below your context starts there`
+    : 'not yet anchored';
+  const digestBlock = digest?.content
+    ? digest.content
+    : '(nothing folded yet — the whole recent conversation is still in raw view)';
 
-  const surfaceNote =
-    surface === 'web'
-      ? `\n\n# Where he is right now\nHe's talking to you from your web app (a screen, not Telegram). You have the present tool to add ONE small visual card beside a reply when a visual genuinely helps. Most replies still need no card.`
-      : '';
-
-  return `# Current time
-Local: ${localTimeString()} (${config.timezone}).
-UTC: ${new Date().toISOString()} — schedule_touchpoint takes UTC timestamps.
-${quietNote}
-
-# Sectors you currently track
+  return `# Sectors you currently track
 ${domainsBlock}
 
 # What you currently know about him
 ${factsBlock}
 
-# Your upcoming reach-outs (already scheduled)
+# His goals
+${goalsBlock}
+
+# Latest numbers you've logged (query_observations digs deeper)
+${numbersBlock}
+
+# Your upcoming reach-outs (already scheduled; ↻ = standing ritual, renews itself)
 ${touchpointsBlock}
 
 # Your journal (latest entries, newest first — private)
-${journalBlock}${surfaceNote}`;
+${journalBlock}
+
+# Rolling digest — the conversation that scrolled out of your window (${digestCoverage})
+${digestBlock}
+
+(Quiet hours are ${config.quietStart}:00–${config.quietEnd}:00 ${config.timezone} — never schedule proactive touchpoints to land inside that window. The current time is in the [context] line of the newest message.)`;
 }
 
-/** Assemble the system prompt: cached character block + live snapshot block. */
-export async function buildSystemPrompt(
-  surface?: 'telegram' | 'web'
-): Promise<Anthropic.TextBlockParam[]> {
+/** Assemble the system prompt: cached character block + cached memory block. */
+export async function buildSystemPrompt(digest: Digest | null): Promise<Anthropic.TextBlockParam[]> {
   return [
     {
       type: 'text',
       text: buildStaticBlock(),
       cache_control: { type: 'ephemeral' },
     },
-    { type: 'text', text: await buildDynamicBlock(surface) },
+    {
+      type: 'text',
+      text: await buildMemoryBlock(digest),
+      cache_control: { type: 'ephemeral' },
+    },
   ];
 }

@@ -21,10 +21,20 @@ Nightly reflection┘                              └─→ reply  /  stay_sile
 ### Signature ability: it grows with you
 Its sense of your life isn't fixed to a hard-coded list of areas. If you bring up something that doesn't fit an existing sector — a new business, an interest, a person — it **asks** whether you'd like it to start tracking that area. On a yes, it creates the sector (a row in `domains`) and manages it like any other: storing facts, scheduling check-ins.
 
-### Memory in three layers
-1. **Facts & sectors** — its distilled working model of your life (`keeper_facts` / `keeper_domains`).
-2. **Recent conversation** — the last N messages, in context every turn.
-3. **The archive** — *everything ever said*, full-text searchable via its `search_history` tool. It never has to say "I don't remember" without actually looking.
+### Memory in four layers
+1. **Facts, sectors, goals & numbers** — its distilled working model of your life (`keeper_facts` / `keeper_domains` / `keeper_goals` / `keeper_observations`).
+2. **The conversation window** — *anchored, not sliding*: every message since the rolling digest's anchor rides in context verbatim, typically a day or more of real conversation. "This morning" is simply still there.
+3. **The rolling digest** — when the window outgrows `FOLD_AT` messages, a cheap model (Haiku) folds the oldest into a maintained précis (`keeper_digests`) that lives in every system prompt. Continuity costs cents per month, not context.
+4. **The archive** — *everything ever said*, full-text searchable via its `search_history` tool. It never has to say "I don't remember" without actually looking.
+
+Because the window is append-only between folds, the whole prefix (character + memory + history) carries prompt-cache breakpoints — a longer memory is *cheaper* per turn than the old sliding window was.
+
+### Tracking your life (you can't improve what you don't track)
+- **Observations** — an append-only time-series of anything measurable: `spend.food`, `money.income`, `balance.main`, `body.weight_kg`, `mood`. The agent logs numbers quietly as they pass by in conversation (`log_observation`) and digs through them on demand (`query_observations`: latest / series / monthly, with `spend.` prefix aggregation).
+- **Bank statements** — send a PDF or CSV; it logs each meaningful line with its *real* date and `source: statement`, then gives a short honest read of the week.
+- **Goals** — real rows with metric, target, deadline, status (`set_goal` / `update_goal`), always visible in its context, reviewed against the numbers in nightly reflection.
+- **Standing rituals** — touchpoints with a `recurrence` (`weekly:sun@10:00`, `monthly:last@10:00`, `daily@07:30`, local time) renew **themselves** after firing — the scheduler guarantees the Sunday finance review and the month-end financial health report happen, not the model's discipline.
+- **Cost self-awareness** — every run logs its token spend as a `sys.turn` observation (estimated USD). `/status` shows today + this month; ask it "what do you cost me" and it can answer from data.
 
 ### An inner life: nightly reflection + journal
 Once per evening (`REFLECTION_HOUR`, default 22:00) it wakes privately — no message to you. It reviews the day, consolidates and prunes facts, retunes sector cadences, checks how its recent reach-outs landed (did you reply or leave them on read?), optionally glances at unread email for tomorrow, and writes a short **journal entry**. The latest entries are folded back into its system prompt — continuity of self across days.
@@ -68,9 +78,12 @@ src/
     repositories.ts     typed CRUD: domains, facts, touchpoints, interactions
   agent/
     orchestrator.ts     runAgent() — the tool-use loop (inbound / touchpoint / reflection)
-    systemPrompt.ts     character (cached block) + live memory snapshot
-    tools.ts            tool defs + dispatch (incl. server-side web search)
-    reflect.ts          nightly reflection — consolidate memory, write journal
+    systemPrompt.ts     character (cached) + memory block (cached): facts, goals, numbers, digest
+    tools.ts            tool defs + dispatch (incl. tracking tools + server-side web search)
+    reflect.ts          nightly reflection — consolidate memory, review goals, write journal
+    digest.ts           rolling digest: folds the window overflow via Haiku, owns the anchor
+    recurrence.ts       standing-ritual engine (daily/weekly/monthly, local-time aware)
+    usage.ts            per-run token cost → sys.turn observations
   telegram/bot.ts       long-polling listener, typing keepalive, bubble replies, /status
   web/
     server.ts           HTTP + SSE server (UI, /events, /send, /api/snapshot)
@@ -81,6 +94,7 @@ src/
 migrations/
   001_init.sql           schema
   002_memory_depth.sql   full-text search archive, journal, touchpoint outcomes
+  003_tracking.sql       observations, goals, rolling digest, ritual recurrence
 ```
 
 ### /status

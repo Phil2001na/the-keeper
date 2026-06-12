@@ -1,7 +1,8 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { config, type GuestBot } from '../config.js';
 import { runAgent } from '../agent/orchestrator.js';
-import { touchpoints, journal } from '../db/repositories.js';
+import { localMidnightUtc, monthStartUtc } from '../agent/recurrence.js';
+import { digests, goals, observations, touchpoints, journal } from '../db/repositories.js';
 import { googleEnabled } from '../integrations/google.js';
 import { imageGenEnabled } from '../generate/image.js';
 import { transcribeFromUrl, transcriptionEnabled } from './transcribe.js';
@@ -195,18 +196,29 @@ async function handleImage(
 async function sendStatus(): Promise<void> {
   const up = Math.floor((Date.now() - BOOTED_AT) / 1000);
   const uptime = `${Math.floor(up / 86400)}d ${Math.floor((up % 86400) / 3600)}h ${Math.floor((up % 3600) / 60)}m`;
-  const [pending, lastJournal] = await Promise.all([
+  const [pending, lastJournal, dayTurns, monthTurns, activeGoals, latest, dig] = await Promise.all([
     touchpoints.pending().catch(() => []),
     journal.recent(1).catch(() => []),
+    observations.series('sys.turn', localMidnightUtc().toISOString()).catch(() => []),
+    observations.series('sys.turn', monthStartUtc().toISOString()).catch(() => []),
+    goals.list(true).catch(() => []),
+    observations.latestPerMetric().catch(() => []),
+    digests.get('rolling').catch(() => null),
   ]);
+  const usd = (rows: { value: number | null }[]) =>
+    rows.reduce((a, r) => a + Number(r.value ?? 0), 0);
   const next = pending[0];
+  const metricCount = latest.filter((o) => !o.metric.startsWith('sys.')).length;
   const on = (b: boolean) => (b ? 'on' : 'off');
   await keeperBot.sendMessage(
     OWNER,
     `keeper status\n` +
       `up: ${uptime}\n` +
       `model: ${config.model}\n` +
-      `next reach-out: ${next ? `${next.fire_at} — ${next.reason.slice(0, 80)}` : 'none pending'}\n` +
+      `spend: today ~$${usd(dayTurns).toFixed(2)} (${dayTurns.length} runs) · month ~$${usd(monthTurns).toFixed(2)}\n` +
+      `tracking: ${metricCount} metrics · ${activeGoals.length} goals\n` +
+      `window: ${dig?.covered_until ? `anchored at ${dig.covered_until.slice(0, 16).replace('T', ' ')} UTC` : 'not anchored yet'}\n` +
+      `next reach-out: ${next ? `${next.fire_at}${next.recurrence ? ' ↻' : ''} — ${next.reason.slice(0, 80)}` : 'none pending'}\n` +
       `last journal: ${lastJournal[0]?.day ?? 'never'} (reflection ${config.reflectionHour}:00)\n` +
       `integrations: deploy ${on(githubEnabled())} | google ${on(googleEnabled())} | images ${on(imageGenEnabled())} | voice ${on(transcriptionEnabled())} | web on`
   );
@@ -319,6 +331,30 @@ function startKeeperBot(): void {
       } catch (err) {
         console.error('[telegram] pdf parse failed:', err);
         await sendToOwner(`(couldn't read that PDF — ${(err as Error).message})`);
+      }
+      return;
+    }
+
+    // Plain-text files (.csv bank exports, .txt, .md) → straight into the turn.
+    if (ext === '.csv' || ext === '.txt' || ext === '.md') {
+      try {
+        let text = await downloadText(keeperBot, doc.file_id);
+        const truncated = text.length > 24_000;
+        if (truncated) text = text.slice(0, 24_000);
+        const result = await withTyping(() =>
+          runAgent({
+            kind: 'inbound',
+            text:
+              `I sent you a file named "${name}"${msg.caption ? ` with the note: "${msg.caption}"` : ''}. Its contents:\n\n` +
+              text +
+              (truncated ? '\n\n(note: file was long — truncated at ~24k characters)' : ''),
+          })
+        );
+        if (result.message) await sendToOwner(result.message);
+        await flushMediaToOwner();
+      } catch (err) {
+        console.error('[telegram] text file failed:', err);
+        await sendToOwner(`(couldn't read that file — ${(err as Error).message})`);
       }
       return;
     }

@@ -1,6 +1,15 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { localDateString } from '../config.js';
-import { domains, facts, touchpoints, interactions, journal } from '../db/repositories.js';
+import {
+  domains,
+  facts,
+  goals,
+  observations,
+  touchpoints,
+  interactions,
+  journal,
+} from '../db/repositories.js';
+import { parseRecurrence, nextOccurrence, monthStartUtc } from './recurrence.js';
 import { bus, type PresentCard } from '../web/bus.js';
 import {
   githubEnabled,
@@ -79,18 +88,31 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
     description:
       'Schedule your OWN next proactive reach-out — how you stay alive between conversations. ' +
       'Use sparingly: only when nothing suitable is already pending, or when new information means the timing/topic must change. ' +
-      'Do NOT add one after every message; aim to keep at most one sensible next touchpoint pending. Cancel-and-replace rather than stacking duplicates.',
+      'Cancel-and-replace rather than stacking duplicates. ' +
+      'For something he wants EVERY week/day/month (a review, a report, a check-in he asked for), set recurrence to make it a STANDING RITUAL — it renews itself after each firing, forever, until cancelled.',
     input_schema: {
       type: 'object',
       properties: {
         fire_at_iso: {
           type: 'string',
-          description: 'When to reach out, as an ISO 8601 timestamp (UTC, e.g. 2026-06-08T06:30:00Z).',
+          description:
+            'When to reach out, as an ISO 8601 timestamp (UTC, e.g. 2026-06-08T06:30:00Z). ' +
+            'Optional when recurrence is given — the first firing is computed from it.',
+        },
+        recurrence: {
+          type: 'string',
+          description:
+            "Standing-ritual spec in LOCAL wall-clock time: 'daily@HH:MM', 'weekly:sun@HH:MM' (mon..sun), " +
+            "'monthly:15@HH:MM' (day 1-28) or 'monthly:last@HH:MM'. Omit for a one-off.",
         },
         domain_slug: { type: 'string', description: 'Optional sector this check-in relates to.' },
-        reason: { type: 'string', description: 'Why you are reaching out / what you want to raise.' },
+        reason: {
+          type: 'string',
+          description:
+            'Why you are reaching out / what you want to raise. For rituals, write it as standing instructions to your future self — it is re-read on every firing.',
+        },
       },
-      required: ['fire_at_iso', 'reason'],
+      required: ['reason'],
     },
   },
   {
@@ -131,6 +153,91 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
         active: { type: 'boolean', description: 'false retires the sector.' },
       },
       required: ['slug'],
+    },
+  },
+  // ─── Life tracking: observations & goals ──────────────────────────────────
+  {
+    name: 'log_observation',
+    description:
+      'Record a MEASUREMENT about his life — an append-only time-series, the raw material of every trend and report. ' +
+      'Log quietly whenever a number passes by in conversation: money in/out, weight, sleep hours, km run, hours worked, pages written, mood (1-10). ' +
+      'Bank statement / transaction lines: one observation per meaningful line or category, with the REAL date in observed_at_iso and source "statement". ' +
+      'Metric names are lowercase dot-namespaced and CONSISTENT — money.income, spend.food, spend.transport, balance.main, body.weight_kg, work.hours, mood. ' +
+      'Reuse the metric names already in your "latest numbers" list; a renamed metric is a broken trend.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        metric: { type: 'string', description: 'lowercase dot.namespaced id, e.g. spend.food' },
+        value: { type: 'number', description: 'The numeric value — use this for anything chartable.' },
+        text_value: { type: 'string', description: 'Qualitative value, only when a number truly does not fit.' },
+        unit: { type: 'string', description: 'e.g. NAD, kg, h, km' },
+        observed_at_iso: {
+          type: 'string',
+          description: 'When it actually happened (ISO 8601). Defaults to now — set it for statement lines and past events.',
+        },
+        note: { type: 'string', description: 'Short context, e.g. "Checkers + Spar runs".' },
+        source: { type: 'string', enum: ['chat', 'statement'] },
+        domain_slug: { type: 'string' },
+      },
+      required: ['metric'],
+    },
+  },
+  {
+    name: 'query_observations',
+    description:
+      'Read the time-series you have logged. mode "latest" = newest value of every metric (full snapshot). ' +
+      'mode "series" = raw points + sum/avg/min/max for one metric, optionally since a date. ' +
+      'mode "monthly" = per-calendar-month sum/count/avg over the last N months — built for "compare this month to last month" reports. ' +
+      'In series/monthly, a metric ending in "." is a prefix: "spend." covers every spend.* category at once. ' +
+      '(sys.turn tracks your own running cost in USD — query it if he asks what you cost him.)',
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['latest', 'series', 'monthly'] },
+        metric: { type: 'string', description: 'Metric name, or prefix ending in "." (needed for series/monthly).' },
+        since_iso: { type: 'string', description: 'series only: include points at/after this instant.' },
+        months: { type: 'number', description: 'monthly only: how many months back (default 6, max 24).' },
+      },
+      required: ['mode'],
+    },
+  },
+  {
+    name: 'set_goal',
+    description:
+      'Create a tracked GOAL — something he is genuinely aiming at. Tie it to a metric + target_value + deadline whenever possible ' +
+      'so progress is measurable against logged observations, not vibes. Only create goals he has clearly stated or agreed to — confirm first when unsure.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        domain_slug: { type: 'string' },
+        metric: { type: 'string', description: 'Observation metric that measures this goal, e.g. body.weight_kg.' },
+        target_value: { type: 'number' },
+        unit: { type: 'string' },
+        deadline: { type: 'string', description: 'YYYY-MM-DD' },
+        why: { type: 'string', description: 'Why this matters to him, in his words — read it back to him when motivation dips.' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'update_goal',
+    description:
+      'Update a goal by id (or unambiguous id prefix) from your context: adjust target/deadline as life shifts, or set status — ' +
+      'active | paused | done | dropped. Mark done out loud (celebrate it); never silently drop a goal he cared about.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Goal id or prefix, from the goals list in your context.' },
+        status: { type: 'string', enum: ['active', 'paused', 'done', 'dropped'] },
+        title: { type: 'string' },
+        metric: { type: 'string' },
+        target_value: { type: 'number' },
+        unit: { type: 'string' },
+        deadline: { type: 'string', description: 'YYYY-MM-DD' },
+        why: { type: 'string' },
+      },
+      required: ['id'],
     },
   },
   {
@@ -336,6 +443,7 @@ export const presentToolDefinition: Anthropic.Tool = {
     '  {"type":"list","title"?,"items":[{"text","sub"?,"done"?}]} — checklist or plain list\n' +
     '  {"type":"timeline","items":[{"when","text"}]} — moments in order\n' +
     '  {"type":"progress","label","value":0-100,"hint"?} — a bar\n' +
+    '  {"type":"spark","label","points":[numbers],"unit"?} — tiny trend line (use REAL logged numbers, oldest first)\n' +
     '  {"type":"links","items":[{"title","url","desc"?}]} — sources/sites\n' +
     '  {"type":"quote","text","by"?} — a pulled line\n' +
     '  {"type":"text","body"} — short prose\n' +
@@ -442,17 +550,38 @@ export async function dispatchTool(
 
     case 'schedule_touchpoint': {
       const domainId = await resolveDomainId(input.domain_slug as string);
-      const fireAt = input.fire_at_iso as string;
-      const parsed = new Date(fireAt);
-      if (Number.isNaN(parsed.getTime())) {
-        return { output: `Invalid fire_at_iso "${fireAt}". Use ISO 8601, e.g. 2026-06-08T06:30:00Z.` };
+      const recRaw = (input.recurrence as string | undefined)?.trim().toLowerCase();
+      let recurrence: string | null = null;
+      if (recRaw) {
+        if (!parseRecurrence(recRaw)) {
+          return {
+            output: `Invalid recurrence "${recRaw}". Use daily@HH:MM, weekly:sun@HH:MM (mon..sun), monthly:15@HH:MM (1-28), or monthly:last@HH:MM — local wall-clock time.`,
+          };
+        }
+        recurrence = recRaw;
+      }
+      const fireAtIso = input.fire_at_iso as string | undefined;
+      let fireAt = fireAtIso ? new Date(fireAtIso) : null;
+      if ((!fireAt || Number.isNaN(fireAt.getTime())) && recurrence) {
+        fireAt = nextOccurrence(recurrence);
+      }
+      if (!fireAt || Number.isNaN(fireAt.getTime())) {
+        return {
+          output: `Invalid fire_at_iso "${fireAtIso}". Use ISO 8601 (UTC, e.g. 2026-06-08T06:30:00Z), or give a recurrence and I'll compute the first firing.`,
+        };
       }
       const tp = await touchpoints.create({
-        fire_at: parsed.toISOString(),
+        fire_at: fireAt.toISOString(),
         domain_id: domainId,
         reason: input.reason as string,
+        recurrence,
       });
-      return { output: `Scheduled touchpoint ${tp.id} for ${tp.fire_at}: ${tp.reason}` };
+      return {
+        output:
+          `Scheduled touchpoint ${tp.id} for ${tp.fire_at}` +
+          (recurrence ? ` — standing ritual (${recurrence}), renews itself after each firing` : '') +
+          `: ${tp.reason}`,
+      };
     }
 
     case 'cancel_touchpoint': {
@@ -527,6 +656,157 @@ export async function dispatchTool(
     case 'write_journal': {
       await journal.upsert('nightly', localDateString(), input.entry as string);
       return { output: 'Journal entry written.' };
+    }
+
+    // ─── Life tracking ───────────────────────────────────────────────────────
+    case 'log_observation': {
+      const metric = String(input.metric ?? '').trim().toLowerCase().replace(/\s+/g, '_');
+      if (!/^[a-z0-9_.]{2,64}$/.test(metric)) {
+        return { output: `Bad metric name "${input.metric}" — lowercase letters/digits/dots/underscores only, e.g. spend.food.` };
+      }
+      const value = typeof input.value === 'number' && Number.isFinite(input.value) ? input.value : null;
+      const textValue =
+        typeof input.text_value === 'string' && input.text_value.trim() ? input.text_value.trim() : null;
+      if (value === null && !textValue) return { output: 'Give a numeric value (preferred) or a text_value.' };
+      let observedAt = new Date();
+      if (typeof input.observed_at_iso === 'string' && input.observed_at_iso.trim()) {
+        const d = new Date(input.observed_at_iso);
+        if (Number.isNaN(d.getTime())) return { output: `Bad observed_at_iso "${input.observed_at_iso}".` };
+        observedAt = d;
+      }
+      const domainId = await resolveDomainId(input.domain_slug as string | undefined);
+      const o = await observations.log({
+        domain_id: domainId,
+        metric,
+        value,
+        text_value: textValue,
+        unit: (input.unit as string | undefined)?.trim() || null,
+        observed_at: observedAt.toISOString(),
+        note: (input.note as string | undefined)?.trim() || null,
+        source: input.source === 'statement' ? 'statement' : 'chat',
+      });
+      return {
+        output: `Logged ${o.metric} = ${o.value ?? o.text_value}${o.unit ? ` ${o.unit}` : ''} @ ${o.observed_at.slice(0, 10)}`,
+      };
+    }
+
+    case 'query_observations': {
+      const round2 = (n: number) => Math.round(n * 100) / 100;
+      const fmt = (o: { value: number | null; text_value: string | null; unit: string | null }) =>
+        `${o.value ?? o.text_value}${o.unit ? ` ${o.unit}` : ''}`;
+      const mode = String(input.mode ?? 'latest');
+      const metric = (input.metric as string | undefined)?.trim().toLowerCase();
+
+      if (mode === 'latest') {
+        const rows = await observations.latestPerMetric();
+        if (rows.length === 0) return { output: 'No observations logged yet — log_observation starts the record.' };
+        return {
+          output: rows
+            .map((o) => `${o.metric}: ${fmt(o)} (${o.observed_at.slice(0, 10)})${o.note ? ` — ${o.note}` : ''}`)
+            .join('\n'),
+        };
+      }
+
+      if (!metric) {
+        return { output: `mode "${mode}" needs a metric — exact name, or a prefix ending in "." like "spend.".` };
+      }
+
+      if (mode === 'series') {
+        const since = (input.since_iso as string | undefined)?.trim() || undefined;
+        const rows = await observations.series(metric, since);
+        if (rows.length === 0) return { output: `No observations for "${metric}"${since ? ` since ${since}` : ''}.` };
+        const nums = rows.filter((r) => r.value !== null).map((r) => Number(r.value));
+        const lines = rows
+          .slice(-60)
+          .map((o) => `${o.observed_at.slice(0, 10)} ${o.metric}: ${fmt(o)}${o.note ? ` — ${o.note}` : ''}`);
+        const stats =
+          nums.length > 0
+            ? `— ${rows.length} points · sum ${round2(nums.reduce((a, b) => a + b, 0))} · avg ${round2(nums.reduce((a, b) => a + b, 0) / nums.length)} · min ${round2(Math.min(...nums))} · max ${round2(Math.max(...nums))}`
+            : `— ${rows.length} points (qualitative)`;
+        return { output: `${lines.join('\n')}\n${stats}` };
+      }
+
+      if (mode === 'monthly') {
+        const months = Math.min(Math.max(Number(input.months ?? 6) || 6, 1), 24);
+        const since = monthStartUtc(months - 1).toISOString();
+        const rows = await observations.series(metric, since);
+        if (rows.length === 0) return { output: `No observations for "${metric}" in the last ${months} months.` };
+        const byMetric = new Map<string, Map<string, { sum: number; n: number }>>();
+        for (const o of rows) {
+          if (o.value === null) continue;
+          const month = localDateString(new Date(o.observed_at)).slice(0, 7);
+          const mm = byMetric.get(o.metric) ?? new Map<string, { sum: number; n: number }>();
+          const cell = mm.get(month) ?? { sum: 0, n: 0 };
+          cell.sum += Number(o.value);
+          cell.n += 1;
+          mm.set(month, cell);
+          byMetric.set(o.metric, mm);
+        }
+        const out: string[] = [];
+        for (const [met, mm] of [...byMetric.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+          out.push(`${met}:`);
+          for (const [month, c] of [...mm.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+            out.push(`  ${month}: sum ${round2(c.sum)} · n ${c.n} · avg ${round2(c.sum / c.n)}`);
+          }
+        }
+        return { output: out.join('\n') };
+      }
+
+      return { output: `Unknown mode "${mode}" — use latest, series, or monthly.` };
+    }
+
+    case 'set_goal': {
+      const title = String(input.title ?? '').trim();
+      if (!title) return { output: 'Goal needs a title.' };
+      const deadline = (input.deadline as string | undefined)?.trim();
+      if (deadline && !/^\d{4}-\d{2}-\d{2}$/.test(deadline)) {
+        return { output: `deadline must be YYYY-MM-DD, got "${deadline}".` };
+      }
+      const domainId = await resolveDomainId(input.domain_slug as string | undefined);
+      const g = await goals.create({
+        domain_id: domainId,
+        title,
+        metric: (input.metric as string | undefined)?.trim().toLowerCase() || null,
+        target_value: typeof input.target_value === 'number' ? input.target_value : null,
+        unit: (input.unit as string | undefined)?.trim() || null,
+        deadline: deadline || null,
+        why: (input.why as string | undefined)?.trim() || null,
+      });
+      return {
+        output:
+          `Goal set [${g.id.slice(0, 8)}]: ${g.title}` +
+          (g.target_value !== null ? ` → ${g.target_value}${g.unit ? ` ${g.unit}` : ''}` : '') +
+          (g.deadline ? ` by ${g.deadline}` : ''),
+      };
+    }
+
+    case 'update_goal': {
+      const g = await goals.byIdPrefix(String(input.id ?? '').trim());
+      if (!g) return { output: `No single goal matches id "${input.id}" — use an id from the goals list in your context.` };
+      const patch: Parameters<typeof goals.update>[1] = {};
+      if (typeof input.title === 'string' && input.title.trim()) patch.title = input.title.trim();
+      if (typeof input.metric === 'string') patch.metric = input.metric.trim().toLowerCase() || null;
+      if (typeof input.target_value === 'number' && Number.isFinite(input.target_value)) {
+        patch.target_value = input.target_value;
+      }
+      if (typeof input.unit === 'string') patch.unit = input.unit.trim() || null;
+      if (typeof input.deadline === 'string') {
+        const d = input.deadline.trim();
+        if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return { output: 'deadline must be YYYY-MM-DD.' };
+        patch.deadline = d || null;
+      }
+      if (
+        typeof input.status === 'string' &&
+        ['active', 'paused', 'done', 'dropped'].includes(input.status)
+      ) {
+        patch.status = input.status;
+      }
+      if (typeof input.why === 'string') patch.why = input.why.trim() || null;
+      if (Object.keys(patch).length === 0) return { output: 'Nothing to update — pass at least one field.' };
+      const updated = await goals.update(g.id, patch);
+      return {
+        output: `Goal [${g.id.slice(0, 8)}] updated${patch.status ? ` → ${patch.status}` : ''}: ${updated?.title ?? g.title}`,
+      };
     }
 
     case 'present': {

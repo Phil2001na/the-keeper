@@ -31,7 +31,46 @@ export interface Touchpoint {
   /** How a fired touchpoint went: 'sent' | 'silent' | 'replied' (he answered). */
   outcome: string | null;
   fired_at: string | null;
+  /** Standing ritual spec ('weekly:sun@10:00' etc.) — the scheduler renews it after firing. */
+  recurrence: string | null;
   created_at: string;
+}
+
+/** One measured moment of his life — append-only time-series. */
+export interface Observation {
+  id: string;
+  domain_id: string | null;
+  metric: string;
+  value: number | null;
+  text_value: string | null;
+  unit: string | null;
+  observed_at: string;
+  note: string | null;
+  source: string;
+  created_at: string;
+}
+
+export interface Goal {
+  id: string;
+  domain_id: string | null;
+  title: string;
+  metric: string | null;
+  target_value: number | null;
+  unit: string | null;
+  deadline: string | null;
+  status: string;
+  why: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** The rolling conversation digest + the context-window anchor it implies. */
+export interface Digest {
+  id: string;
+  kind: string;
+  content: string;
+  covered_until: string | null;
+  updated_at: string;
 }
 
 export interface Interaction {
@@ -211,10 +250,16 @@ export const touchpoints = {
     fire_at: string;
     domain_id: string | null;
     reason: string;
+    recurrence?: string | null;
   }): Promise<Touchpoint> {
     const { data, error } = await db
       .from('keeper_touchpoints')
-      .insert({ fire_at: input.fire_at, domain_id: input.domain_id, reason: input.reason })
+      .insert({
+        fire_at: input.fire_at,
+        domain_id: input.domain_id,
+        reason: input.reason,
+        recurrence: input.recurrence ?? null,
+      })
       .select('*')
       .single();
     if (error) fail('touchpoints.create', error);
@@ -301,6 +346,22 @@ export const interactions = {
     return data as Interaction[];
   },
 
+  /**
+   * Everything said strictly AFTER the digest anchor (oldest first) — the
+   * anchored context window. Capped for safety; if over the cap, the newest
+   * survive (the digest will catch the overflow on the next fold).
+   */
+  async sinceAnchor(anchorIso: string, cap = 200): Promise<Interaction[]> {
+    const { data, error } = await db
+      .from('keeper_interactions')
+      .select(INTERACTION_COLS)
+      .gt('created_at', anchorIso)
+      .order('created_at', { ascending: false })
+      .limit(cap);
+    if (error) fail('interactions.sinceAnchor', error);
+    return (data as Interaction[]).reverse();
+  },
+
   async countSince(iso: string): Promise<number> {
     const { count, error } = await db
       .from('keeper_interactions')
@@ -354,5 +415,167 @@ export const journal = {
       .maybeSingle();
     if (error) fail('journal.hasDay', error);
     return data !== null;
+  },
+};
+
+// ─── Observations ──────────────────────────────────────
+// Append-only time-series of life metrics. You can't improve what you don't track.
+export const observations = {
+  async log(input: {
+    domain_id?: string | null;
+    metric: string;
+    value?: number | null;
+    text_value?: string | null;
+    unit?: string | null;
+    observed_at?: string;
+    note?: string | null;
+    source?: string;
+  }): Promise<Observation> {
+    const { data, error } = await db
+      .from('keeper_observations')
+      .insert({
+        domain_id: input.domain_id ?? null,
+        metric: input.metric,
+        value: input.value ?? null,
+        text_value: input.text_value ?? null,
+        unit: input.unit ?? null,
+        observed_at: input.observed_at ?? new Date().toISOString(),
+        note: input.note ?? null,
+        source: input.source ?? 'chat',
+      })
+      .select('*')
+      .single();
+    if (error) fail('observations.log', error);
+    return data as Observation;
+  },
+
+  /**
+   * Points for one metric (oldest first). A metric ending in '.' is a prefix:
+   * 'spend.' returns every spend.* metric — the raw material of category reports.
+   */
+  async series(metricOrPrefix: string, sinceIso?: string, limit = 1000): Promise<Observation[]> {
+    let q = db.from('keeper_observations').select('*');
+    q = metricOrPrefix.endsWith('.')
+      ? q.like('metric', `${metricOrPrefix}%`)
+      : q.eq('metric', metricOrPrefix);
+    if (sinceIso) q = q.gte('observed_at', sinceIso);
+    const { data, error } = await q.order('observed_at', { ascending: false }).limit(limit);
+    if (error) fail('observations.series', error);
+    return (data as Observation[]).reverse();
+  },
+
+  /** The newest observation of every metric — a snapshot of everything tracked. */
+  async latestPerMetric(scan = 600): Promise<Observation[]> {
+    const { data, error } = await db
+      .from('keeper_observations')
+      .select('*')
+      .order('observed_at', { ascending: false })
+      .limit(scan);
+    if (error) fail('observations.latestPerMetric', error);
+    const seen = new Map<string, Observation>();
+    for (const o of data as Observation[]) if (!seen.has(o.metric)) seen.set(o.metric, o);
+    return [...seen.values()].sort((a, b) => a.metric.localeCompare(b.metric));
+  },
+
+  /** How many observations landed per metric since an instant (tracking-gap radar). */
+  async countByMetricSince(iso: string): Promise<Map<string, number>> {
+    const { data, error } = await db
+      .from('keeper_observations')
+      .select('metric')
+      .gte('observed_at', iso)
+      .limit(2000);
+    if (error) fail('observations.countByMetricSince', error);
+    const counts = new Map<string, number>();
+    for (const row of data as { metric: string }[]) {
+      counts.set(row.metric, (counts.get(row.metric) ?? 0) + 1);
+    }
+    return counts;
+  },
+};
+
+// ─── Goals ─────────────────────────────────────────────
+export const goals = {
+  async list(activeOnly = true): Promise<Goal[]> {
+    let q = db.from('keeper_goals').select('*').order('created_at', { ascending: true }).limit(200);
+    if (activeOnly) q = q.eq('status', 'active');
+    const { data, error } = await q;
+    if (error) fail('goals.list', error);
+    return data as Goal[];
+  },
+
+  async create(input: {
+    domain_id?: string | null;
+    title: string;
+    metric?: string | null;
+    target_value?: number | null;
+    unit?: string | null;
+    deadline?: string | null;
+    why?: string | null;
+  }): Promise<Goal> {
+    const { data, error } = await db
+      .from('keeper_goals')
+      .insert({
+        domain_id: input.domain_id ?? null,
+        title: input.title,
+        metric: input.metric ?? null,
+        target_value: input.target_value ?? null,
+        unit: input.unit ?? null,
+        deadline: input.deadline ?? null,
+        why: input.why ?? null,
+      })
+      .select('*')
+      .single();
+    if (error) fail('goals.create', error);
+    return data as Goal;
+  },
+
+  async update(
+    id: string,
+    patch: {
+      title?: string;
+      metric?: string | null;
+      target_value?: number | null;
+      unit?: string | null;
+      deadline?: string | null;
+      status?: string;
+      why?: string | null;
+    }
+  ): Promise<Goal | null> {
+    const { data, error } = await db
+      .from('keeper_goals')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select('*')
+      .maybeSingle();
+    if (error) fail('goals.update', error);
+    return (data as Goal) ?? null;
+  },
+
+  /** Resolve a goal by full id or unambiguous prefix (ids in prompts get long). */
+  async byIdPrefix(prefix: string): Promise<Goal | null> {
+    const all = await this.list(false);
+    const matches = all.filter((g) => g.id.startsWith(prefix));
+    return matches.length === 1 ? (matches[0] as Goal) : null;
+  },
+};
+
+// ─── Digests ───────────────────────────────────────────
+// One 'rolling' row: the distilled conversation that scrolled out of the
+// context window, plus the anchor (covered_until) that defines the window edge.
+export const digests = {
+  async get(kind = 'rolling'): Promise<Digest | null> {
+    const { data, error } = await db.from('keeper_digests').select('*').eq('kind', kind).maybeSingle();
+    if (error) fail('digests.get', error);
+    return (data as Digest) ?? null;
+  },
+
+  async set(kind: string, content: string, coveredUntilIso: string): Promise<void> {
+    const { error } = await db
+      .from('keeper_digests')
+      .upsert(
+        { kind, content, covered_until: coveredUntilIso, updated_at: new Date().toISOString() },
+        { onConflict: 'kind' }
+      );
+    if (error) fail('digests.set', error);
   },
 };
