@@ -263,6 +263,12 @@
     font: inherit; text-align: center; outline: none;
   }
   #gate input:focus { border-color: var(--amber-dim); }
+  #gate button {
+    width: min(320px, 80vw); padding: 12px 14px; font: inherit; cursor: pointer;
+    background: var(--amber-dim); color: #1a1208; border: none; border-radius: 10px;
+    font-weight: 600; letter-spacing: 0.02em;
+  }
+  #gate button:active { transform: translateY(1px); }
   #gate .err { color: var(--bad); font-size: 13px; min-height: 1.2em; }
   #gate.hidden, .hidden { display: none !important; }
 
@@ -280,7 +286,8 @@
 <div id="gate">
   <div id="orb-gate" class="g-orb" style="border-radius:50%;background:radial-gradient(circle at 32% 30%, #f5cf8d 0%, #e8a849 35%, #6e4d1b 80%, #3a2a10 100%);box-shadow:0 0 30px rgba(232,168,73,0.25);animation:breathe 4.8s ease-in-out infinite;"></div>
   <div class="wordmark">THE KEEPER</div>
-  <input id="tokeninput" type="password" placeholder="access token" autocomplete="off">
+  <input id="tokeninput" type="password" placeholder="access token" autocomplete="off" inputmode="numeric">
+  <button id="tokenbtn">enter</button>
   <div class="err" id="gateerr"></div>
 </div>
 
@@ -563,12 +570,14 @@
     connect();
   }
 
+  function submitToken() {
+    token = $('tokeninput').value.trim();
+    if (token) enter();
+  }
   $('tokeninput').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      token = $('tokeninput').value.trim();
-      if (token) enter();
-    }
+    if (e.key === 'Enter') submitToken();
   });
+  $('tokenbtn').addEventListener('click', submitToken);
 
   // ── composer ──────────────────────────────────────────
   const box = $('box');
