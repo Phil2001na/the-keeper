@@ -132,12 +132,19 @@ function messagesToOpenAi(req: LlmRequest): OpenAiMessage[] {
         }
         continue;
       }
-      // Text + images (vision). Build an OpenAI multimodal content array.
+      // Text + images + PDFs. Build an OpenAI multimodal content array. Gemini's
+      // OpenAI-compatible endpoint accepts a PDF as an image_url data URL with
+      // mime application/pdf — so documents ride the same channel as images.
       const parts: unknown[] = [];
       for (const b of m.content) {
         if (b.type === 'text') parts.push({ type: 'text', text: b.text });
         else if (b.type === 'image') {
           const src = b.source;
+          if (src.type === 'base64') {
+            parts.push({ type: 'image_url', image_url: { url: `data:${src.media_type};base64,${src.data}` } });
+          }
+        } else if (b.type === 'document') {
+          const src = (b as Anthropic.DocumentBlockParam).source;
           if (src.type === 'base64') {
             parts.push({ type: 'image_url', image_url: { url: `data:${src.media_type};base64,${src.data}` } });
           }

@@ -224,6 +224,30 @@
   }
   #sendbtn:active { transform: scale(0.92); }
   #sendbtn:disabled { opacity: 0.45; cursor: default; }
+  #attachbtn {
+    background: var(--ink-2); color: var(--amber); border: 1px solid var(--line);
+    border-radius: 12px; width: 44px; height: 44px; font-size: 24px; line-height: 1;
+    cursor: pointer; flex: none; transition: transform 0.15s, border-color 0.2s;
+  }
+  #attachbtn:active { transform: scale(0.92); }
+  #attachments {
+    display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px;
+  }
+  #attachments:not(:empty) { padding: 10px 16px 0; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 8px; max-width: 240px;
+    background: var(--ink-2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 6px 8px 6px 10px; font-size: 13px; color: var(--text);
+  }
+  .chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip .x { cursor: pointer; color: var(--text-dim); font-size: 16px; line-height: 1; }
+  .chip .x:hover { color: var(--bad); }
+  body.dragging #app::after {
+    content: 'drop image or PDF'; position: fixed; inset: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(232,168,73,0.12); border: 2px dashed var(--amber-dim);
+    color: var(--amber); font-size: 16px; pointer-events: none;
+  }
 
   /* ── mind drawer ───────────────────────────────────── */
   #mind {
@@ -301,7 +325,10 @@
     <button id="mindbtn">mind</button>
   </header>
   <main id="stream"></main>
+  <div id="attachments"></div>
   <footer>
+    <input id="fileinput" type="file" accept="image/*,application/pdf" multiple hidden>
+    <button id="attachbtn" title="attach image or PDF">+</button>
     <textarea id="box" rows="1" placeholder="talk to it"></textarea>
     <button id="sendbtn" title="send">↑</button>
   </footer>
@@ -586,16 +613,68 @@
   function autosize() { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 130) + 'px'; }
   box.addEventListener('input', autosize);
 
+  // ── attachments ───────────────────────────────────────
+  const MAX_FILE = 18 * 1024 * 1024; // keep under the server's 20MB body cap
+  let pending = []; // { name, mime, data(base64) }
+
+  function renderChips() {
+    const wrap = $('attachments');
+    wrap.innerHTML = '';
+    pending.forEach((f, i) => {
+      const chip = document.createElement('div');
+      chip.className = 'chip';
+      const isPdf = f.mime === 'application/pdf' || /\.pdf$/i.test(f.name || '');
+      chip.innerHTML = '<span>' + (isPdf ? '📄' : '🖼️') + '</span><span class="nm"></span><span class="x">×</span>';
+      chip.querySelector('.nm').textContent = f.name || (isPdf ? 'document.pdf' : 'image');
+      chip.querySelector('.x').addEventListener('click', () => { pending.splice(i, 1); renderChips(); });
+      wrap.appendChild(chip);
+    });
+  }
+
+  function addFiles(fileList) {
+    for (const file of fileList) {
+      const okType = file.type.startsWith('image/') || file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+      if (!okType) { toast('only images and PDFs'); continue; }
+      if (file.size > MAX_FILE) { toast((file.name || 'that file') + ' is too big (max 18MB)'); continue; }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const data = String(reader.result).split(',')[1] || '';
+        pending.push({ name: file.name, mime: file.type || 'application/pdf', data });
+        renderChips();
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  $('attachbtn').addEventListener('click', () => $('fileinput').click());
+  $('fileinput').addEventListener('change', (e) => { addFiles(e.target.files); e.target.value = ''; });
+
+  // Drag-and-drop anywhere on the app, and paste (screenshots).
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => { e.preventDefault(); if (++dragDepth) document.body.classList.add('dragging'); });
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('dragleave', (e) => { e.preventDefault(); if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); } });
+  window.addEventListener('drop', (e) => {
+    e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging');
+    if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
+  });
+  window.addEventListener('paste', (e) => {
+    const files = [...(e.clipboardData?.items || [])].filter((it) => it.kind === 'file').map((it) => it.getAsFile()).filter(Boolean);
+    if (files.length) addFiles(files);
+  });
+
   async function send() {
     const text = box.value.trim();
-    if (!text) return;
+    if (!text && pending.length === 0) return;
+    const files = pending;
     box.value = ''; autosize();
+    pending = []; renderChips();
     sendbtn.disabled = true;
     try {
       const res = await fetch('/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, files }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

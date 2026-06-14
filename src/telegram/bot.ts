@@ -12,7 +12,7 @@ import {
   setPendingHtml,
   deployHtml,
 } from '../deploy/github.js';
-import { extractPdfText } from './parsePdf.js';
+import { extractPdfText, extractPdfTextFromBuffer } from './parsePdf.js';
 import { drainMedia } from '../generate/queue.js';
 
 /**
@@ -154,6 +154,9 @@ async function downloadBuffer(bot: TelegramBot, fileId: string): Promise<Buffer>
 /** Claude's vision accepts these image types only. */
 type VisionMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // Anthropic per-image base64 limit.
+// PDFs up to this size go to the model natively (inline); larger fall back to
+// server-side text extraction. Keeps the request under provider inline limits.
+const NATIVE_PDF_MAX_BYTES = 12 * 1024 * 1024;
 
 /** Map a Telegram mime/filename to a vision media type, or null if unsupported. */
 function visionMediaType(mime: string | undefined, name: string): VisionMediaType | null {
@@ -312,24 +315,40 @@ function startKeeperBot(): void {
 
     if (ext === '.pdf') {
       try {
-        const fileUrl = await keeperBot.getFileLink(doc.file_id);
-        const pdf = await extractPdfText(fileUrl);
-        const truncNote = pdf.truncated
-          ? `\n\n(note: pdf was long — only the first ~24k characters are included above)`
-          : '';
-        const result = await withTyping(() =>
-          runAgent({
-            kind: 'inbound',
-            text:
-              `I sent you a PDF named "${name}" (${pdf.pages} page${pdf.pages === 1 ? '' : 's'}). Here's its text content:\n\n` +
-              pdf.text +
-              truncNote,
-          })
-        );
-        if (result.message) await sendToOwner(result.message);
-        await flushMediaToOwner();
+        const buf = await downloadBuffer(keeperBot, doc.file_id);
+        const caption = msg.caption?.trim();
+        if (buf.length <= NATIVE_PDF_MAX_BYTES) {
+          // Native PDF: the model reads layout/tables directly — far better than
+          // text extraction for bank statements (which jumble into columns).
+          const result = await withTyping(() =>
+            runAgent({
+              kind: 'inbound',
+              text: caption || `I sent you a PDF named "${name}". Read it and tell me what matters.`,
+              pdfs: [{ base64: buf.toString('base64'), filename: name }],
+            })
+          );
+          if (result.message) await sendToOwner(result.message);
+          await flushMediaToOwner();
+        } else {
+          // Too large to inline — fall back to extracted text.
+          const pdf = await extractPdfTextFromBuffer(buf);
+          const truncNote = pdf.truncated
+            ? `\n\n(note: pdf was long — only the first ~24k characters are included above)`
+            : '';
+          const result = await withTyping(() =>
+            runAgent({
+              kind: 'inbound',
+              text:
+                `I sent you a PDF named "${name}" (${pdf.pages} page${pdf.pages === 1 ? '' : 's'}). Here's its text content:\n\n` +
+                pdf.text +
+                truncNote,
+            })
+          );
+          if (result.message) await sendToOwner(result.message);
+          await flushMediaToOwner();
+        }
       } catch (err) {
-        console.error('[telegram] pdf parse failed:', err);
+        console.error('[telegram] pdf handling failed:', err);
         await sendToOwner(`(couldn't read that PDF — ${(err as Error).message})`);
       }
       return;

@@ -34,14 +34,20 @@ function activeTools(surface?: Surface): Anthropic.Messages.ToolUnion[] {
   return surface === 'web' ? [...tools, presentToolDefinition] : tools;
 }
 
-/** An image Philip sent over Telegram, ready to hand to Claude's vision. */
+/** An image Philip sent (Telegram or web), ready for the model's vision. */
 export interface InboundImage {
   mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
   base64: string;
 }
 
+/** A PDF Philip sent — handed to the model natively (no text extraction). */
+export interface InboundPdf {
+  base64: string;
+  filename?: string;
+}
+
 export type Trigger =
-  | { kind: 'inbound'; text: string; images?: InboundImage[]; surface?: Surface }
+  | { kind: 'inbound'; text: string; images?: InboundImage[]; pdfs?: InboundPdf[]; surface?: Surface }
   | { kind: 'touchpoint'; touchpoint: Touchpoint }
   /** Private nightly reflection — never messages him, never logged as conversation. */
   | { kind: 'reflection'; brief: string };
@@ -170,21 +176,28 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
   if (trigger.kind === 'inbound') {
     await markTouchpointEngagement(history);
 
-    // We don't persist image bytes — log a text marker so history stays clean,
-    // but send the actual image to Claude in THIS turn's content.
-    const logText =
-      trigger.text || (trigger.images?.length ? '(sent an image)' : trigger.text);
+    // We don't persist file bytes — log a text marker so history stays clean,
+    // but send the actual image/PDF to the model in THIS turn's content.
+    const attachMarker = trigger.pdfs?.length
+      ? `(sent ${trigger.pdfs.length === 1 ? 'a PDF' : trigger.pdfs.length + ' PDFs'})`
+      : trigger.images?.length
+        ? `(sent ${trigger.images.length === 1 ? 'an image' : trigger.images.length + ' images'})`
+        : '';
+    const logText = trigger.text || attachMarker;
     await interactions.log({ role: 'user', content: logText, trigger: 'inbound' });
     bus.publish({ type: 'message', role: 'user', content: logText, ts: new Date().toISOString() });
 
-    if (trigger.images?.length) {
-      const content: Array<Anthropic.ImageBlockParam | Anthropic.TextBlockParam> = [
-        ...trigger.images.map((img) => ({
-          type: 'image' as const,
-          source: { type: 'base64' as const, media_type: img.mediaType, data: img.base64 },
-        })),
-        { type: 'text' as const, text: trigger.text ? `${ctx}\n\n${trigger.text}` : ctx },
-      ];
+    if (trigger.images?.length || trigger.pdfs?.length) {
+      const content: Anthropic.ContentBlockParam[] = [];
+      for (const img of trigger.images ?? []) {
+        content.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.base64 } });
+      }
+      // Native PDF: Anthropic reads document blocks directly; the OpenAI-compat
+      // adapter (Gemini) turns them into a data-URL the model reads natively too.
+      for (const pdf of trigger.pdfs ?? []) {
+        content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdf.base64 } });
+      }
+      content.push({ type: 'text', text: trigger.text ? `${ctx}\n\n${trigger.text}` : ctx });
       messages.push({ role: 'user', content });
     } else {
       messages.push({ role: 'user', content: `${ctx}\n\n${trigger.text}` });

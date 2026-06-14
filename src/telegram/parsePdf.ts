@@ -8,12 +8,8 @@ export interface PdfResult {
   truncated: boolean;
 }
 
-/** Download a PDF from a URL and return its extracted text. */
-export async function extractPdfText(url: string): Promise<PdfResult> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch PDF: ${res.status} ${res.statusText}`);
-  const buffer = Buffer.from(await res.arrayBuffer());
-
+/** Extract text from PDF bytes already in memory. */
+export async function extractPdfTextFromBuffer(buffer: Buffer): Promise<PdfResult> {
   const parser = new PDFParse({ data: buffer });
   const result = await parser.getText();
 
@@ -24,4 +20,11 @@ export async function extractPdfText(url: string): Promise<PdfResult> {
     pages: result.total,
     truncated,
   };
+}
+
+/** Download a PDF from a URL and return its extracted text. */
+export async function extractPdfText(url: string): Promise<PdfResult> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch PDF: ${res.status} ${res.statusText}`);
+  return extractPdfTextFromBuffer(Buffer.from(await res.arrayBuffer()));
 }

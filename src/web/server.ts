@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
-import { runAgent } from '../agent/orchestrator.js';
+import { runAgent, type InboundImage, type InboundPdf } from '../agent/orchestrator.js';
 import { localMidnightUtc } from '../agent/recurrence.js';
 import {
   digests,
@@ -69,22 +69,62 @@ async function readBody(req: IncomingMessage, maxBytes = 64 * 1024): Promise<str
   return Buffer.concat(chunks).toString('utf-8');
 }
 
+/** Allowed image types map (mirrors the model's vision support). */
+const IMAGE_TYPES: Record<string, InboundImage['mediaType']> = {
+  'image/jpeg': 'image/jpeg',
+  'image/jpg': 'image/jpeg',
+  'image/png': 'image/png',
+  'image/gif': 'image/gif',
+  'image/webp': 'image/webp',
+};
+
+interface UploadFile {
+  name?: string;
+  mime?: string;
+  data?: string; // base64, no data-URL prefix
+}
+
 async function handleSend(req: IncomingMessage, res: ServerResponse): Promise<void> {
   let text: string;
+  let files: UploadFile[];
   try {
-    const body = JSON.parse(await readBody(req)) as { text?: unknown };
+    // Files (images/PDFs) ride in as base64 — allow a generous body.
+    const body = JSON.parse(await readBody(req, 20 * 1024 * 1024)) as { text?: unknown; files?: unknown };
     text = String(body.text ?? '').trim();
+    files = Array.isArray(body.files) ? (body.files as UploadFile[]) : [];
   } catch {
     json(res, 400, { ok: false, error: 'bad request body' });
     return;
   }
-  if (!text) {
+  if (!text && files.length === 0) {
     json(res, 400, { ok: false, error: 'empty message' });
     return;
   }
 
+  // Split attachments into vision images and native PDFs.
+  const images: InboundImage[] = [];
+  const pdfs: InboundPdf[] = [];
+  for (const f of files) {
+    const data = typeof f.data === 'string' ? f.data : '';
+    if (!data) continue;
+    const mime = (f.mime ?? '').toLowerCase();
+    const ext = (f.name ?? '').toLowerCase().match(/\.\w+$/)?.[0] ?? '';
+    if (mime === 'application/pdf' || ext === '.pdf') {
+      pdfs.push({ base64: data, filename: f.name });
+    } else {
+      const mediaType = IMAGE_TYPES[mime] ?? IMAGE_TYPES[`image/${ext.slice(1)}`];
+      if (mediaType) images.push({ mediaType, base64: data });
+    }
+  }
+
   try {
-    await runAgent({ kind: 'inbound', text, surface: 'web' });
+    await runAgent({
+      kind: 'inbound',
+      text,
+      surface: 'web',
+      images: images.length ? images : undefined,
+      pdfs: pdfs.length ? pdfs : undefined,
+    });
     // Media generated this turn (images/PDFs) goes to the screen he's on.
     for (const item of drainMedia()) {
       const mime = item.kind === 'photo' ? 'image/png' : 'application/pdf';
