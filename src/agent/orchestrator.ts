@@ -9,11 +9,10 @@ import {
 } from '../db/repositories.js';
 import { bus, stepLabel } from '../web/bus.js';
 import { maybeFold } from './digest.js';
+import { createMessage, type LlmResponse } from './llm.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 import { toolDefinitions, presentToolDefinition, dispatchTool } from './tools.js';
 import { logUsage } from './usage.js';
-
-const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
 const MAX_TOOL_ROUNDS = 12;
 
@@ -26,7 +25,9 @@ let serverToolsDisabled = false;
 
 function activeTools(surface?: Surface): Anthropic.Messages.ToolUnion[] {
   let tools = toolDefinitions;
-  if (serverToolsDisabled) {
+  // The server-side web_search tool is Anthropic-hosted — strip it when it's
+  // been rejected, or whenever a non-Anthropic brain (OpenRouter) is driving.
+  if (serverToolsDisabled || config.modelProvider !== 'anthropic') {
     tools = tools.filter((t) => !('type' in t && t.type === 'web_search_20250305'));
   }
   // The present tool only exists where a screen exists.
@@ -225,9 +226,9 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     applyCacheMarks(messages, histEnd);
-    let response: Anthropic.Message;
+    let response: LlmResponse;
     try {
-      response = await anthropic.messages.create({
+      response = await createMessage({
         model: config.model,
         max_tokens: 2048,
         system,

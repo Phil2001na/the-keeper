@@ -90,9 +90,43 @@ function parseGuestBots(): GuestBot[] {
   });
 }
 
+// Which API serves the agent's "brain":
+//   anthropic   → Claude, native (full fidelity + prompt caching)
+//   gemini      → Gemini direct, via Google's OpenAI-compatible endpoint,
+//                 reusing GEMINI_API_KEY. Cheapest path — no extra account.
+//   openrouter  → any model (GPT-5-mini, etc.) over OpenRouter.
+// A stopgap when Anthropic credits run dry: the whole keeper — proactivity,
+// rituals, continuity — keeps running, just on cheaper tokens.
+const modelProvider = optional('MODEL_PROVIDER', 'anthropic');
+
+// Per-provider model defaults (overridable with MODEL / DIGEST_MODEL).
+const defaultModel =
+  modelProvider === 'gemini'
+    ? 'gemini-2.5-flash'
+    : modelProvider === 'openrouter'
+      ? 'google/gemini-2.5-flash'
+      : 'claude-sonnet-4-6';
+const defaultDigestModel =
+  modelProvider === 'gemini'
+    ? 'gemini-2.5-flash'
+    : modelProvider === 'openrouter'
+      ? 'google/gemini-2.5-flash'
+      : 'claude-haiku-4-5-20251001';
+
 export const config = {
-  anthropicApiKey: requiredToken('ANTHROPIC_API_KEY'),
-  model: optional('MODEL', 'claude-sonnet-4-6'),
+  modelProvider,
+  // Anthropic key is only mandatory when Anthropic is actually the brain.
+  anthropicApiKey:
+    modelProvider === 'anthropic'
+      ? requiredToken('ANTHROPIC_API_KEY')
+      : (process.env.ANTHROPIC_API_KEY ?? '').replace(/\s+/g, ''),
+  // OpenRouter key is mandatory only when OpenRouter is the brain.
+  openrouterApiKey:
+    modelProvider === 'openrouter'
+      ? requiredToken('OPENROUTER_API_KEY')
+      : (process.env.OPENROUTER_API_KEY ?? '').replace(/\s+/g, ''),
+  // Model id; defaults follow the provider. Override to flip models, no code.
+  model: optional('MODEL', defaultModel),
 
   // Optional: enables voice-note transcription. If unset, voice notes get a
   // friendly "I can't hear that yet" reply instead of crashing.
@@ -110,8 +144,12 @@ export const config = {
   githubToken: (process.env.GITHUB_TOKEN ?? '').replace(/\s+/g, ''),
   githubUsername: (process.env.GITHUB_USERNAME ?? '').replace(/\s+/g, ''),
 
-  // Optional: enables image generation via Imagen 4. Leave blank to disable.
-  geminiApiKey: (process.env.GEMINI_API_KEY ?? '').replace(/\s+/g, ''),
+  // Enables image generation via Imagen 4 — and, when MODEL_PROVIDER=gemini,
+  // it's also the agent's brain key (Google's OpenAI-compatible endpoint).
+  geminiApiKey:
+    modelProvider === 'gemini'
+      ? requiredToken('GEMINI_API_KEY')
+      : (process.env.GEMINI_API_KEY ?? '').replace(/\s+/g, ''),
 
   // Optional: enables Gmail + Google Drive access. Run `npm run google-auth`
   // once to get the refresh token, then add all three to .env and Railway.
@@ -138,7 +176,7 @@ export const config = {
   // rolling-digest anchor rides in context verbatim (append-only, so it prompt-
   // caches), until more than foldAt have piled up — then the oldest are folded
   // into the digest by a cheap model, keeping the newest keepRecent in raw view.
-  digestModel: optional('DIGEST_MODEL', 'claude-haiku-4-5-20251001'),
+  digestModel: optional('DIGEST_MODEL', defaultDigestModel),
   foldAt: intEnv('FOLD_AT', 60),
   keepRecent: intEnv('KEEP_RECENT', 30),
 

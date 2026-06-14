@@ -12,11 +12,13 @@
     "start": "tsx src/index.ts",
     "seed": "tsx src/seed/seed.ts",
     "google-auth": "tsx scripts/google-auth.ts",
+    "mcp": "tsx src/mcp/server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
     "@google/genai": "^2.8.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
     "@octokit/rest": "^21.1.1",
     "@supabase/supabase-js": "^2.45.4",
     "dotenv": "^16.4.5",
@@ -24,7 +26,8 @@
     "node-telegram-bot-api": "^0.66.0",
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.19.0",
-    "tsx": "^4.19.1"
+    "tsx": "^4.19.1",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

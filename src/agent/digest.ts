@@ -1,6 +1,7 @@
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import { config, localTimeString } from '../config.js';
 import { digests, interactions } from '../db/repositories.js';
+import { createMessage } from './llm.js';
 import { logUsage } from './usage.js';
 
 /**
@@ -13,8 +14,6 @@ import { logUsage } from './usage.js';
  * This is what fixes "you don't remember? it's in this chat" — five hours ago
  * is either still in raw view, or summarized two paragraphs up.
  */
-
-const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
 let folding = false;
 
@@ -60,10 +59,11 @@ export async function foldNow(): Promise<void> {
     })
     .join('\n');
 
-  const res = await anthropic.messages.create({
+  const res = await createMessage({
     model: config.digestModel,
     max_tokens: 500,
     system: FOLD_SYSTEM,
+    tools: [],
     messages: [
       {
         role: 'user',
