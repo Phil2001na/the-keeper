@@ -74,7 +74,7 @@ async function viaAnthropic(req: LlmRequest): Promise<LlmResponse> {
 interface OpenAiMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | unknown[] | null;
-  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+  tool_calls?: OpenAiToolCall[];
   tool_call_id?: string;
 }
 
@@ -164,8 +164,15 @@ function messagesToOpenAi(req: LlmRequest): OpenAiMessage[] {
       const toolCalls = m.content
         .filter((b) => b.type === 'tool_use')
         .map((b) => {
-          const u = b as Anthropic.ToolUseBlockParam;
-          return { id: u.id, type: 'function' as const, function: { name: u.name, arguments: JSON.stringify(u.input ?? {}) } };
+          const u = b as SignedToolUse;
+          const call: OpenAiToolCall = {
+            id: u.id,
+            type: 'function',
+            function: { name: u.name, arguments: JSON.stringify(u.input ?? {}) },
+          };
+          // Echo Gemini 3's thought_signature back, or the next round 400s.
+          if (u._thoughtSignature) call.extra_content = { google: { thought_signature: u._thoughtSignature } };
+          return call;
         });
       const msg: OpenAiMessage = { role: 'assistant', content: text || null };
       if (toolCalls.length) msg.tool_calls = toolCalls;
@@ -175,17 +182,30 @@ function messagesToOpenAi(req: LlmRequest): OpenAiMessage[] {
   return out;
 }
 
+interface OpenAiToolCall {
+  id: string;
+  type?: 'function';
+  function: { name: string; arguments: string };
+  // Gemini 3 reasoning models attach an opaque thought_signature here and
+  // REQUIRE it echoed back on the same call when sending tool results, or the
+  // next request 400s ("Function call is missing a thought_signature").
+  extra_content?: { google?: { thought_signature?: string } };
+}
+
 interface OpenAiResponse {
   choices?: Array<{
     finish_reason?: string;
     message?: {
       content?: string | null;
-      tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
+      tool_calls?: OpenAiToolCall[];
     };
   }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
   error?: { message?: string };
 }
+
+/** Our tool_use blocks carry the Gemini thought_signature through the loop. */
+type SignedToolUse = Anthropic.ToolUseBlockParam & { _thoughtSignature?: string };
 
 // Transient upstream failures worth retrying. 503 is the big one — Gemini's
 // standard tier returns "this model is experiencing high demand, try again
@@ -267,7 +287,11 @@ async function viaOpenAiCompat(req: LlmRequest, url: string, apiKey: string): Pr
     } catch {
       input = {};
     }
-    content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input } as unknown as Anthropic.ContentBlock);
+    const block: SignedToolUse = { type: 'tool_use', id: tc.id, name: tc.function.name, input: input as Record<string, unknown> };
+    // Stash Gemini's thought_signature so we can echo it back next round.
+    const sig = tc.extra_content?.google?.thought_signature;
+    if (sig) block._thoughtSignature = sig;
+    content.push(block as unknown as Anthropic.ContentBlock);
   }
 
   const u = data.usage ?? {};
