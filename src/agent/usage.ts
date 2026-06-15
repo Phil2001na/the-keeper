@@ -19,6 +19,13 @@ const PRICES: Record<string, [number, number, number, number]> = {
   'claude-haiku-4-5': [1, 5, 1.25, 0.1],
   // Native Gemini ids (MODEL_PROVIDER=gemini) + OpenRouter slugs. Approx list
   // prices for the cheap-tier stopgap models. List longer keys before prefixes.
+  // Gemini 3 family (approximate list prices — reasoning models, output incl.
+  // thinking tokens). Keep specific keys before the generic 'gemini' catch-all.
+  'gemini-3.1-flash-lite': [0.15, 0.6, 0, 0],
+  'gemini-3.1-pro': [2, 12, 0, 0],
+  'gemini-3.5-flash': [0.5, 3, 0, 0],
+  'gemini-3-flash': [0.5, 3, 0, 0],
+  'gemini-3': [2, 12, 0, 0],
   'gemini-2.5-flash-lite': [0.1, 0.4, 0, 0],
   'gemini-2.5-flash': [0.3, 2.5, 0, 0],
   'gemini-2.0-flash': [0.1, 0.4, 0, 0],
