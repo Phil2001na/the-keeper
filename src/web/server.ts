@@ -235,7 +235,12 @@ export function startWebServer(): void {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
 
     if (req.method === 'GET' && (path === '/' || path === '/index.html')) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      // Never cache the UI — it's one file that changes on every deploy, and a
+      // stale copy hides new features (the attach button, etc.) behind a cache.
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store, must-revalidate',
+      });
       res.end(ui);
       return;
     }
