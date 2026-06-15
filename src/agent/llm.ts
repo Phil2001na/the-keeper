@@ -187,6 +187,28 @@ interface OpenAiResponse {
   error?: { message?: string };
 }
 
+// Transient upstream failures worth retrying. 503 is the big one — Gemini's
+// standard tier returns "this model is experiencing high demand, try again
+// later" under load, and Google literally means it. Without this a single blip
+// kills the whole turn and Philip sees "(something glitched)".
+const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 4;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Exponential backoff with jitter: ~0.7s, 1.4s, 2.8s. */
+function backoffMs(attempt: number): number {
+  return 700 * 2 ** (attempt - 1) + Math.floor(Math.random() * 300);
+}
+
+/** Honour a Retry-After header (seconds) when the server sends one (429s). */
+function retryAfterMs(r: Response): number | null {
+  const h = r.headers.get('retry-after');
+  if (!h) return null;
+  const secs = Number(h);
+  return Number.isFinite(secs) ? Math.min(secs * 1000, 10_000) : null;
+}
+
 async function viaOpenAiCompat(req: LlmRequest, url: string, apiKey: string): Promise<LlmResponse> {
   const tools = toolsToOpenAi(req.tools);
   const body = {
@@ -196,19 +218,34 @@ async function viaOpenAiCompat(req: LlmRequest, url: string, apiKey: string): Pr
     tools: tools.length ? tools : undefined,
   };
 
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      // Harmless attribution headers (OpenRouter shows them; Google ignores them).
-      'HTTP-Referer': 'https://github.com/Phil2001na/the-keeper',
-      'X-Title': 'The Keeper',
-    },
-    body: JSON.stringify(body),
-  });
+  let r: Response;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      r = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          // Harmless attribution headers (OpenRouter shows them; Google ignores them).
+          'HTTP-Referer': 'https://github.com/Phil2001na/the-keeper',
+          'X-Title': 'The Keeper',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (netErr) {
+      // Network blip (DNS/reset/timeout) — retry like a 5xx.
+      if (attempt >= MAX_ATTEMPTS) throw netErr;
+      await sleep(backoffMs(attempt));
+      continue;
+    }
 
-  if (!r.ok) {
+    if (r.ok) break;
+    if (RETRYABLE_STATUS.has(r.status) && attempt < MAX_ATTEMPTS) {
+      const wait = retryAfterMs(r) ?? backoffMs(attempt);
+      console.error(`[llm] ${config.modelProvider} ${r.status} (attempt ${attempt}/${MAX_ATTEMPTS}) — retrying in ${wait}ms`);
+      await sleep(wait);
+      continue;
+    }
     const detail = await r.text().catch(() => '');
     throw new Error(`${config.modelProvider} ${r.status}: ${detail.slice(0, 500)}`);
   }
