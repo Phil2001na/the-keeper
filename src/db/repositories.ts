@@ -400,6 +400,7 @@ export const journal = {
     const { data, error } = await db
       .from('keeper_journal')
       .select('*')
+      .eq('kind', 'nightly')
       .order('day', { ascending: false })
       .limit(limit);
     if (error) fail('journal.recent', error);
@@ -415,6 +416,34 @@ export const journal = {
       .maybeSingle();
     if (error) fail('journal.hasDay', error);
     return data !== null;
+  },
+};
+
+// ─── Portrait ──────────────────────────────────────────
+// The agent's living synthesis of WHO Philip is and how to be with him — a
+// single evolving document (not a dated log), revised during nightly reflection
+// and carried in the system prompt every turn. This is the "continuity of
+// stance": a stable lens applied to every interaction. Stored as the single
+// keeper_journal row with kind='portrait' (fixed day key → always one row).
+const PORTRAIT_KIND = 'portrait';
+const PORTRAIT_KEY = 'current';
+export const portrait = {
+  async get(): Promise<string | null> {
+    const { data, error } = await db
+      .from('keeper_journal')
+      .select('entry')
+      .eq('kind', PORTRAIT_KIND)
+      .eq('day', PORTRAIT_KEY)
+      .maybeSingle();
+    if (error) fail('portrait.get', error);
+    return (data as { entry: string } | null)?.entry ?? null;
+  },
+
+  async set(text: string): Promise<void> {
+    const { error } = await db
+      .from('keeper_journal')
+      .upsert({ kind: PORTRAIT_KIND, day: PORTRAIT_KEY, entry: text }, { onConflict: 'kind,day' });
+    if (error) fail('portrait.set', error);
   },
 };
 

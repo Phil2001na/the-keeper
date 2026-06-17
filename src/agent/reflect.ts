@@ -1,5 +1,5 @@
 import { localDateString } from '../config.js';
-import { goals, interactions, journal, observations, touchpoints } from '../db/repositories.js';
+import { goals, interactions, journal, observations, portrait, touchpoints } from '../db/repositories.js';
 import { runAgent } from './orchestrator.js';
 
 /**
@@ -13,11 +13,12 @@ export async function runNightlyReflection(): Promise<void> {
   const day = localDateString();
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  const [fired, todayCount, activeGoals, weekCounts] = await Promise.all([
+  const [fired, todayCount, activeGoals, weekCounts, currentPortrait] = await Promise.all([
     touchpoints.recentFired(7),
     interactions.countSince(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
     goals.list(true),
     observations.countByMetricSince(weekAgo),
+    portrait.get(),
   ]);
   const sent = fired.filter((t) => t.outcome === 'sent').length;
   const replied = fired.filter((t) => t.outcome === 'replied').length;
@@ -42,7 +43,8 @@ export async function runNightlyReflection(): Promise<void> {
     `3. GOALS & NUMBERS — active goals: ${goalLine}. This week you logged: ${loggedLine}. Review honestly: is a goal progressing, stalled, or quietly dead? update_goal status where reality says so. If a whole week passed with nothing logged in an area he cares about, that's a tracking gap — consider whether tomorrow's touchpoint should ask for the numbers, or whether tracking it no longer serves him.\n` +
     `4. TEND TOMORROW — standing rituals (↻) renew themselves; leave them alone. Beyond those, make sure at most one or two sensible ad-hoc touchpoints are pending (schedule/cancel as needed), or deliberately none if space serves him better.\n` +
     `5. GLANCE AHEAD — you may check list_emails ("is:unread") once to see if anything genuinely important is waiting; factor it into tomorrow, don't act on it now.\n` +
-    `6. WRITE — finish with write_journal: a few honest private lines on the state of him, what changed today, and what you're watching. Tomorrow-you reads this.\n\n` +
+    `6. REVISE YOUR PORTRAIT — this is your continuity of stance, the lens you read him through every turn. Current portrait:\n"""\n${currentPortrait ?? '(none yet — draw the first one now from everything you know about him: who he is, the arc he is on, how to be with him, what is load-bearing, what you have learned not to do)'}\n"""\nFold in only what TODAY genuinely changed about the durable picture — then update_portrait with the whole thing rewritten. Revise and compress; do not just append. Keep it ~200-400 words of stuff that stays true across weeks, not today's events (those go in the journal).\n` +
+    `7. WRITE — finish with write_journal: a few honest private lines on the state of him, what changed today, and what you're watching. Tomorrow-you reads this.\n\n` +
     `Then use stay_silent. Never message him from a reflection.`;
 
   await runAgent({ kind: 'reflection', brief });

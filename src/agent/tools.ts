@@ -8,6 +8,7 @@ import {
   touchpoints,
   interactions,
   journal,
+  portrait,
 } from '../db/repositories.js';
 import { parseRecurrence, nextOccurrence, monthStartUtc } from './recurrence.js';
 import { bus, type PresentCard } from '../web/bus.js';
@@ -273,6 +274,23 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
         entry: { type: 'string', description: 'The journal entry text.' },
       },
       required: ['entry'],
+    },
+  },
+  {
+    name: 'update_portrait',
+    description:
+      'Rewrite your living PORTRAIT of him — the stable, evolving synthesis of who he is right now, the arc he is on, ' +
+      'how to BE with him (posture, pressure, what lands and what does not), and what is load-bearing in his life. ' +
+      'This is NOT a daily log — it is your continuous through-line, shown to you in full every turn. ' +
+      'Normally revised once, during your nightly reflection: read the current portrait, fold in what today actually changed, ' +
+      'and write the whole thing back — revise and compress, do not just append. Keep it ~200-400 words: a sharp lens, not a file. ' +
+      'Write it as durable truth, not "today he…": the stuff that stays true across weeks.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The full revised portrait (replaces the previous one).' },
+      },
+      required: ['text'],
     },
   },
   {
@@ -689,6 +707,13 @@ export async function dispatchTool(
     case 'write_journal': {
       await journal.upsert('nightly', localDateString(), input.entry as string);
       return { output: 'Journal entry written.' };
+    }
+
+    case 'update_portrait': {
+      const text = String(input.text ?? '').trim();
+      if (text.length < 40) return { output: 'Portrait too short — write the full revised synthesis, ~200-400 words.' };
+      await portrait.set(text);
+      return { output: 'Portrait updated — this is now the lens you read him through every turn.' };
     }
 
     // ─── Life tracking ───────────────────────────────────────────────────────

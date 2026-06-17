@@ -7,6 +7,7 @@ import {
   observations,
   touchpoints,
   journal,
+  portrait,
   type Digest,
 } from '../db/repositories.js';
 import { githubEnabled } from '../deploy/github.js';
@@ -101,7 +102,7 @@ Whatever you write as your final text message is sent to Philip verbatim. Keep i
 }
 
 async function buildMemoryBlock(digest: Digest | null): Promise<string> {
-  const [domainList, factList, goalList, latestObs, pendingTouchpoints, journalEntries] =
+  const [domainList, factList, goalList, latestObs, pendingTouchpoints, journalEntries, portraitText] =
     await Promise.all([
       domains.list(),
       facts.all(),
@@ -109,6 +110,7 @@ async function buildMemoryBlock(digest: Digest | null): Promise<string> {
       observations.latestPerMetric(),
       touchpoints.pending(),
       journal.recent(3),
+      portrait.get(),
     ]);
   const slugById = new Map(domainList.map((d) => [d.id, d.slug]));
   const latestByMetric = new Map(latestObs.map((o) => [o.metric, o]));
@@ -188,7 +190,15 @@ async function buildMemoryBlock(digest: Digest | null): Promise<string> {
     ? digest.content
     : '(nothing folded yet — the whole recent conversation is still in raw view)';
 
-  return `# Sectors you currently track
+  const portraitBlock = portraitText
+    ? portraitText
+    : '(not written yet — your next nightly reflection will draw the first portrait from what you know)';
+
+  return `# Who he is — your living portrait (the lens you read everything else through)
+This is your evolving through-line, not a log. Hold it as your stance toward him; revise it nightly as he changes.
+${portraitBlock}
+
+# Sectors you currently track
 ${domainsBlock}
 
 # What you currently know about him
