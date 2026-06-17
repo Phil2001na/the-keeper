@@ -53,6 +53,7 @@ const STEP_LABELS: Record<string, string> = {
   stay_silent: 'choosing silence',
   list_emails: 'going through the inbox',
   read_email: 'reading an email',
+  draft_email: 'drafting the email',
   send_email: 'sending the email',
   list_drive_files: 'looking through the drive',
   read_drive_file: 'reading a file',
@@ -64,6 +65,7 @@ const STEP_LABELS: Record<string, string> = {
   generate_image: 'painting something',
   generate_pdf: 'drafting the document',
   web_search: 'searching the web',
+  fetch_url: 'opening a web page',
   present: 'arranging a view',
 };
 

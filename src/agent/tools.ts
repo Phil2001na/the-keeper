@@ -22,8 +22,9 @@ import {
 import { imageGenEnabled, generateImage } from '../generate/image.js';
 import { generatePdf } from '../generate/pdf.js';
 import { googleEnabled, getOAuth2Client as _auth } from '../integrations/google.js';
-import { listEmails, readEmail, sendEmail } from '../integrations/gmail.js';
+import { listEmails, readEmail, sendEmail, createDraft } from '../integrations/gmail.js';
 import { listDriveFiles, readDriveFile } from '../integrations/drive.js';
+import { fetchUrl } from '../integrations/web.js';
 
 /**
  * The tools the orchestrator can call. The database is the agent's hands:
@@ -351,9 +352,26 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
     },
   },
   {
+    name: 'draft_email',
+    description:
+      "Save an email as a DRAFT in Philip's Gmail — it lands in his Drafts folder for him to review and send himself, nothing goes out. " +
+      'This is the PREFERRED way to handle "write/draft an email to X" — draft it, then tell him it\'s in his drafts to review. ' +
+      'Only use send_email when he has clearly told you to actually send it.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'Recipient email address.' },
+        subject: { type: 'string' },
+        body: { type: 'string', description: 'Plain text email body.' },
+      },
+      required: ['to', 'subject', 'body'],
+    },
+  },
+  {
     name: 'send_email',
     description:
-      "Send an email from Philip's Gmail account. Always confirm with him before sending unless he explicitly asked you to send it.",
+      "Send an email from Philip's Gmail account immediately. Only use when he has explicitly told you to SEND it — " +
+      'otherwise prefer draft_email so he reviews it first. Never send blind.',
     input_schema: {
       type: 'object',
       properties: {
@@ -415,6 +433,21 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
         filename: { type: 'string', description: 'Optional filename (without .pdf extension).' },
       },
       required: ['title', 'body'],
+    },
+  },
+  // ─── Open web (client-side fetch — works on every model) ──────────────────
+  {
+    name: 'fetch_url',
+    description:
+      'Open a live web page and read its text — job listings, articles, company/career pages, docs, prices, anything with a URL. ' +
+      'Use it whenever he pastes a link, or when you need to actually READ a page you found. Returns the page title and readable text. ' +
+      'It does NOT run JavaScript, so heavily app-like or login-walled sites (notably LinkedIn and Indeed job pages) often return a block/login page instead of content — when that happens, say so and try a different source rather than guessing the content.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Full http(s) URL to fetch.' },
+      },
+      required: ['url'],
     },
   },
   // ─── Web search (server-side — executes inside the Anthropic API) ─────────
@@ -871,10 +904,33 @@ export async function dispatchTool(
       };
     }
 
+    case 'draft_email': {
+      if (!googleEnabled()) return { output: 'Gmail not configured.' };
+      const res = await createDraft(input.to as string, input.subject as string, input.body as string);
+      return {
+        output: res.ok
+          ? `Draft saved to his Gmail Drafts (id: ${res.draftId}). Tell him it's ready to review and send.`
+          : `Failed to save draft: ${res.error}`,
+      };
+    }
+
     case 'send_email': {
       if (!googleEnabled()) return { output: 'Gmail not configured.' };
       const res = await sendEmail(input.to as string, input.subject as string, input.body as string);
       return { output: res.ok ? `Email sent (id: ${res.messageId}).` : `Failed to send: ${res.error}` };
+    }
+
+    // ─── Open web ──────────────────────────────────────────────────────────
+    case 'fetch_url': {
+      const res = await fetchUrl(input.url as string);
+      if (!res.ok) return { output: `Couldn't read that page — ${res.error}` };
+      return {
+        output:
+          (res.title ? `Title: ${res.title}\n` : '') +
+          (res.url ? `URL: ${res.url}\n` : '') +
+          `\n${res.text}` +
+          (res.truncated ? '\n\n[…page truncated]' : ''),
+      };
     }
 
     // ─── Google Drive ───────────────────────────────────────────────────────

@@ -221,6 +221,29 @@ export function localTimeString(date = new Date()): string {
   }).format(date);
 }
 
+/** Short local weekday for a date, e.g. "Wed", in the configured timezone. */
+function localWeekday(date: Date): string {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, weekday: 'short' }).format(date);
+}
+
+/**
+ * Explicit relative-day anchor for the agent's situational awareness. The
+ * conversation window and archive are stamped in UTC, but he lives in local
+ * time — so "today / tomorrow / yesterday" must be reckoned against THESE local
+ * dates, not a UTC clock that can be a day off either side of midnight. Keeps
+ * the keeper from asking about an event before it has actually happened.
+ */
+export function relativeDayContext(date = new Date()): string {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const yest = new Date(date.getTime() - dayMs);
+  const tom = new Date(date.getTime() + dayMs);
+  return (
+    `today is ${localWeekday(date)} ${localDateString(date)} local` +
+    ` · tomorrow ${localWeekday(tom)} ${localDateString(tom)}` +
+    ` · yesterday ${localWeekday(yest)} ${localDateString(yest)}`
+  );
+}
+
 /**
  * True if `date` falls inside the quiet window (no proactive messages).
  * Handles windows that wrap past midnight (e.g. 23 â†’ 7).

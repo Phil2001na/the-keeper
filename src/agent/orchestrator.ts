@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { config, isQuietHours, localTimeString } from '../config.js';
+import { config, isQuietHours, localTimeString, relativeDayContext } from '../config.js';
 import {
   digests,
   interactions,
@@ -102,6 +102,7 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
  */
 function contextLine(history: Interaction[], anchored: boolean, surface?: Surface): string {
   const now = `${localTimeString()} (${config.timezone}) · UTC ${new Date().toISOString().slice(0, 16)}Z`;
+  const days = relativeDayContext();
   const oldest = history[0];
   const span = oldest
     ? `${history.length} msgs in view, back to ${oldest.created_at.slice(0, 16).replace('T', ' ')} UTC`
@@ -113,7 +114,10 @@ function contextLine(history: Interaction[], anchored: boolean, surface?: Surfac
     ? 'QUIET HOURS now — he wrote first, reply, but keep it low-key'
     : `quiet hours ${config.quietStart}:00–${config.quietEnd}:00`;
   const where = surface === 'web' ? ' · he is on the WEB UI (present tool available)' : '';
-  return `[context: ${now} · ${span} · ${beyond} · ${quiet}${where}]`;
+  // Timestamps in view/archive are UTC; reckon "today/tomorrow" against the
+  // local dates above, and never ask about something before its time has
+  // actually passed in local time.
+  return `[context: ${now} · ${days} · ${span} · ${beyond} · ${quiet}${where}]`;
 }
 
 /**

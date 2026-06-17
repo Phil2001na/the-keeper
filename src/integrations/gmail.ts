@@ -84,15 +84,37 @@ export async function readEmail(messageId: string): Promise<EmailFull> {
   };
 }
 
+/** Build a base64url-encoded RFC 822 message for the Gmail API. */
+function rawMessage(to: string, subject: string, body: string): string {
+  return Buffer.from(
+    `To: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`
+  ).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 /** Send an email from Philip's Gmail account. */
 export async function sendEmail(to: string, subject: string, body: string): Promise<{ ok: boolean; messageId?: string; error?: string }> {
   try {
     const gmail = client();
-    const raw = Buffer.from(
-      `To: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`
-    ).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    const res = await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
+    const res = await gmail.users.messages.send({ userId: 'me', requestBody: { raw: rawMessage(to, subject, body) } });
     return { ok: true, messageId: res.data.id ?? undefined };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+/**
+ * Save an email as a DRAFT in Philip's Gmail (does NOT send). Lands in his
+ * Drafts folder for him to review, tweak, and send himself — the safe default
+ * when he hasn't explicitly told the keeper to fire it off.
+ */
+export async function createDraft(to: string, subject: string, body: string): Promise<{ ok: boolean; draftId?: string; error?: string }> {
+  try {
+    const gmail = client();
+    const res = await gmail.users.drafts.create({
+      userId: 'me',
+      requestBody: { message: { raw: rawMessage(to, subject, body) } },
+    });
+    return { ok: true, draftId: res.data.id ?? undefined };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
