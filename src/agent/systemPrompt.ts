@@ -8,6 +8,7 @@ import {
   touchpoints,
   journal,
   portrait,
+  threads,
   type Digest,
 } from '../db/repositories.js';
 import { githubEnabled } from '../deploy/github.js';
@@ -102,7 +103,7 @@ Whatever you write as your final text message is sent to Philip verbatim. Keep i
 }
 
 async function buildMemoryBlock(digest: Digest | null): Promise<string> {
-  const [domainList, factList, goalList, latestObs, pendingTouchpoints, journalEntries, portraitText] =
+  const [domainList, factList, goalList, latestObs, pendingTouchpoints, journalEntries, portraitText, threadList] =
     await Promise.all([
       domains.list(),
       facts.all(),
@@ -111,6 +112,7 @@ async function buildMemoryBlock(digest: Digest | null): Promise<string> {
       touchpoints.pending(),
       journal.recent(3),
       portrait.get(),
+      threads.list(true),
     ]);
   const slugById = new Map(domainList.map((d) => [d.id, d.slug]));
   const latestByMetric = new Map(latestObs.map((o) => [o.metric, o]));
@@ -178,6 +180,17 @@ async function buildMemoryBlock(digest: Digest | null): Promise<string> {
           .join('\n')
       : '(none scheduled)';
 
+  const threadsBlock =
+    threadList.length > 0
+      ? threadList
+          .map(
+            (t) =>
+              `- [${t.id.slice(0, 8)}]${t.next_check ? ` (look by ${t.next_check})` : ''} ${t.title}` +
+              (t.note ? ` — ${t.note}` : '')
+          )
+          .join('\n')
+      : '(nothing on watch — open a thread when a loop or hunch is worth not letting drop)';
+
   const journalBlock =
     journalEntries.length > 0
       ? journalEntries.map((j) => `--- ${j.day} ---\n${j.entry}`).join('\n')
@@ -212,6 +225,9 @@ ${numbersBlock}
 
 # Your upcoming reach-outs (already scheduled; ↻ = standing ritual, renews itself)
 ${touchpointsBlock}
+
+# Threads you're watching (open loops & hunches — return to them, don't let them drop)
+${threadsBlock}
 
 # Your journal (latest entries, newest first — private)
 ${journalBlock}

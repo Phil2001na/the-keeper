@@ -49,6 +49,8 @@ const STEP_LABELS: Record<string, string> = {
   update_goal: 'updating a goal',
   write_journal: 'writing in my journal',
   update_portrait: 'redrawing how i see him',
+  watch_thread: 'noting something to watch',
+  update_thread: 'updating what i\'m watching',
   schedule_touchpoint: 'planning when to resurface',
   cancel_touchpoint: 'rearranging my plans',
   stay_silent: 'choosing silence',

@@ -226,6 +226,11 @@ function localWeekday(date: Date): string {
   return new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, weekday: 'short' }).format(date);
 }
 
+/** Lowercase 3-letter local weekday, e.g. "sun" — for cadence gating. */
+export function localWeekdayShort(date = new Date()): string {
+  return localWeekday(date).toLowerCase().slice(0, 3);
+}
+
 /**
  * Explicit relative-day anchor for the agent's situational awareness. The
  * conversation window and archive are stamped in UTC, but he lives in local

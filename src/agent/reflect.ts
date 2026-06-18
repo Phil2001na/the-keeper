@@ -1,6 +1,9 @@
-import { localDateString } from '../config.js';
-import { goals, interactions, journal, observations, portrait, touchpoints } from '../db/repositories.js';
+import { localDateString, localWeekdayShort } from '../config.js';
+import { goals, interactions, journal, observations, portrait, threads, touchpoints } from '../db/repositories.js';
 import { runAgent } from './orchestrator.js';
+
+/** Local weekday on which the heavier weekly pattern pass runs. */
+const WEEKLY_PASS_DAY = 'sun';
 
 /**
  * The agent's nightly reflection — its inner life. Once per evening it wakes
@@ -13,13 +16,15 @@ export async function runNightlyReflection(): Promise<void> {
   const day = localDateString();
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  const [fired, todayCount, activeGoals, weekCounts, currentPortrait] = await Promise.all([
+  const [fired, todayCount, activeGoals, weekCounts, currentPortrait, openThreads] = await Promise.all([
     touchpoints.recentFired(7),
     interactions.countSince(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
     goals.list(true),
     observations.countByMetricSince(weekAgo),
     portrait.get(),
+    threads.list(true),
   ]);
+  const isWeeklyPass = localWeekdayShort() === WEEKLY_PASS_DAY;
   const sent = fired.filter((t) => t.outcome === 'sent').length;
   const replied = fired.filter((t) => t.outcome === 'replied').length;
   const stayedSilent = fired.filter((t) => t.outcome === 'silent').length;
@@ -33,6 +38,23 @@ export async function runNightlyReflection(): Promise<void> {
       .filter(([m]) => !m.startsWith('sys.'))
       .map(([m, n]) => `${m}×${n}`)
       .join(', ') || 'nothing';
+  const threadLine =
+    openThreads.length > 0
+      ? openThreads
+          .map((t) => `[${t.id.slice(0, 8)}]${t.next_check ? ` (due ${t.next_check})` : ''} ${t.title}`)
+          .join('; ')
+      : 'none open yet';
+
+  // The watching ledger is reviewed every night; the heavier pattern pass —
+  // which actually digs through the number history and the archive for trends,
+  // recurrences, and telling silences — runs once a week to spare the budget.
+  const watchStep =
+    `7. WATCH — your anticipation ledger (return to loops instead of forgetting them). Currently open: ${threadLine}.\n` +
+    `   - Review each open thread: if it resolved (landed, died, or stopped mattering) update_thread status=closed; if it is still live, push its next_check or refine the note; if one is now ripe to raise with him, schedule_touchpoint it.\n` +
+    `   - Capture anything from today worth not dropping as a NEW watch_thread — an awaited reply, a decision with a closing window, a slow-developing situation.\n` +
+    (isWeeklyPass
+      ? `   - WEEKLY DEEP PASS (today): go hunting for patterns he can't see himself. Use query_observations (mode "monthly" / "series", and "spend." as a prefix) to spot trends and drifts; use search_history for telling SILENCES — things that matter to him that have gone quiet (e.g. the music is "the blade," yet how long since he last mentioned it or wrote?). Turn anything real into a thread or, if ripe, a gentle touchpoint. Patterns across weeks, not today's noise.\n`
+      : `   - (The deep weekly pattern pass runs on ${WEEKLY_PASS_DAY}; tonight just keep the ledger honest.)\n`);
 
   const brief =
     `[INTERNAL — NIGHTLY REFLECTION — Philip will NOT see this. Do NOT write him a message.]\n` +
@@ -43,8 +65,9 @@ export async function runNightlyReflection(): Promise<void> {
     `3. GOALS & NUMBERS — active goals: ${goalLine}. This week you logged: ${loggedLine}. Review honestly: is a goal progressing, stalled, or quietly dead? update_goal status where reality says so. If a whole week passed with nothing logged in an area he cares about, that's a tracking gap — consider whether tomorrow's touchpoint should ask for the numbers, or whether tracking it no longer serves him.\n` +
     `4. TEND TOMORROW — standing rituals (↻) renew themselves; leave them alone. Beyond those, make sure at most one or two sensible ad-hoc touchpoints are pending (schedule/cancel as needed), or deliberately none if space serves him better.\n` +
     `5. GLANCE AHEAD — you may check list_emails ("is:unread") once to see if anything genuinely important is waiting; factor it into tomorrow, don't act on it now.\n` +
-    `6. REVISE YOUR PORTRAIT — this is your continuity of stance, the lens you read him through every turn. Current portrait:\n"""\n${currentPortrait ?? '(none yet — draw the first one now from everything you know about him: who he is, the arc he is on, how to be with him, what is load-bearing, what you have learned not to do)'}\n"""\nFold in only what TODAY genuinely changed about the durable picture — then update_portrait with the whole thing rewritten. Revise and compress; do not just append. Keep it ~200-400 words of stuff that stays true across weeks, not today's events (those go in the journal).\n` +
-    `7. WRITE — finish with write_journal: a few honest private lines on the state of him, what changed today, and what you're watching. Tomorrow-you reads this.\n\n` +
+    watchStep +
+    `8. REVISE YOUR PORTRAIT — this is your continuity of stance, the lens you read him through every turn. Current portrait:\n"""\n${currentPortrait ?? '(none yet — draw the first one now from everything you know about him: who he is, the arc he is on, how to be with him, what is load-bearing, what you have learned not to do)'}\n"""\nFold in only what TODAY genuinely changed about the durable picture — then update_portrait with the whole thing rewritten. Revise and compress; do not just append. Keep it ~200-400 words of stuff that stays true across weeks, not today's events (those go in the journal).\n` +
+    `9. WRITE — finish with write_journal: a few honest private lines on the state of him, what changed today, and what you're watching. Tomorrow-you reads this.\n\n` +
     `Then use stay_silent. Never message him from a reflection.`;
 
   await runAgent({ kind: 'reflection', brief });

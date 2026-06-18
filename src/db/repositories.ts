@@ -64,6 +64,18 @@ export interface Goal {
   updated_at: string;
 }
 
+/** A watched open loop / hypothesis about him — the anticipation ledger. */
+export interface Thread {
+  id: string;
+  domain_id: string | null;
+  title: string;
+  note: string | null;
+  status: string;
+  next_check: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** The rolling conversation digest + the context-window anchor it implies. */
 export interface Digest {
   id: string;
@@ -585,6 +597,66 @@ export const goals = {
     const all = await this.list(false);
     const matches = all.filter((g) => g.id.startsWith(prefix));
     return matches.length === 1 ? (matches[0] as Goal) : null;
+  },
+};
+
+// ─── Threads ───────────────────────────────────────────
+// The "watching" ledger — open loops and forward-looking hypotheses about him.
+// The agent reviews these every reflection and either closes them or escalates
+// one into a touchpoint. This is anticipation made durable.
+export const threads = {
+  async list(openOnly = true): Promise<Thread[]> {
+    let q = db
+      .from('keeper_threads')
+      .select('*')
+      .order('next_check', { ascending: true, nullsFirst: false })
+      .order('created_at', { ascending: true })
+      .limit(200);
+    if (openOnly) q = q.eq('status', 'open');
+    const { data, error } = await q;
+    if (error) fail('threads.list', error);
+    return data as Thread[];
+  },
+
+  async create(input: {
+    domain_id?: string | null;
+    title: string;
+    note?: string | null;
+    next_check?: string | null;
+  }): Promise<Thread> {
+    const { data, error } = await db
+      .from('keeper_threads')
+      .insert({
+        domain_id: input.domain_id ?? null,
+        title: input.title,
+        note: input.note ?? null,
+        next_check: input.next_check ?? null,
+      })
+      .select('*')
+      .single();
+    if (error) fail('threads.create', error);
+    return data as Thread;
+  },
+
+  async update(
+    id: string,
+    patch: { title?: string; note?: string | null; status?: string; next_check?: string | null }
+  ): Promise<Thread | null> {
+    const { data, error } = await db
+      .from('keeper_threads')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select('*')
+      .maybeSingle();
+    if (error) fail('threads.update', error);
+    return (data as Thread) ?? null;
+  },
+
+  /** Resolve a thread by full id or unambiguous prefix (ids in prompts get long). */
+  async byIdPrefix(prefix: string): Promise<Thread | null> {
+    const all = await this.list(false);
+    const matches = all.filter((t) => t.id.startsWith(prefix));
+    return matches.length === 1 ? (matches[0] as Thread) : null;
   },
 };
 

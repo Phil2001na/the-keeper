@@ -9,6 +9,7 @@ import {
   interactions,
   journal,
   portrait,
+  threads,
 } from '../db/repositories.js';
 import { parseRecurrence, nextOccurrence, monthStartUtc } from './recurrence.js';
 import { bus, type PresentCard } from '../web/bus.js';
@@ -274,6 +275,42 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
         entry: { type: 'string', description: 'The journal entry text.' },
       },
       required: ['entry'],
+    },
+  },
+  {
+    name: 'watch_thread',
+    description:
+      'Open a THREAD in your watching ledger — a forward-looking loop or hypothesis about him you want to keep an eye on and not let drop. ' +
+      'These are the things you would otherwise put in a journal "watching" list, but tracked so you actually return to them: an awaited reply ' +
+      '(Dr Wanda, a client payment), a decision with a closing window (a job deadline), a slow-developing situation (someone he is getting to know), ' +
+      'or a pattern worth confirming over time. Set next_check to when it is worth looking again. Keep titles short and specific.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short specific name for the loop, e.g. "Dr Wanda reply to pause request".' },
+        note: { type: 'string', description: 'What you are watching for and why it matters / what would close it.' },
+        domain_slug: { type: 'string', description: 'Optional sector this relates to.' },
+        next_check: { type: 'string', description: 'YYYY-MM-DD — when to look at this again. Omit if open-ended.' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'update_thread',
+    description:
+      'Update a thread by id (or unambiguous id prefix) from your watching ledger: revise the note as things develop, push next_check out, ' +
+      'or set status "closed" when the loop resolves (it landed, it died, or it no longer matters). Close threads out loud in your own notes — ' +
+      'a ledger full of dead loops is noise. When a thread is ripe to actually raise with him, schedule_touchpoint it and note that here.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Thread id or prefix, from the watching ledger in your context.' },
+        note: { type: 'string' },
+        status: { type: 'string', enum: ['open', 'closed'] },
+        next_check: { type: 'string', description: 'YYYY-MM-DD, or empty string to clear.' },
+        title: { type: 'string' },
+      },
+      required: ['id'],
     },
   },
   {
@@ -714,6 +751,44 @@ export async function dispatchTool(
       if (text.length < 40) return { output: 'Portrait too short — write the full revised synthesis, ~200-400 words.' };
       await portrait.set(text);
       return { output: 'Portrait updated — this is now the lens you read him through every turn.' };
+    }
+
+    case 'watch_thread': {
+      const title = String(input.title ?? '').trim();
+      if (!title) return { output: 'A thread needs a title.' };
+      const nextCheck = (input.next_check as string | undefined)?.trim();
+      if (nextCheck && !/^\d{4}-\d{2}-\d{2}$/.test(nextCheck)) {
+        return { output: `next_check must be YYYY-MM-DD, got "${nextCheck}".` };
+      }
+      const domainId = await resolveDomainId(input.domain_slug as string | undefined);
+      const t = await threads.create({
+        domain_id: domainId,
+        title,
+        note: (input.note as string | undefined)?.trim() || null,
+        next_check: nextCheck || null,
+      });
+      return {
+        output: `Now watching [${t.id.slice(0, 8)}]: ${t.title}` + (t.next_check ? ` (next look ${t.next_check})` : ''),
+      };
+    }
+
+    case 'update_thread': {
+      const t = await threads.byIdPrefix(String(input.id ?? '').trim());
+      if (!t) return { output: `No single thread matches id "${input.id}" — use an id from the watching ledger in your context.` };
+      const patch: Parameters<typeof threads.update>[1] = {};
+      if (typeof input.title === 'string' && input.title.trim()) patch.title = input.title.trim();
+      if (typeof input.note === 'string') patch.note = input.note.trim() || null;
+      if (typeof input.status === 'string' && ['open', 'closed'].includes(input.status)) patch.status = input.status;
+      if (typeof input.next_check === 'string') {
+        const d = input.next_check.trim();
+        if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return { output: 'next_check must be YYYY-MM-DD (or empty to clear).' };
+        patch.next_check = d || null;
+      }
+      if (Object.keys(patch).length === 0) return { output: 'Nothing to update — pass at least one field.' };
+      const updated = await threads.update(t.id, patch);
+      return {
+        output: `Thread [${t.id.slice(0, 8)}] updated${patch.status ? ` → ${patch.status}` : ''}: ${updated?.title ?? t.title}`,
+      };
     }
 
     // ─── Life tracking ───────────────────────────────────────────────────────
