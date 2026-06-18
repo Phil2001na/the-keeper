@@ -49,7 +49,7 @@ export async function runNightlyReflection(): Promise<void> {
   // which actually digs through the number history and the archive for trends,
   // recurrences, and telling silences — runs once a week to spare the budget.
   const watchStep =
-    `7. WATCH — your anticipation ledger (return to loops instead of forgetting them). Currently open: ${threadLine}.\n` +
+    `6. WATCH — your anticipation ledger (return to loops instead of forgetting them). Currently open: ${threadLine}.\n` +
     `   - Review each open thread: if it resolved (landed, died, or stopped mattering) update_thread status=closed; if it is still live, push its next_check or refine the note; if one is now ripe to raise with him, schedule_touchpoint it.\n` +
     `   - Capture anything from today worth not dropping as a NEW watch_thread — an awaited reply, a decision with a closing window, a slow-developing situation.\n` +
     (isWeeklyPass
@@ -66,8 +66,8 @@ export async function runNightlyReflection(): Promise<void> {
     `4. TEND TOMORROW — standing rituals (↻) renew themselves; leave them alone. Beyond those, make sure at most one or two sensible ad-hoc touchpoints are pending (schedule/cancel as needed), or deliberately none if space serves him better.\n` +
     `5. GLANCE AHEAD — you may check list_emails ("is:unread") once to see if anything genuinely important is waiting; factor it into tomorrow, don't act on it now.\n` +
     watchStep +
-    `8. REVISE YOUR PORTRAIT — this is your continuity of stance, the lens you read him through every turn. Current portrait:\n"""\n${currentPortrait ?? '(none yet — draw the first one now from everything you know about him: who he is, the arc he is on, how to be with him, what is load-bearing, what you have learned not to do)'}\n"""\nFold in only what TODAY genuinely changed about the durable picture — then update_portrait with the whole thing rewritten. Revise and compress; do not just append. Keep it ~200-400 words of stuff that stays true across weeks, not today's events (those go in the journal).\n` +
-    `9. WRITE — finish with write_journal: a few honest private lines on the state of him, what changed today, and what you're watching. Tomorrow-you reads this.\n\n` +
+    `7. REVISE YOUR PORTRAIT — this is your continuity of stance, the lens you read him through every turn. Current portrait:\n"""\n${currentPortrait ?? '(none yet — draw the first one now from everything you know about him: who he is, the arc he is on, how to be with him, what is load-bearing, what you have learned not to do)'}\n"""\nFold in only what TODAY genuinely changed about the durable picture — then update_portrait with the whole thing rewritten. Revise and compress; do not just append. Keep it ~200-400 words of stuff that stays true across weeks, not today's events (those go in the journal).\n` +
+    `8. WRITE — finish with write_journal: a few honest private lines on the state of him, what changed today, and what you're watching. Tomorrow-you reads this.\n\n` +
     `Then use stay_silent. Never message him from a reflection.`;
 
   await runAgent({ kind: 'reflection', brief });
