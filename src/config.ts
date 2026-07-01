@@ -125,8 +125,9 @@ export const config = {
     modelProvider === 'openrouter'
       ? requiredToken('OPENROUTER_API_KEY')
       : (process.env.OPENROUTER_API_KEY ?? '').replace(/\s+/g, ''),
-  // Model id; defaults follow the provider. Override to flip models, no code.
-  model: optional('MODEL', defaultModel),
+  // Model id; defaults follow the provider. Override to flip models, no code —
+  // except Gemini, which is pinned to the regular (flash) model, never pro.
+  model: modelProvider === 'gemini' ? defaultModel : optional('MODEL', defaultModel),
 
   // Optional: enables voice-note transcription. If unset, voice notes get a
   // friendly "I can't hear that yet" reply instead of crashing.
