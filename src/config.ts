@@ -102,13 +102,13 @@ const modelProvider = optional('MODEL_PROVIDER', 'anthropic');
 // Per-provider model defaults (overridable with MODEL / DIGEST_MODEL).
 const defaultModel =
   modelProvider === 'gemini'
-    ? 'gemini-2.5-flash'
+    ? 'gemini-3.5-flash'
     : modelProvider === 'openrouter'
       ? 'google/gemini-2.5-flash'
       : 'claude-sonnet-4-6';
 const defaultDigestModel =
   modelProvider === 'gemini'
-    ? 'gemini-2.5-flash'
+    ? 'gemini-3.5-flash'
     : modelProvider === 'openrouter'
       ? 'google/gemini-2.5-flash'
       : 'claude-haiku-4-5-20251001';
