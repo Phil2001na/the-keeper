@@ -47,6 +47,7 @@ export interface Observation {
   observed_at: string;
   note: string | null;
   source: string;
+  external_ref: string | null;
   created_at: string;
 }
 
@@ -488,6 +489,61 @@ export const observations = {
       .single();
     if (error) fail('observations.log', error);
     return data as Observation;
+  },
+
+  /**
+   * Batch-insert observations that carry an external_ref (statement lines).
+   * Rows whose external_ref already exists are silently skipped (ON CONFLICT
+   * DO NOTHING) — safe to re-run on an overlapping or re-pasted statement.
+   * Returns only the rows actually inserted.
+   */
+  async logBatch(
+    rows: Array<{
+      domain_id?: string | null;
+      metric: string;
+      value?: number | null;
+      text_value?: string | null;
+      unit?: string | null;
+      observed_at: string;
+      note?: string | null;
+      source?: string;
+      external_ref: string;
+    }>
+  ): Promise<Observation[]> {
+    if (rows.length === 0) return [];
+    const { data, error } = await db
+      .from('keeper_observations')
+      .upsert(
+        rows.map((r) => ({
+          domain_id: r.domain_id ?? null,
+          metric: r.metric,
+          value: r.value ?? null,
+          text_value: r.text_value ?? null,
+          unit: r.unit ?? null,
+          observed_at: r.observed_at,
+          note: r.note ?? null,
+          source: r.source ?? 'statement',
+          external_ref: r.external_ref,
+        })),
+        { onConflict: 'external_ref', ignoreDuplicates: true }
+      )
+      .select('*');
+    if (error) fail('observations.logBatch', error);
+    return data as Observation[];
+  },
+
+  /** The most recent observation of a metric strictly before an instant (reconciliation baseline). */
+  async latestBefore(metric: string, beforeIso: string): Promise<Observation | null> {
+    const { data, error } = await db
+      .from('keeper_observations')
+      .select('*')
+      .eq('metric', metric)
+      .lt('observed_at', beforeIso)
+      .order('observed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) fail('observations.latestBefore', error);
+    return (data as Observation | null) ?? null;
   },
 
   /**
