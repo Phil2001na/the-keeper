@@ -31,7 +31,7 @@ Because the window is append-only between folds, the whole prefix (character + m
 
 ### Tracking your life (you can't improve what you don't track)
 - **Observations** — an append-only time-series of anything measurable: `spend.food`, `money.income`, `balance.main`, `body.weight_kg`, `mood`. The agent logs numbers quietly as they pass by in conversation (`log_observation`) and digs through them on demand (`query_observations`: latest / series / monthly, with `spend.` prefix aggregation).
-- **Bank statements** — send a PDF or CSV; it logs each meaningful line with its *real* date and `source: statement`, then gives a short honest read of the week.
+- **Bank statements** — send a PDF or CSV; it parses every meaningful line and logs the whole statement in one `log_statement` batch call (real dates, signed amounts, categories, plus the stated closing balance). The tool deduplicates lines it's already logged (safe to re-paste an overlapping statement) and reconciles the prior `balance.main` + this period's net flow against the new stated balance *in code* — then gives a short honest read of the week, including whether the numbers actually matched.
 - **Goals** — real rows with metric, target, deadline, status (`set_goal` / `update_goal`), always visible in its context, reviewed against the numbers in nightly reflection.
 - **Standing rituals** — touchpoints with a `recurrence` (`weekly:sun@10:00`, `monthly:last@10:00`, `daily@07:30`, local time) renew **themselves** after firing — the scheduler guarantees the Sunday finance review and the month-end financial health report happen, not the model's discipline.
 - **Cost self-awareness** — every run logs its token spend as a `sys.turn` observation (estimated USD). `/status` shows today + this month; ask it "what do you cost me" and it can answer from data.
@@ -95,6 +95,8 @@ migrations/
   001_init.sql           schema
   002_memory_depth.sql   full-text search archive, journal, touchpoint outcomes
   003_tracking.sql       observations, goals, rolling digest, ritual recurrence
+  004_threads.sql        watching ledger (open loops / hypotheses)
+  005_statement_recon.sql  external_ref + dedup index for batch statement logging
 ```
 
 ### /status

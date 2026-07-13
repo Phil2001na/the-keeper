@@ -1,4 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
+import { createHash } from 'node:crypto';
 import { localDateString } from '../config.js';
 import {
   domains,
@@ -202,6 +203,49 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
         months: { type: 'number', description: 'monthly only: how many months back (default 6, max 24).' },
       },
       required: ['mode'],
+    },
+  },
+  {
+    name: 'log_statement',
+    description:
+      'Batch-log a parsed bank statement in ONE call, with deterministic reconciliation — use this instead of calling log_observation ' +
+      'line-by-line for a statement. Give it every meaningful transaction line plus the statement\'s stated closing balance. ' +
+      'It logs them all (skipping any line already logged before, so re-pasting an overlapping statement is safe), then checks in code — ' +
+      'not in your head — whether the last known balance.main plus this period\'s net flow actually equals the new stated balance. ' +
+      'Read the reconciliation result back to him honestly: if it matches, say so plainly; if it does not, say so and flag that a line ' +
+      'was likely missed, mis-signed, or double-counted rather than asserting the numbers are fine.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        period_label: { type: 'string', description: 'Optional label, e.g. "Statement 6–13 Jul".' },
+        closing_balance: {
+          type: 'number',
+          description: "The statement's stated ending/available balance — ground truth to reconcile against, logged as balance.main.",
+        },
+        closing_balance_iso: {
+          type: 'string',
+          description: 'Date of the closing balance (YYYY-MM-DD). Defaults to the latest line date.',
+        },
+        lines: {
+          type: 'array',
+          description: 'One entry per meaningful transaction. amount is SIGNED: positive = money in, negative = money out.',
+          items: {
+            type: 'object',
+            properties: {
+              date_iso: { type: 'string', description: 'Real transaction date (YYYY-MM-DD).' },
+              amount: { type: 'number', description: 'Signed amount: positive = income/credit, negative = spend/debit.' },
+              metric: { type: 'string', description: 'e.g. money.income, spend.food, spend.transport.' },
+              note: { type: 'string', description: 'Short description — merchant, or context like "Dog Force invoice".' },
+              raw_ref: {
+                type: 'string',
+                description: 'Optional short excerpt of the original statement line — improves duplicate detection if this statement gets pasted again.',
+              },
+            },
+            required: ['date_iso', 'amount', 'metric'],
+          },
+        },
+      },
+      required: ['closing_balance', 'lines'],
     },
   },
   {
@@ -886,6 +930,90 @@ export async function dispatchTool(
       }
 
       return { output: `Unknown mode "${mode}" — use latest, series, or monthly.` };
+    }
+
+    case 'log_statement': {
+      const rawLines = Array.isArray(input.lines) ? (input.lines as Record<string, unknown>[]) : [];
+      if (rawLines.length === 0) return { output: 'No lines given — nothing to log.' };
+      const closingBalance =
+        typeof input.closing_balance === 'number' && Number.isFinite(input.closing_balance) ? input.closing_balance : null;
+      if (closingBalance === null) return { output: 'closing_balance is required — the statement\'s stated ending balance.' };
+
+      const hash = (parts: (string | number)[]) => createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 32);
+
+      type Line = { date: Date; amount: number; metric: string; note: string | null; rawRef: string | null };
+      const lines: Line[] = [];
+      for (const raw of rawLines) {
+        const metric = String(raw.metric ?? '').trim().toLowerCase().replace(/\s+/g, '_');
+        if (!/^[a-z0-9_.]{2,64}$/.test(metric)) {
+          return { output: `Bad metric name "${raw.metric}" in a statement line — lowercase letters/digits/dots/underscores only, e.g. spend.food.` };
+        }
+        const amount = typeof raw.amount === 'number' && Number.isFinite(raw.amount) ? raw.amount : null;
+        if (amount === null) return { output: `Line for "${metric}" is missing a numeric signed amount.` };
+        const dateIso = typeof raw.date_iso === 'string' ? raw.date_iso.trim() : '';
+        const d = dateIso ? new Date(dateIso) : null;
+        if (!d || Number.isNaN(d.getTime())) return { output: `Bad or missing date_iso on a "${metric}" line.` };
+        lines.push({
+          date: d,
+          amount,
+          metric,
+          note: (raw.note as string | undefined)?.trim() || null,
+          rawRef: (raw.raw_ref as string | undefined)?.trim() || null,
+        });
+      }
+
+      const firstLine = lines[0] as Line;
+      const closingIso =
+        typeof input.closing_balance_iso === 'string' && input.closing_balance_iso.trim()
+          ? new Date(input.closing_balance_iso)
+          : lines.reduce((latest, l) => (l.date > latest ? l.date : latest), firstLine.date);
+      if (Number.isNaN(closingIso.getTime())) return { output: `Bad closing_balance_iso "${input.closing_balance_iso}".` };
+
+      const periodLabel = (input.period_label as string | undefined)?.trim() || null;
+
+      const rows = lines.map((l) => ({
+        metric: l.metric,
+        value: l.amount,
+        observed_at: l.date.toISOString(),
+        note: l.note,
+        source: 'statement',
+        external_ref: hash([l.metric, l.date.toISOString().slice(0, 10), l.amount, l.rawRef ?? l.note ?? '']),
+      }));
+      rows.push({
+        metric: 'balance.main',
+        value: closingBalance,
+        observed_at: closingIso.toISOString(),
+        note: periodLabel ?? 'statement closing balance',
+        source: 'statement',
+        external_ref: hash(['balance.main', closingIso.toISOString().slice(0, 10), closingBalance]),
+      });
+
+      const inserted = await observations.logBatch(rows);
+      const skipped = rows.length - inserted.length;
+
+      const round2 = (n: number) => Math.round(n * 100) / 100;
+      const netFlow = round2(lines.reduce((sum, l) => sum + l.amount, 0));
+      const earliestLine = lines.reduce((earliest, l) => (l.date < earliest ? l.date : earliest), firstLine.date);
+      const prior = await observations.latestBefore('balance.main', earliestLine.toISOString());
+
+      let reconLine: string;
+      if (prior?.value == null) {
+        reconLine = `No prior balance.main before this statement — nothing to reconcile against yet. Closing balance ${round2(closingBalance)} becomes the new baseline.`;
+      } else {
+        const priorValue = Number(prior.value);
+        const expected = round2(priorValue + netFlow);
+        const diff = round2(closingBalance - expected);
+        const matched = Math.abs(diff) < 0.01;
+        reconLine = matched
+          ? `Reconciled: prior balance ${round2(priorValue)} + net flow ${netFlow} = ${expected}, matches the stated closing balance ${round2(closingBalance)}.`
+          : `Mismatch: prior balance ${round2(priorValue)} + net flow ${netFlow} = ${expected} expected, but the statement says ${round2(closingBalance)} (diff ${diff > 0 ? '+' : ''}${diff}). A line was likely missed, mis-signed, or double-counted — say so plainly, don't paper over it.`;
+      }
+
+      return {
+        output:
+          `Logged ${inserted.length} line(s)${skipped > 0 ? ` (${skipped} already logged, skipped as duplicates)` : ''} from ${lines.length} transaction(s) + closing balance${periodLabel ? ` — ${periodLabel}` : ''}.\n` +
+          reconLine,
+      };
     }
 
     case 'set_goal': {
