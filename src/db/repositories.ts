@@ -1,4 +1,5 @@
 import { db } from './client.js';
+import { embed } from '../integrations/embeddings.js';
 
 // ─── Types ─────────────────────────────────────────────
 export interface Domain {
@@ -335,15 +336,52 @@ export const interactions = {
    * long-term episodic memory. Plain words, quoted phrases, and `-exclusions`
    * all work (websearch syntax). Newest matches first.
    */
-  async search(query: string, limit = 12): Promise<Interaction[]> {
+  async searchFts(query: string, limit = 12): Promise<Interaction[]> {
     const { data, error } = await db
       .from('keeper_interactions')
       .select(INTERACTION_COLS)
       .textSearch('fts', query, { type: 'websearch', config: 'english' })
       .order('created_at', { ascending: false })
       .limit(limit);
-    if (error) fail('interactions.search', error);
+    if (error) fail('interactions.searchFts', error);
     return data as Interaction[];
+  },
+
+  /**
+   * Semantic (vector) search via match_interactions() — finds interactions
+   * that mean the same thing as the query even without shared keywords.
+   * Returns [] (not an error) when there's no Gemini key or embed() fails.
+   */
+  async searchSemantic(query: string, limit = 12): Promise<Interaction[]> {
+    const vector = await embed(query);
+    if (!vector) return [];
+    const { data, error } = await db.rpc('match_interactions', {
+      query_embedding: vector,
+      match_count: limit,
+    });
+    if (error) fail('interactions.searchSemantic', error);
+    return data as Interaction[];
+  },
+
+  /**
+   * FTS and semantic search run in parallel and are merged (FTS first, since
+   * keyword hits tend to be the more precise match, then semantic results
+   * not already present) — graceful fallback to FTS-only with no Gemini key.
+   */
+  async search(query: string, limit = 12): Promise<Interaction[]> {
+    const [fts, semantic] = await Promise.all([
+      this.searchFts(query, limit),
+      this.searchSemantic(query, limit),
+    ]);
+    const seen = new Set(fts.map((r) => r.id));
+    const merged = [...fts];
+    for (const row of semantic) {
+      if (!seen.has(row.id)) {
+        seen.add(row.id);
+        merged.push(row);
+      }
+    }
+    return merged.slice(0, limit);
   },
 
   /** Everything said between two instants (oldest first) — "what happened that day". */
@@ -389,12 +427,25 @@ export const interactions = {
     content: string;
     trigger?: string | null;
   }): Promise<void> {
-    const { error } = await db.from('keeper_interactions').insert({
-      role: input.role,
-      content: input.content,
-      trigger: input.trigger ?? null,
-    });
+    const { data, error } = await db
+      .from('keeper_interactions')
+      .insert({
+        role: input.role,
+        content: input.content,
+        trigger: input.trigger ?? null,
+      })
+      .select('id')
+      .single();
     if (error) fail('interactions.log', error);
+
+    // Fire-and-forget: never let embedding generation block or fail the turn.
+    const id = (data as { id: string }).id;
+    embed(input.content)
+      .then((vector) => {
+        if (!vector) return;
+        return db.from('keeper_interactions').update({ embedding: vector }).eq('id', id);
+      })
+      .catch((err) => console.error('[db] interactions.log embedding failed:', err));
   },
 };
 
