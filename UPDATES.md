@@ -1,3 +1,6 @@
+## 2026-07-28 23:40
+- Diagnosed the "(something glitched on my end)" reply as Gemini's prepay credits running out (`429 RESOURCE_EXHAUSTED`) — Railway had `MODEL_PROVIDER=gemini` + `MODEL=gemini-3.5-flash` set from the 2026-07-01 Anthropic-credits-empty stopgap, unrelated to the Drive-PDF fix below. Anthropic credits are funded again, so switched Railway back to `MODEL_PROVIDER=anthropic` and removed the stray `MODEL` override (falls back to `claude-sonnet-4-6`). Redeployed — clean startup, no errors.
+
 ## 2026-07-28 23:10
 - Applied migration `006_semantic_search.sql` to the live Supabase project (`xusprijhfqeyszkjpyyl`) — pgvector column + `match_interactions()` RPC now exist; semantic search from the 22:40 entry is live.
 - Fixed `read_drive_file`/`readDriveFile` (`src/integrations/drive.ts`) silently refusing PDFs ("I can only read text, Docs, Sheets, and Slides") — found via a real chat where the agent couldn't read files in a Google Drive folder. PDFs are now downloaded and run through the same `pdf-parse` text extraction (`extractPdfTextFromBuffer`) already used for Telegram-uploaded PDFs over the native-vision size limit. Typecheck clean.
