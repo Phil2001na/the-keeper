@@ -223,94 +223,115 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
     messages.push({ role: 'user', content: `${ctx}\n\n${trigger.brief}` });
   }
 
-  let silent = false;
-  // The model often writes its reply in the SAME turn as a tool call (e.g.
-  // "got it 👍" alongside schedule_touchpoint). That turn's stop_reason is
-  // "tool_use", so we must capture text from every turn, not just the final
-  // one — otherwise the reply is silently dropped and the user is left on read.
-  const textParts: string[] = [];
+  // A single attempt at the full tool-use loop. Mutates `messages` in place —
+  // callers that want to retry from scratch must snapshot/restore its length.
+  async function attemptTurn(): Promise<{ text: string; silent: boolean }> {
+    let silent = false;
+    // The model often writes its reply in the SAME turn as a tool call (e.g.
+    // "got it 👍" alongside schedule_touchpoint). That turn's stop_reason is
+    // "tool_use", so we must capture text from every turn, not just the final
+    // one — otherwise the reply is silently dropped and the user is left on read.
+    const textParts: string[] = [];
 
-  const collectText = (content: Anthropic.ContentBlock[]) => {
-    const t = content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('\n')
-      .trim();
-    if (t) textParts.push(t);
-  };
+    const collectText = (content: Anthropic.ContentBlock[]) => {
+      const t = content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n')
+        .trim();
+      if (t) textParts.push(t);
+    };
 
-  const usages: Anthropic.Usage[] = [];
+    const usages: Anthropic.Usage[] = [];
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    applyCacheMarks(messages, histEnd);
-    let response: LlmResponse;
-    try {
-      response = await createMessage({
-        model: config.model,
-        max_tokens: 2048,
-        system,
-        tools: activeTools(surface),
-        messages,
-      });
-    } catch (err) {
-      const msg = (err as Error).message ?? '';
-      if (!serverToolsDisabled && /web_search/i.test(msg)) {
-        console.error('[agent] API rejected web_search tool — disabling it and retrying:', msg);
-        serverToolsDisabled = true;
-        round--;
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      applyCacheMarks(messages, histEnd);
+      let response: LlmResponse;
+      try {
+        response = await createMessage({
+          model: config.model,
+          max_tokens: 2048,
+          system,
+          tools: activeTools(surface),
+          messages,
+        });
+      } catch (err) {
+        const msg = (err as Error).message ?? '';
+        if (!serverToolsDisabled && /web_search/i.test(msg)) {
+          console.error('[agent] API rejected web_search tool — disabling it and retrying:', msg);
+          serverToolsDisabled = true;
+          round--;
+          continue;
+        }
+        throw err;
+      }
+
+      usages.push(response.usage);
+      messages.push({ role: 'assistant', content: response.content });
+      collectText(response.content);
+
+      // web_search runs inside the API — surface it as a live step anyway.
+      for (const block of response.content) {
+        if (block.type === 'server_tool_use') {
+          bus.publish({ type: 'step', label: stepLabel(block.name) });
+        }
+      }
+
+      // Server-side tools (web_search) can pause a long turn — resume by sending
+      // the partial assistant content back and calling again, no tool results.
+      if (response.stop_reason === 'pause_turn') continue;
+
+      if (response.stop_reason === 'tool_use') {
+        const toolResults: Anthropic.ToolResultBlockParam[] = [];
+        for (const block of response.content) {
+          if (block.type !== 'tool_use') continue;
+          bus.publish({ type: 'step', label: stepLabel(block.name) });
+          // A tool that throws (network blip, expired Google token, etc.) must
+          // NEVER take down the whole turn — feed the error back to the model as a
+          // tool_result so it can recover and still reply, instead of leaving him
+          // on read. Catch here covers every tool at the single choke point.
+          let result: { output: string; silent?: boolean };
+          try {
+            result = await dispatchTool(block.name, block.input as Record<string, unknown>);
+          } catch (err) {
+            console.error(`[agent] tool "${block.name}" threw:`, err);
+            result = { output: `Error running ${block.name}: ${(err as Error).message}. Tell him you couldn't do that right now, and carry on.` };
+          }
+          if (result.silent) silent = true;
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: result.output,
+          });
+        }
+        messages.push({ role: 'user', content: toolResults });
         continue;
       }
-      throw err;
+
+      // Final turn — the model is done. Assemble everything it said.
+      break;
     }
 
-    usages.push(response.usage);
-    messages.push({ role: 'assistant', content: response.content });
-    collectText(response.content);
-
-    // web_search runs inside the API — surface it as a live step anyway.
-    for (const block of response.content) {
-      if (block.type === 'server_tool_use') {
-        bus.publish({ type: 'step', label: stepLabel(block.name) });
-      }
-    }
-
-    // Server-side tools (web_search) can pause a long turn — resume by sending
-    // the partial assistant content back and calling again, no tool results.
-    if (response.stop_reason === 'pause_turn') continue;
-
-    if (response.stop_reason === 'tool_use') {
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
-      for (const block of response.content) {
-        if (block.type !== 'tool_use') continue;
-        bus.publish({ type: 'step', label: stepLabel(block.name) });
-        // A tool that throws (network blip, expired Google token, etc.) must
-        // NEVER take down the whole turn — feed the error back to the model as a
-        // tool_result so it can recover and still reply, instead of leaving him
-        // on read. Catch here covers every tool at the single choke point.
-        let result: { output: string; silent?: boolean };
-        try {
-          result = await dispatchTool(block.name, block.input as Record<string, unknown>);
-        } catch (err) {
-          console.error(`[agent] tool "${block.name}" threw:`, err);
-          result = { output: `Error running ${block.name}: ${(err as Error).message}. Tell him you couldn't do that right now, and carry on.` };
-        }
-        if (result.silent) silent = true;
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: result.output,
-        });
-      }
-      messages.push({ role: 'user', content: toolResults });
-      continue;
-    }
-
-    // Final turn — the model is done. Assemble everything it said.
-    break;
+    logUsage(trigger.kind, config.model, usages);
+    return { text: textParts.join('\n\n').trim(), silent };
   }
 
-  const text = textParts.join('\n\n').trim();
-  logUsage(trigger.kind, config.model, usages);
+  // Philip must never see a "blanked, say that again?" placeholder or any
+  // other meta-talk about a transient failure — retry the whole turn silently
+  // instead. Blank final text on an inbound message is almost always a
+  // transient hiccup (model returned no content), not a real "nothing to say".
+  const baseMessagesLen = messages.length;
+  const MAX_BLANK_RETRIES = 2;
+  let text = '';
+  let silent = false;
+  for (let attempt = 0; attempt <= MAX_BLANK_RETRIES; attempt++) {
+    const result = await attemptTurn();
+    text = result.text;
+    silent = result.silent;
+    if (text !== '' || silent || trigger.kind !== 'inbound') break;
+    console.error(`[agent] blank response on inbound turn (attempt ${attempt + 1}/${MAX_BLANK_RETRIES + 1}) — retrying silently`);
+    messages.length = baseMessagesLen; // discard the blank attempt's turns and try fresh
+  }
 
   // Reflection is always silent: it's the agent thinking, not talking. Its
   // output lives in the journal + memory writes, never in Philip's chat.
@@ -325,7 +346,15 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
     return { message: null, silent: true };
   }
 
-  const message = text === '' ? '(hm, i blanked for a second there — say that again?)' : text;
+  // Inbound text can still be blank after exhausting the silent retries above
+  // (a real outage, not a blip). Never surface a "blanked/say that again"
+  // placeholder — going silent is the lesser failure than meta-talk about it.
+  if (text === '') {
+    console.error('[agent] inbound turn still blank after retries — going silent rather than showing a placeholder');
+    return { message: null, silent: true };
+  }
+
+  const message = text;
 
   await interactions.log({
     role: 'agent',
