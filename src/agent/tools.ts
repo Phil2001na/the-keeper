@@ -497,7 +497,7 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
   {
     name: 'read_drive_file',
     description:
-      'Read the text content of a Google Drive file (Docs, Sheets, plain text, etc.) by its file id (from list_drive_files).',
+      'Read the text content of a Google Drive file (Docs, Sheets, plain text, PDFs, etc.) by its file id (from list_drive_files).',
     input_schema: {
       type: 'object',
       properties: { file_id: { type: 'string' } },

@@ -1,6 +1,9 @@
+## 2026-07-28 23:10
+- Applied migration `006_semantic_search.sql` to the live Supabase project (`xusprijhfqeyszkjpyyl`) — pgvector column + `match_interactions()` RPC now exist; semantic search from the 22:40 entry is live.
+- Fixed `read_drive_file`/`readDriveFile` (`src/integrations/drive.ts`) silently refusing PDFs ("I can only read text, Docs, Sheets, and Slides") — found via a real chat where the agent couldn't read files in a Google Drive folder. PDFs are now downloaded and run through the same `pdf-parse` text extraction (`extractPdfTextFromBuffer`) already used for Telegram-uploaded PDFs over the native-vision size limit. Typecheck clean.
+
 ## 2026-07-28 22:40
 - Finished wiring the dangling `src/integrations/embeddings.ts` (Gemini `text-embedding-004`) that was left uncommitted/unused since 2026-06-25: added migration `006_semantic_search.sql` (pgvector column on `keeper_interactions` + `match_interactions()` RPC), `interactions.log` now fires-and-forgets an embed-and-update after insert, and `interactions.search` runs FTS + semantic in parallel and merges (FTS first, semantic fills gaps), falling back to FTS-only with no Gemini key. Typecheck clean.
-- **Migration 006 not yet applied to the live Supabase project** — needs to be run before semantic search actually returns results (rows written before that point also won't have embeddings until backfilled).
 
 ## 2026-07-23 (time not specified)
 - Fixed `blank_error_handling_rule` from the `self_improvement` self-improvement log: `src/agent/orchestrator.ts` used to show a "(hm, i blanked for a second there — say that again?)" placeholder whenever the model returned no text on an inbound turn. Now the tool-use loop (`attemptTurn`) is retried silently up to 2 extra times on a blank inbound response before falling back; if still blank after retries, the agent goes silent rather than surfacing any meta-talk about the failure. Typecheck clean.

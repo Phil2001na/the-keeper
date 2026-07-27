@@ -1,5 +1,6 @@
 import { google } from 'googleapis';
 import { getOAuth2Client } from './google.js';
+import { extractPdfTextFromBuffer } from '../telegram/parsePdf.js';
 
 function client() {
   return google.drive({ version: 'v3', auth: getOAuth2Client() });
@@ -69,7 +70,19 @@ export async function readDriveFile(fileId: string): Promise<{ ok: boolean; cont
       return { ok: true, name, content: text };
     }
 
-    return { ok: false, error: `File "${name}" is a ${mime} — I can only read text, Docs, Sheets, and Slides.` };
+    if (mime === 'application/pdf') {
+      const res = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'arraybuffer' });
+      const buffer = Buffer.from(res.data as ArrayBuffer);
+      const pdf = await extractPdfTextFromBuffer(buffer);
+      const truncNote = pdf.truncated ? '\n\n(note: pdf was long — only the first ~24k characters are included)' : '';
+      return {
+        ok: true,
+        name,
+        content: `(${pdf.pages} page${pdf.pages === 1 ? '' : 's'})\n\n${pdf.text}${truncNote}`,
+      };
+    }
+
+    return { ok: false, error: `File "${name}" is a ${mime} — I can only read text, Docs, Sheets, Slides, and PDFs.` };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
