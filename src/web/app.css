@@ -27,6 +27,10 @@
   --spread: 44;
   --chroma: 0.19;
   --tint: 0.022;
+  /* How far every translucent surface thins out, 0–100. */
+  --glass: 42;
+  /* Multiplier on the ambient field's motion. 1 = the tuned baseline. */
+  --motion-speed: 1;
 
   /* Drift mode animates --h-shift; everything downstream reads --h. */
   --h: calc(var(--h-base) + var(--h-shift));
@@ -58,6 +62,42 @@
   --surface-3: oklch(26% calc(var(--tint) * 1.6) var(--h));
   --line: oklch(45% calc(var(--tint) * 2) var(--h) / 0.26);
   --line-soft: oklch(45% calc(var(--tint) * 2) var(--h) / 0.14);
+
+  /* ── glass ────────────────────────────────────────────────────────────
+     --glass thins the translucent surfaces and lets the field bleed through
+     them, so moving the hue visibly washes through the bubbles instead of
+     only repainting the accents.
+
+     The accent bleed is multiplied by --chroma on purpose: at the mono preset
+     the bubbles have to stay grey, not quietly turn violet as you push glass.
+     Blur stays small because over a background this soft it does almost
+     nothing — saturate() is what actually makes the field read *through* the
+     glass, and it's cheaper. */
+  /* Lightens as it thins. A surface that only loses alpha over a dark field
+     reads as a hole rather than as glass — frosted glass catches light, so the
+     body has to come up as it becomes more transparent. Text is at 96%
+     lightness, so this has contrast to spare. */
+  --glass-l: calc(17% + var(--glass) * 0.085%);
+  --glass-c: calc(var(--tint) * 1.5 + var(--glass) * var(--chroma) * 0.0022);
+  --glass-a: calc(0.95 - var(--glass) * 0.0075);
+  --msg-bg: oklch(var(--glass-l) var(--glass-c) var(--h) / var(--glass-a));
+  --card-a: calc(0.93 - var(--glass) * 0.0065);
+  --msg-blur: calc(var(--glass) * 0.16px);
+  --msg-sat: calc(1 + var(--glass) * 0.007);
+  /* The lit top edge. This is the thing that reads as "glass" rather than
+     "faded", and it scales with --glass so it vanishes when glass does. */
+  --glass-edge: oklch(94% calc(var(--chroma) * 0.5) var(--h) / calc(var(--glass) * 0.003));
+  --glass-rim: oklch(90% calc(var(--chroma) * 0.4) var(--h) / calc(0.1 + var(--glass) * 0.0035));
+  /* Alpha for the user bubble's gradient, solved in app.js rather than here:
+     it can't thin as far when --on-accent is the dark variant, because a
+     translucent light accent over a dark bg darkens toward the bg and would
+     eat the dark text's contrast. */
+  --ub-a: 0.85;
+  --grad-glass: linear-gradient(
+    135deg,
+    oklch(var(--accent-l) var(--chroma) var(--h) / var(--ub-a)) 0%,
+    oklch(calc(var(--accent-l) + 4%) var(--chroma) calc(var(--h) + var(--spread)) / var(--ub-a)) 100%
+  );
 
   --text: oklch(96% 0.008 var(--h));
   --text-dim: oklch(74% 0.018 var(--h));
@@ -191,10 +231,24 @@ textarea {
 
 .bloom {
   position: absolute;
-  border-radius: 50%;
-  filter: blur(70px);
   opacity: 0.5;
   will-change: transform, opacity;
+}
+
+/* The paint lives on ::before so a single mass can carry two independent
+   transforms — the wrapper animates on one period, the paint on another.
+   Coprime periods multiply out to an apparent cycle long enough that the
+   motion never visibly repeats, which is the whole difference between
+   "flowing" and "looping". Liquid mode is the reason this exists; the other
+   modes just animate the wrapper and leave the paint alone. */
+.bloom::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--paint);
+  filter: blur(var(--bloom-blur, 70px));
+  will-change: transform;
 }
 
 .bloom.b1 {
@@ -202,7 +256,7 @@ textarea {
   height: 78vmax;
   left: -22vmax;
   bottom: -34vmax;
-  background: radial-gradient(circle, var(--accent) 0%, transparent 68%);
+  --paint: radial-gradient(circle, var(--accent) 0%, transparent 68%);
   opacity: 0.34;
 }
 
@@ -211,7 +265,7 @@ textarea {
   height: 56vmax;
   right: -20vmax;
   top: -22vmax;
-  background: radial-gradient(circle, var(--accent-2) 0%, transparent 68%);
+  --paint: radial-gradient(circle, var(--accent-2) 0%, transparent 68%);
   opacity: 0.26;
 }
 
@@ -220,21 +274,47 @@ textarea {
   height: 44vmax;
   left: 30%;
   top: 34%;
-  background: radial-gradient(circle, var(--accent-hi) 0%, transparent 70%);
+  --paint: radial-gradient(circle, var(--accent-hi) 0%, transparent 70%);
   opacity: 0.1;
 }
 
-/* Motion modes. Slow and low-amplitude by design — the failure mode for
-   "animated gradients" is a screensaver, so nothing here reads as movement
-   unless you look for it. */
+/* Two extra masses only liquid mode uses. display:none rather than opacity:0
+   so the other modes don't pay to composite layers nobody can see. */
+.bloom.b4,
+.bloom.b5 {
+  display: none;
+}
+
+.bloom.b4 {
+  width: 50vmax;
+  height: 50vmax;
+  left: -8vmax;
+  top: 6%;
+  --paint: radial-gradient(circle, var(--accent-2) 0%, transparent 66%);
+  opacity: 0.2;
+}
+
+.bloom.b5 {
+  width: 38vmax;
+  height: 38vmax;
+  right: 4%;
+  bottom: -10vmax;
+  --paint: radial-gradient(circle, var(--accent-hi) 0%, transparent 68%);
+  opacity: 0.14;
+}
+
+/* Motion modes. Every duration is divided by --motion-speed, so the settings
+   slider stretches or compresses the whole field without changing its
+   character — the ratios between the layers are what make it read as one
+   moving thing rather than several. */
 :root[data-motion='aurora'] .bloom.b1 {
-  animation: drift1 46s var(--ease-io) infinite;
+  animation: drift1 calc(46s / var(--motion-speed)) var(--ease-io) infinite;
 }
 :root[data-motion='aurora'] .bloom.b2 {
-  animation: drift2 62s var(--ease-io) infinite;
+  animation: drift2 calc(62s / var(--motion-speed)) var(--ease-io) infinite;
 }
 :root[data-motion='aurora'] .bloom.b3 {
-  animation: drift3 54s var(--ease-io) infinite;
+  animation: drift3 calc(54s / var(--motion-speed)) var(--ease-io) infinite;
 }
 
 @keyframes drift1 {
@@ -250,10 +330,98 @@ textarea {
   50% { transform: translate3d(6%, 10%, 0) scale(1.25); opacity: 0.18; }
 }
 
+/* ── liquid: masses shoved around by invisible currents ──────────────────
+   Each mass rides two animations at once — the wrapper translates, the paint
+   inside it scales non-uniformly and slides against that. The two periods are
+   coprime (19/23, 27/31, …), so their combined cycle is hours long and the
+   eye never catches a repeat.
+
+   Non-uniform scale is what deforms the discs into moving ellipses. It's doing
+   the job a real fluid sim would do, and unlike blur or border-radius it's a
+   composited transform, so five overlapping masses still cost nothing on a
+   phone. Blur tightens to 54px because at 70px the masses smear into a single
+   wash and you lose the sense of separate bodies. */
+:root[data-motion='liquid'] .bloom {
+  --bloom-blur: 54px;
+}
+:root[data-motion='liquid'] .bloom.b4,
+:root[data-motion='liquid'] .bloom.b5 {
+  display: block;
+}
+
+:root[data-motion='liquid'] .bloom.b1 {
+  opacity: 0.5;
+  animation: flowA calc(19s / var(--motion-speed)) var(--ease-io) infinite;
+}
+:root[data-motion='liquid'] .bloom.b1::before {
+  animation: warpA calc(23s / var(--motion-speed)) var(--ease-io) infinite;
+}
+:root[data-motion='liquid'] .bloom.b2 {
+  opacity: 0.42;
+  animation: flowB calc(27s / var(--motion-speed)) var(--ease-io) infinite;
+}
+:root[data-motion='liquid'] .bloom.b2::before {
+  animation: warpB calc(31s / var(--motion-speed)) var(--ease-io) infinite;
+}
+/* b3–b5 sit toward the middle of the screen and run brighter here than in the
+   other modes. Glass can only show what's behind it, and the centre of a
+   transcript is exactly where the original three-bloom field was darkest —
+   without this, turning glass up in the middle of a conversation does nothing
+   visible. */
+:root[data-motion='liquid'] .bloom.b3 {
+  opacity: 0.24;
+  animation: flowC calc(22s / var(--motion-speed)) var(--ease-io) infinite;
+}
+:root[data-motion='liquid'] .bloom.b3::before {
+  animation: warpC calc(29s / var(--motion-speed)) var(--ease-io) infinite;
+}
+:root[data-motion='liquid'] .bloom.b4 {
+  opacity: 0.28;
+  animation: flowB calc(25s / var(--motion-speed)) var(--ease-io) infinite;
+}
+:root[data-motion='liquid'] .bloom.b4::before {
+  animation: warpA calc(37s / var(--motion-speed)) var(--ease-io) infinite;
+}
+:root[data-motion='liquid'] .bloom.b5 {
+  opacity: 0.22;
+  animation: flowA calc(33s / var(--motion-speed)) var(--ease-io) infinite;
+}
+:root[data-motion='liquid'] .bloom.b5::before {
+  animation: warpC calc(41s / var(--motion-speed)) var(--ease-io) infinite;
+}
+
+@keyframes flowA {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  33% { transform: translate3d(13%, -10%, 0); }
+  66% { transform: translate3d(-8%, 7%, 0); }
+}
+@keyframes flowB {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  40% { transform: translate3d(-14%, 9%, 0); }
+  70% { transform: translate3d(6%, 13%, 0); }
+}
+@keyframes flowC {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(10%, 12%, 0); }
+  75% { transform: translate3d(-12%, -6%, 0); }
+}
+@keyframes warpA {
+  0%, 100% { transform: scale(1, 1) translate3d(0, 0, 0); }
+  50% { transform: scale(1.3, 0.82) translate3d(-6%, 8%, 0); }
+}
+@keyframes warpB {
+  0%, 100% { transform: scale(1, 1) translate3d(0, 0, 0); }
+  50% { transform: scale(0.84, 1.26) translate3d(7%, -5%, 0); }
+}
+@keyframes warpC {
+  0%, 100% { transform: scale(1.06, 0.94) translate3d(0, 0, 0); }
+  50% { transform: scale(0.9, 1.34) translate3d(-5%, -9%, 0); }
+}
+
 /* Drift shifts the hue itself rather than moving anything — the room slowly
    changes colour. ±14° keeps it within the same family. */
 :root[data-motion='drift'] {
-  animation: hue 96s ease-in-out infinite;
+  animation: hue calc(96s / var(--motion-speed)) ease-in-out infinite;
 }
 @keyframes hue {
   0%, 100% { --h-shift: -14; }
@@ -482,21 +650,36 @@ main {
 }
 
 .msg.user {
-  background: var(--grad);
+  /* --grad-glass is --grad with an alpha the settings sheet drives. */
+  background: var(--grad-glass);
   color: var(--on-accent);
   border-bottom-right-radius: 7px;
   box-shadow: var(--e-2), 0 6px 26px -8px var(--accent-glow);
 }
 
-/* No backdrop-filter on bubbles: a long transcript would stack dozens of blur
-   layers and drop frames on mobile. Plain alpha over the blooms is
-   indistinguishable here, and blur is spent on the few chrome surfaces
-   (header, composer, sheets) where it actually reads. */
+/* Two background layers: a sheen along the top edge over the glass body. The
+   sheen plus a brighter top rim is what actually reads as glass — thinning the
+   alpha on its own just reads as faded. Both derive from --glass, so at glass 0
+   they vanish and this collapses back to a plain opaque bubble. */
 .msg.agent {
-  background: color-mix(in oklab, var(--surface-1) 82%, transparent);
+  background: linear-gradient(180deg, var(--glass-edge) 0%, transparent 42%), var(--msg-bg);
   border: 1px solid var(--line);
+  border-top-color: var(--glass-rim);
   border-bottom-left-radius: 7px;
   box-shadow: var(--e-1);
+}
+
+/* Blur is the one glass ingredient with a real cost, so it's fenced twice:
+   app.js only sets data-glass=on past a threshold, and even then it lands on
+   the last few things in the stream. A long transcript would otherwise stack
+   dozens of blur layers and drop frames on mobile — which is why bubbles had
+   no backdrop-filter at all before this. saturate() is the cheap half of the
+   effect and the half that does more work here: it pulls the field's colour up
+   through the glass, so moving the hue washes visibly through the transcript. */
+:root[data-glass='on'] #stream > :nth-last-child(-n + 4) .msg.agent,
+:root[data-glass='on'] #stream > :nth-last-child(-n + 4).card {
+  -webkit-backdrop-filter: blur(var(--msg-blur)) saturate(var(--msg-sat));
+  backdrop-filter: blur(var(--msg-blur)) saturate(var(--msg-sat));
 }
 
 .msg + .msg {
@@ -609,11 +792,13 @@ main {
   padding: 18px 20px;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
-  background: linear-gradient(
-    168deg,
-    color-mix(in oklab, var(--surface-2) 88%, transparent),
-    color-mix(in oklab, var(--surface-1) 92%, transparent)
-  );
+  background: linear-gradient(180deg, var(--glass-edge) 0%, transparent 30%),
+    linear-gradient(
+      168deg,
+      oklch(calc(var(--glass-l) + 4%) var(--glass-c) var(--h) / var(--card-a)),
+      oklch(var(--glass-l) var(--glass-c) var(--h) / var(--card-a))
+    );
+  border-top-color: var(--glass-rim);
   box-shadow: var(--e-2);
   animation: cardmount var(--d-4) var(--ease) both;
   overflow: hidden;
@@ -1403,6 +1588,17 @@ input[type='range']::-moz-range-thumb {
   );
 }
 
+/* The glass track fades to actually-transparent, so the control previews what
+   it does — you can see the field through the right-hand end of it. */
+#glass {
+  --track: linear-gradient(90deg, var(--surface-3) 0%, oklch(24% var(--tint) var(--h) / 0.12) 100%);
+}
+
+/* Cool and inert on the left, charged on the right. */
+#speed {
+  --track: linear-gradient(90deg, var(--surface-3) 0%, oklch(62% var(--chroma) var(--h) / 0.55) 100%);
+}
+
 .segmented {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -1412,6 +1608,12 @@ input[type='range']::-moz-range-thumb {
   border: 1px solid var(--line);
   background: color-mix(in oklab, var(--surface-2) 50%, transparent);
 }
+/* Five atmosphere modes won't fit one row at a readable size on a phone, so
+   this one segmented control wraps to 3 + 2. */
+#motion {
+  grid-template-columns: repeat(3, 1fr);
+}
+
 .segmented button {
   padding: 8px 4px;
   border: 0;
@@ -1633,7 +1835,8 @@ input[type='range']::-moz-range-thumb {
     animation-duration: 1.4s !important;
     animation-iteration-count: infinite !important;
   }
-  .bloom {
+  .bloom,
+  .bloom::before {
     animation: none !important;
     transform: none !important;
   }

@@ -48,6 +48,22 @@ separate public routes by `server.ts`, which holds them in memory and ETags them
   `--accent-l` per hue so white text on the accent always clears 4.5:1 — a fixed
   lightness looks broken on half the hue circle. Don't hardcode colours in
   components; use the tokens at the top of `app.css`.
+- **`--glass` (0–100) drives every translucent surface** — bubbles, cards,
+  their rims and sheen. Two constraints are load-bearing: the accent bleed is
+  multiplied by `--chroma` so the mono preset stays grey, and `--ub-a` (the user
+  bubble's alpha) is solved in `app.js` because a translucent *light* accent
+  darkens toward the field and would eat the dark-text contrast solved above.
+  Glass also lightens as it thins — alpha alone reads as a hole, not as glass.
+- **`--motion-speed` divides every ambient duration.** It's clamped to
+  0.25–4 on load: a hand-edited 0 would divide by zero and freeze the field.
+- **Liquid mode animates `.bloom` *and* `.bloom::before`** on coprime periods
+  (19/23, 27/31, …) so the combined cycle is hours long and never visibly
+  repeats. That's the only reason the paint lives on the pseudo-element — don't
+  collapse it back onto `.bloom`. The deformation is non-uniform `scale()`,
+  which composites; `border-radius` or `filter` would not.
+- **`backdrop-filter` is fenced twice**: `data-glass=off` below a threshold,
+  and only on `#stream`'s last 4 children. A long transcript would otherwise
+  stack dozens of blur layers and drop frames on mobile.
 - Icons and splash screens are **generated** (`npm run icons`), not hand-made.
   Edit the constants in `scripts/gen-icons.ts` and re-run.
 

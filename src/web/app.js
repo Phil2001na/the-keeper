@@ -151,17 +151,22 @@
   const MOTION_HINTS = {
     still: 'nothing moves.',
     aurora: 'the light drifts behind everything, on a slow cycle.',
+    liquid: 'five masses pushed around by currents, on periods that never line back up.',
     drift: 'the accent itself breathes ±14° over a minute and a half.',
     reactive: 'the room only lights up while it\'s actually working.',
   };
 
-  // Only the four inputs plus motion — a preset's id/name would go stale the
-  // moment a slider moves off it.
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+  // Only the inputs plus motion — a preset's id/name would go stale the moment
+  // a slider moves off it.
   const DEFAULT_THEME = {
     h: PRESETS[0].h,
     spread: PRESETS[0].spread,
     chroma: PRESETS[0].chroma,
     tint: PRESETS[0].tint,
+    glass: 42,
+    speed: 1,
     motion: 'aurora',
   };
   let theme = loadTheme();
@@ -174,6 +179,11 @@
         spread: Number.isFinite(s.spread) ? s.spread : DEFAULT_THEME.spread,
         chroma: Number.isFinite(s.chroma) ? s.chroma : DEFAULT_THEME.chroma,
         tint: Number.isFinite(s.tint) ? s.tint : DEFAULT_THEME.tint,
+        // Clamped rather than trusted: these divide animation durations, and a
+        // hand-edited 0 in localStorage would divide by zero and freeze the
+        // whole field with no way back except clearing storage.
+        glass: Number.isFinite(s.glass) ? clamp(s.glass, 0, 100) : DEFAULT_THEME.glass,
+        speed: Number.isFinite(s.speed) ? clamp(s.speed, 0.25, 4) : DEFAULT_THEME.speed,
         motion: MOTION_HINTS[s.motion] ? s.motion : DEFAULT_THEME.motion,
       };
     } catch {
@@ -194,7 +204,12 @@
     root.style.setProperty('--spread', theme.spread);
     root.style.setProperty('--chroma', theme.chroma);
     root.style.setProperty('--tint', theme.tint);
+    root.style.setProperty('--glass', theme.glass);
+    root.style.setProperty('--motion-speed', theme.speed);
     root.dataset.motion = theme.motion;
+    // Gates backdrop-filter entirely below a threshold: at low glass the blur
+    // is imperceptible but still costs a compositing pass per bubble.
+    root.dataset.glass = theme.glass > 6 ? 'on' : 'off';
 
     // The accent is a gradient, so solve at its midpoint and let both stops
     // ride the same lightness.
@@ -203,6 +218,15 @@
     theme.onAccent = solved.on;
     root.style.setProperty('--accent-l', theme.accentL);
     root.style.setProperty('--on-accent', theme.onAccent);
+
+    // How far the user bubble's gradient may thin. Glass makes a surface fade
+    // toward whatever is behind it, and behind it is a dark field — so on the
+    // light hues where solveAccent had to give up on white and switch to dark
+    // text, thinning the accent drags it toward the background and closes the
+    // gap with that dark text. Those hues get a much shallower range so the
+    // slider can't quietly break contrast we solved for above.
+    theme.ubA = (1 - theme.glass * (solved.on === '#fff' ? 0.0035 : 0.0012)).toFixed(3);
+    root.style.setProperty('--ub-a', theme.ubA);
 
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute('content', hex(oklchToRgb(0.11, theme.tint, theme.h)));
@@ -215,10 +239,17 @@
     $('hue').value = theme.h;
     $('spread').value = theme.spread;
     $('chroma').value = Math.round(theme.chroma * 100);
+    $('glass').value = theme.glass;
+    $('speed').value = Math.round(theme.speed * 100);
     $('huev').textContent = Math.round(theme.h) + '°';
     $('spreadv').textContent = (theme.spread > 0 ? '+' : '') + theme.spread + '°';
     $('chromav').textContent = Math.round((theme.chroma / 0.3) * 100) + '%';
+    $('glassv').textContent = Math.round(theme.glass) + '%';
+    $('speedv').textContent = Math.round(theme.speed * 100) / 100 + '×';
     $('motionhint').textContent = MOTION_HINTS[theme.motion] || '';
+    // Speed divides keyframe durations, and the two modes without keyframes
+    // would show a slider that does nothing.
+    $('speedrow').classList.toggle('hidden', theme.motion === 'still' || theme.motion === 'reactive');
 
     for (const b of $('motion').children) {
       b.setAttribute('aria-pressed', String(b.dataset.motion === theme.motion));
@@ -259,6 +290,8 @@
     bind('hue', 'h', (v) => v);
     bind('spread', 'spread', (v) => v);
     bind('chroma', 'chroma', (v) => v / 100);
+    bind('glass', 'glass', (v) => v);
+    bind('speed', 'speed', (v) => v / 100);
 
     for (const b of $('motion').children) {
       b.addEventListener('click', () => {
