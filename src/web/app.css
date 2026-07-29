@@ -13,14 +13,6 @@
    at every hue, which is what makes "pick any colour you're feeling" safe.
    ══════════════════════════════════════════════════════════════════════════ */
 
-/* Registered so the hue can be *animated* (drift mode). An unregistered custom
-   property is an unparsed token and interpolates as a step function. */
-@property --h-shift {
-  syntax: '<number>';
-  inherits: true;
-  initial-value: 0;
-}
-
 :root {
   /* ── theme inputs ───────────────────────────────────────────────────── */
   --h-base: 272;
@@ -29,11 +21,8 @@
   --tint: 0.022;
   /* How far every translucent surface thins out, 0–100. */
   --glass: 42;
-  /* Multiplier on the ambient field's motion. 1 = the tuned baseline. */
-  --motion-speed: 1;
 
-  /* Drift mode animates --h-shift; everything downstream reads --h. */
-  --h: calc(var(--h-base) + var(--h-shift));
+  --h: var(--h-base);
 
   /* ── accent ramp ────────────────────────────────────────────────────── */
   /* --accent-l is solved per hue by app.js: the lightest the accent can be
@@ -229,18 +218,33 @@ textarea {
   pointer-events: none;
 }
 
+/* Five masses shoved around by invisible currents. Each one rides two
+   animations at once — the wrapper translates, the paint inside it scales
+   non-uniformly and slides against that. The two periods are coprime, so their
+   combined cycle is hours long and the eye never catches a repeat, which is the
+   whole difference between "flowing" and "looping".
+
+   Non-uniform scale is what deforms the discs into moving ellipses. It's doing
+   the job a real fluid sim would do, and unlike blur or border-radius it's a
+   composited transform, so five overlapping masses still cost nothing on a
+   phone.
+
+   Tempo is deliberately one fixed setting — moderate, obvious if you look, not
+   distracting if you don't. The only thing that changes is playback rate, and
+   `app.js` drives that off whether the agent is working (see `pulseField`).
+   Nothing here reads a speed variable: re-timing a running animation re-maps
+   its progress, and the whole field jumps. */
 .bloom {
   position: absolute;
-  opacity: 0.5;
+  /* 70px smears the masses into a single wash and you lose the sense of
+     separate bodies. */
+  --bloom-blur: 54px;
   will-change: transform, opacity;
 }
 
 /* The paint lives on ::before so a single mass can carry two independent
-   transforms — the wrapper animates on one period, the paint on another.
-   Coprime periods multiply out to an apparent cycle long enough that the
-   motion never visibly repeats, which is the whole difference between
-   "flowing" and "looping". Liquid mode is the reason this exists; the other
-   modes just animate the wrapper and leave the paint alone. */
+   transforms. Don't collapse it back onto .bloom — that's what buys the second
+   frequency. */
 .bloom::before {
   content: '';
   position: absolute;
@@ -257,7 +261,11 @@ textarea {
   left: -22vmax;
   bottom: -34vmax;
   --paint: radial-gradient(circle, var(--accent) 0%, transparent 68%);
-  opacity: 0.34;
+  opacity: 0.5;
+  animation: flowA 14s var(--ease-io) infinite;
+}
+.bloom.b1::before {
+  animation: warpA 17s var(--ease-io) infinite;
 }
 
 .bloom.b2 {
@@ -266,23 +274,28 @@ textarea {
   right: -20vmax;
   top: -22vmax;
   --paint: radial-gradient(circle, var(--accent-2) 0%, transparent 68%);
-  opacity: 0.26;
+  opacity: 0.42;
+  animation: flowB 19s var(--ease-io) infinite;
+}
+.bloom.b2::before {
+  animation: warpB 23s var(--ease-io) infinite;
 }
 
+/* b3–b5 sit toward the middle of the screen and run brighter than the geometry
+   alone would suggest. Glass can only show what's behind it, and the centre of
+   a transcript is exactly where a three-bloom field is darkest — without these,
+   turning glass up mid-conversation reveals nothing. */
 .bloom.b3 {
   width: 44vmax;
   height: 44vmax;
   left: 30%;
   top: 34%;
   --paint: radial-gradient(circle, var(--accent-hi) 0%, transparent 70%);
-  opacity: 0.1;
+  opacity: 0.24;
+  animation: flowC 16s var(--ease-io) infinite;
 }
-
-/* Two extra masses only liquid mode uses. display:none rather than opacity:0
-   so the other modes don't pay to composite layers nobody can see. */
-.bloom.b4,
-.bloom.b5 {
-  display: none;
+.bloom.b3::before {
+  animation: warpC 21s var(--ease-io) infinite;
 }
 
 .bloom.b4 {
@@ -291,7 +304,11 @@ textarea {
   left: -8vmax;
   top: 6%;
   --paint: radial-gradient(circle, var(--accent-2) 0%, transparent 66%);
-  opacity: 0.2;
+  opacity: 0.28;
+  animation: flowB 18s var(--ease-io) infinite;
+}
+.bloom.b4::before {
+  animation: warpA 25s var(--ease-io) infinite;
 }
 
 .bloom.b5 {
@@ -300,94 +317,11 @@ textarea {
   right: 4%;
   bottom: -10vmax;
   --paint: radial-gradient(circle, var(--accent-hi) 0%, transparent 68%);
-  opacity: 0.14;
-}
-
-/* Motion modes. Every duration is divided by --motion-speed, so the settings
-   slider stretches or compresses the whole field without changing its
-   character — the ratios between the layers are what make it read as one
-   moving thing rather than several. */
-:root[data-motion='aurora'] .bloom.b1 {
-  animation: drift1 calc(46s / var(--motion-speed)) var(--ease-io) infinite;
-}
-:root[data-motion='aurora'] .bloom.b2 {
-  animation: drift2 calc(62s / var(--motion-speed)) var(--ease-io) infinite;
-}
-:root[data-motion='aurora'] .bloom.b3 {
-  animation: drift3 calc(54s / var(--motion-speed)) var(--ease-io) infinite;
-}
-
-@keyframes drift1 {
-  0%, 100% { transform: none; }
-  50% { transform: translate3d(9%, -7%, 0) scale(1.14); }
-}
-@keyframes drift2 {
-  0%, 100% { transform: none; }
-  50% { transform: translate3d(-11%, 9%, 0) scale(1.1); }
-}
-@keyframes drift3 {
-  0%, 100% { transform: none; opacity: 0.1; }
-  50% { transform: translate3d(6%, 10%, 0) scale(1.25); opacity: 0.18; }
-}
-
-/* ── liquid: masses shoved around by invisible currents ──────────────────
-   Each mass rides two animations at once — the wrapper translates, the paint
-   inside it scales non-uniformly and slides against that. The two periods are
-   coprime (19/23, 27/31, …), so their combined cycle is hours long and the
-   eye never catches a repeat.
-
-   Non-uniform scale is what deforms the discs into moving ellipses. It's doing
-   the job a real fluid sim would do, and unlike blur or border-radius it's a
-   composited transform, so five overlapping masses still cost nothing on a
-   phone. Blur tightens to 54px because at 70px the masses smear into a single
-   wash and you lose the sense of separate bodies. */
-:root[data-motion='liquid'] .bloom {
-  --bloom-blur: 54px;
-}
-:root[data-motion='liquid'] .bloom.b4,
-:root[data-motion='liquid'] .bloom.b5 {
-  display: block;
-}
-
-:root[data-motion='liquid'] .bloom.b1 {
-  opacity: 0.5;
-  animation: flowA calc(19s / var(--motion-speed)) var(--ease-io) infinite;
-}
-:root[data-motion='liquid'] .bloom.b1::before {
-  animation: warpA calc(23s / var(--motion-speed)) var(--ease-io) infinite;
-}
-:root[data-motion='liquid'] .bloom.b2 {
-  opacity: 0.42;
-  animation: flowB calc(27s / var(--motion-speed)) var(--ease-io) infinite;
-}
-:root[data-motion='liquid'] .bloom.b2::before {
-  animation: warpB calc(31s / var(--motion-speed)) var(--ease-io) infinite;
-}
-/* b3–b5 sit toward the middle of the screen and run brighter here than in the
-   other modes. Glass can only show what's behind it, and the centre of a
-   transcript is exactly where the original three-bloom field was darkest —
-   without this, turning glass up in the middle of a conversation does nothing
-   visible. */
-:root[data-motion='liquid'] .bloom.b3 {
-  opacity: 0.24;
-  animation: flowC calc(22s / var(--motion-speed)) var(--ease-io) infinite;
-}
-:root[data-motion='liquid'] .bloom.b3::before {
-  animation: warpC calc(29s / var(--motion-speed)) var(--ease-io) infinite;
-}
-:root[data-motion='liquid'] .bloom.b4 {
-  opacity: 0.28;
-  animation: flowB calc(25s / var(--motion-speed)) var(--ease-io) infinite;
-}
-:root[data-motion='liquid'] .bloom.b4::before {
-  animation: warpA calc(37s / var(--motion-speed)) var(--ease-io) infinite;
-}
-:root[data-motion='liquid'] .bloom.b5 {
   opacity: 0.22;
-  animation: flowA calc(33s / var(--motion-speed)) var(--ease-io) infinite;
+  animation: flowA 24s var(--ease-io) infinite;
 }
-:root[data-motion='liquid'] .bloom.b5::before {
-  animation: warpC calc(41s / var(--motion-speed)) var(--ease-io) infinite;
+.bloom.b5::before {
+  animation: warpC 29s var(--ease-io) infinite;
 }
 
 @keyframes flowA {
@@ -418,23 +352,18 @@ textarea {
   50% { transform: scale(0.9, 1.34) translate3d(-5%, -9%, 0); }
 }
 
-/* Drift shifts the hue itself rather than moving anything — the room slowly
-   changes colour. ±14° keeps it within the same family. */
-:root[data-motion='drift'] {
-  animation: hue calc(96s / var(--motion-speed)) ease-in-out infinite;
+/* While it's working the masses also brighten a little. The surge in speed is
+   the loud half of "alive"; this is the half you notice without looking at it.
+   Opacity is the only property safe to add here — the transforms belong to the
+   keyframes, and a competing `transform` would cancel the flow outright. */
+.bloom {
+  transition: opacity 1.6s var(--ease);
 }
-@keyframes hue {
-  0%, 100% { --h-shift: -14; }
-  50% { --h-shift: 14; }
-}
-
-/* Reactive: the field only comes alive while the agent is actually working. */
-:root[data-motion='reactive'] .bloom {
-  transition: opacity var(--d-4) var(--ease), transform var(--d-4) var(--ease);
-}
-:root[data-motion='reactive'].busy .bloom.b1 { opacity: 0.5; transform: scale(1.1); }
-:root[data-motion='reactive'].busy .bloom.b2 { opacity: 0.4; transform: scale(1.08); }
-:root[data-motion='reactive'].busy .bloom.b3 { opacity: 0.22; transform: scale(1.2); }
+:root.busy .bloom.b1 { opacity: 0.62; }
+:root.busy .bloom.b2 { opacity: 0.54; }
+:root.busy .bloom.b3 { opacity: 0.34; }
+:root.busy .bloom.b4 { opacity: 0.38; }
+:root.busy .bloom.b5 { opacity: 0.31; }
 
 /* ══ shell ══════════════════════════════════════════════════════════════ */
 #app {
@@ -1592,45 +1521,6 @@ input[type='range']::-moz-range-thumb {
    it does — you can see the field through the right-hand end of it. */
 #glass {
   --track: linear-gradient(90deg, var(--surface-3) 0%, oklch(24% var(--tint) var(--h) / 0.12) 100%);
-}
-
-/* Cool and inert on the left, charged on the right. */
-#speed {
-  --track: linear-gradient(90deg, var(--surface-3) 0%, oklch(62% var(--chroma) var(--h) / 0.55) 100%);
-}
-
-.segmented {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 4px;
-  padding: 4px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--line);
-  background: color-mix(in oklab, var(--surface-2) 50%, transparent);
-}
-/* Five atmosphere modes won't fit one row at a readable size on a phone, so
-   this one segmented control wraps to 3 + 2. */
-#motion {
-  grid-template-columns: repeat(3, 1fr);
-}
-
-.segmented button {
-  padding: 8px 4px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: none;
-  color: var(--text-dim);
-  font-size: 12px;
-  cursor: pointer;
-  transition: background var(--d-2) var(--ease), color var(--d-2) var(--ease);
-}
-.segmented button:hover {
-  color: var(--text);
-}
-.segmented button[aria-pressed='true'] {
-  background: var(--grad);
-  color: var(--on-accent);
-  box-shadow: 0 3px 12px -4px var(--accent-glow);
 }
 
 .btn {

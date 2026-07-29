@@ -148,26 +148,16 @@
     { id: 'mono', name: 'mono', h: 270, spread: 0, chroma: 0.03, tint: 0.008 },
   ];
 
-  const MOTION_HINTS = {
-    still: 'nothing moves.',
-    aurora: 'the light drifts behind everything, on a slow cycle.',
-    liquid: 'five masses pushed around by currents, on periods that never line back up.',
-    drift: 'the accent itself breathes ±14° over a minute and a half.',
-    reactive: 'the room only lights up while it\'s actually working.',
-  };
-
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-  // Only the inputs plus motion — a preset's id/name would go stale the moment
-  // a slider moves off it.
+  // Only the inputs — a preset's id/name would go stale the moment a slider
+  // moves off it.
   const DEFAULT_THEME = {
     h: PRESETS[0].h,
     spread: PRESETS[0].spread,
     chroma: PRESETS[0].chroma,
     tint: PRESETS[0].tint,
     glass: 42,
-    speed: 1,
-    motion: 'aurora',
   };
   let theme = loadTheme();
 
@@ -179,12 +169,7 @@
         spread: Number.isFinite(s.spread) ? s.spread : DEFAULT_THEME.spread,
         chroma: Number.isFinite(s.chroma) ? s.chroma : DEFAULT_THEME.chroma,
         tint: Number.isFinite(s.tint) ? s.tint : DEFAULT_THEME.tint,
-        // Clamped rather than trusted: these divide animation durations, and a
-        // hand-edited 0 in localStorage would divide by zero and freeze the
-        // whole field with no way back except clearing storage.
         glass: Number.isFinite(s.glass) ? clamp(s.glass, 0, 100) : DEFAULT_THEME.glass,
-        speed: Number.isFinite(s.speed) ? clamp(s.speed, 0.25, 4) : DEFAULT_THEME.speed,
-        motion: MOTION_HINTS[s.motion] ? s.motion : DEFAULT_THEME.motion,
       };
     } catch {
       return { ...DEFAULT_THEME };
@@ -205,8 +190,6 @@
     root.style.setProperty('--chroma', theme.chroma);
     root.style.setProperty('--tint', theme.tint);
     root.style.setProperty('--glass', theme.glass);
-    root.style.setProperty('--motion-speed', theme.speed);
-    root.dataset.motion = theme.motion;
     // Gates backdrop-filter entirely below a threshold: at low glass the blur
     // is imperceptible but still costs a compositing pass per bubble.
     root.dataset.glass = theme.glass > 6 ? 'on' : 'off';
@@ -240,20 +223,11 @@
     $('spread').value = theme.spread;
     $('chroma').value = Math.round(theme.chroma * 100);
     $('glass').value = theme.glass;
-    $('speed').value = Math.round(theme.speed * 100);
     $('huev').textContent = Math.round(theme.h) + '°';
     $('spreadv').textContent = (theme.spread > 0 ? '+' : '') + theme.spread + '°';
     $('chromav').textContent = Math.round((theme.chroma / 0.3) * 100) + '%';
     $('glassv').textContent = Math.round(theme.glass) + '%';
-    $('speedv').textContent = Math.round(theme.speed * 100) / 100 + '×';
-    $('motionhint').textContent = MOTION_HINTS[theme.motion] || '';
-    // Speed divides keyframe durations, and the two modes without keyframes
-    // would show a slider that does nothing.
-    $('speedrow').classList.toggle('hidden', theme.motion === 'still' || theme.motion === 'reactive');
 
-    for (const b of $('motion').children) {
-      b.setAttribute('aria-pressed', String(b.dataset.motion === theme.motion));
-    }
     for (const b of $('presets').children) {
       const p = PRESETS.find((x) => x.id === b.dataset.preset);
       const match = p && p.h === theme.h && p.spread === theme.spread && p.chroma === theme.chroma;
@@ -291,14 +265,77 @@
     bind('spread', 'spread', (v) => v);
     bind('chroma', 'chroma', (v) => v / 100);
     bind('glass', 'glass', (v) => v);
-    bind('speed', 'speed', (v) => v / 100);
+  }
 
-    for (const b of $('motion').children) {
-      b.addEventListener('click', () => {
-        theme = { ...theme, motion: b.dataset.motion };
-        applyTheme(true);
-      });
-    }
+  // ══ the field's pulse ═════════════════════════════════════════════════
+  // The gradients run at one fixed tempo in CSS; the only thing that moves is
+  // how fast they *play*, and that tracks whether the Keeper is working. Idle
+  // is a moderate wash. Working, it surges — in uneven bursts, because a smooth
+  // ramp or a steady fast loop both read as a progress indicator, and the point
+  // is for it to read as something alive and thinking.
+  //
+  // Speed is changed through playbackRate rather than by rewriting
+  // animation-duration: an animation's progress is its elapsed time over its
+  // duration, so re-timing one mid-flight teleports it to a different point in
+  // the cycle and the whole field visibly jumps.
+  const FIELD_IDLE = 1;
+  let fieldRate = FIELD_IDLE;
+  let fieldTarget = FIELD_IDLE;
+  let burstTimer = null;
+  let fieldFrame = null;
+
+  // Read fresh each time — under prefers-reduced-motion the blooms have no
+  // animations at all, so this correctly becomes a no-op with no extra check.
+  // Filtering the document's animations rather than asking each bloom for its
+  // own is what reliably catches the ::before half of the motion: a pseudo
+  // element's animation reports the originating element as its target.
+  const fieldAnims = () =>
+    document.getAnimations().filter((a) => {
+      const t = a.effect && a.effect.target;
+      return t && t.classList && t.classList.contains('bloom');
+    });
+
+  function stepField() {
+    fieldFrame = null;
+    // Exponential approach: fast enough to feel like a surge, slow enough that
+    // no single frame is a jolt.
+    fieldRate += (fieldTarget - fieldRate) * 0.055;
+    const settled = Math.abs(fieldTarget - fieldRate) < 0.01;
+    if (settled) fieldRate = fieldTarget;
+    for (const a of fieldAnims()) a.playbackRate = fieldRate;
+    // Nothing to do between bursts — the animations hold whatever rate they
+    // were left at, and the next nudge restarts the loop.
+    if (!settled) fieldFrame = requestAnimationFrame(stepField);
+  }
+
+  function nudgeField(target) {
+    fieldTarget = target;
+    if (fieldFrame === null) fieldFrame = requestAnimationFrame(stepField);
+  }
+
+  function burst() {
+    // Both the level and how long it holds are random, so consecutive bursts
+    // never match. The range is wide on purpose: the swing between a 1.5× lull
+    // and a 5.5× rush is the part that reads as thinking. A constant fast loop
+    // would just read as a spinner.
+    nudgeField(1.5 + Math.random() * 4);
+    burstTimer = setTimeout(burst, 900 + Math.random() * 2400);
+  }
+
+  // A real step just happened — punch the field harder than any timed burst,
+  // then hand straight back to the random cycle so it falls into a fresh level
+  // instead of pinning at the ceiling.
+  function kickField() {
+    nudgeField(6.5);
+    clearTimeout(burstTimer);
+    burstTimer = setTimeout(burst, 700 + Math.random() * 700);
+  }
+
+  function pulseField(on) {
+    clearTimeout(burstTimer);
+    burstTimer = null;
+    if (on) burst();
+    else nudgeField(FIELD_IDLE);
   }
 
   // ══ stream rendering ══════════════════════════════════════════════════
@@ -337,6 +374,7 @@
 
   function beginTurn(source) {
     root.classList.add('busy');
+    pulseField(true);
     setStatus('thinking');
     turnStarted = Date.now();
     activitySteps = [];
@@ -356,6 +394,9 @@
       currentStep.classList.remove('live');
       if (currentStep.textContent.startsWith('thinking')) currentStep.remove();
     }
+    // Every real step kicks the field, so the surges line up with work actually
+    // happening rather than only with a timer.
+    kickField();
     activitySteps.push(label);
     currentStep = el('span', 'step live', esc(label) + '<span class="dots"></span>');
     const stick = nearBottom();
@@ -366,6 +407,7 @@
 
   function endTurn() {
     root.classList.remove('busy');
+    pulseField(false);
     setStatus(navigator.onLine ? 'here' : 'offline');
     if (activity) {
       const secs = Math.max(1, Math.round((Date.now() - turnStarted) / 1000));

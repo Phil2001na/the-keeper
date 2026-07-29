@@ -62,16 +62,13 @@
       if (t.chroma != null) r.style.setProperty('--chroma', t.chroma);
       if (t.tint != null) r.style.setProperty('--tint', t.tint);
       if (t.glass != null) r.style.setProperty('--glass', t.glass);
-      if (t.speed != null) r.style.setProperty('--motion-speed', t.speed);
       // Solved by app.js and cached here so the first frame already has the
       // right accent lightness rather than snapping a moment later.
       if (t.accentL) r.style.setProperty('--accent-l', t.accentL);
       if (t.onAccent) r.style.setProperty('--on-accent', t.onAccent);
       if (t.ubA != null) r.style.setProperty('--ub-a', t.ubA);
-      r.dataset.motion = t.motion || 'aurora';
       r.dataset.glass = (t.glass == null ? 42 : t.glass) > 6 ? 'on' : 'off';
     } catch (e) {
-      document.documentElement.dataset.motion = 'aurora';
       document.documentElement.dataset.glass = 'on';
     }
   })();
@@ -218,22 +215,6 @@
     <div class="field-row">
       <div class="lbl"><span>glass</span><span class="val" id="glassv"></span></div>
       <input type="range" id="glass" min="0" max="100" step="1" aria-label="glass">
-    </div>
-  </section>
-
-  <section>
-    <h3>atmosphere</h3>
-    <div class="segmented" id="motion">
-      <button data-motion="still" type="button">still</button>
-      <button data-motion="aurora" type="button">aurora</button>
-      <button data-motion="liquid" type="button">liquid</button>
-      <button data-motion="drift" type="button">drift</button>
-      <button data-motion="reactive" type="button">reactive</button>
-    </div>
-    <p class="hint-text" id="motionhint"></p>
-    <div class="field-row" id="speedrow" style="margin-top:14px">
-      <div class="lbl"><span>motion speed</span><span class="val" id="speedv"></span></div>
-      <input type="range" id="speed" min="25" max="400" step="5" aria-label="motion speed">
     </div>
   </section>
 

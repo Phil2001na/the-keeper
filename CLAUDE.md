@@ -54,13 +54,19 @@ separate public routes by `server.ts`, which holds them in memory and ETags them
   bubble's alpha) is solved in `app.js` because a translucent *light* accent
   darkens toward the field and would eat the dark-text contrast solved above.
   Glass also lightens as it thins — alpha alone reads as a hole, not as glass.
-- **`--motion-speed` divides every ambient duration.** It's clamped to
-  0.25–4 on load: a hand-edited 0 would divide by zero and freeze the field.
-- **Liquid mode animates `.bloom` *and* `.bloom::before`** on coprime periods
-  (19/23, 27/31, …) so the combined cycle is hours long and never visibly
-  repeats. That's the only reason the paint lives on the pseudo-element — don't
+- **The ambient field is one fixed design, not a set of modes.** Five blooms,
+  each animating `.bloom` *and* `.bloom::before` on coprime periods (14/17,
+  19/23, …) so the combined cycle is hours long and never visibly repeats —
+  that's the only reason the paint lives on the pseudo-element, so don't
   collapse it back onto `.bloom`. The deformation is non-uniform `scale()`,
   which composites; `border-radius` or `filter` would not.
+- **How fast the field plays is the agent's pulse, and it lives in `app.js`
+  (`pulseField`), not in CSS.** Idle sits at 1×; a turn surges it to 1.5–6.5× in
+  randomised bursts, kicked again on every real activity step, then eases back.
+  Speed is changed via `animation.playbackRate` — never by rewriting
+  `animation-duration`, which re-maps a running animation's progress and makes
+  the whole field jump. Under `prefers-reduced-motion` the blooms have no
+  animations, so the pulse is a silent no-op by construction.
 - **`backdrop-filter` is fenced twice**: `data-glass=off` below a threshold,
   and only on `#stream`'s last 4 children. A long transcript would otherwise
   stack dozens of blur layers and drop frames on mobile.
