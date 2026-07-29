@@ -103,6 +103,15 @@ export interface JournalEntry {
   created_at: string;
 }
 
+/** One browser that agreed to be interrupted (Web Push, RFC 8291). */
+export interface PushSubscriptionRow {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  user_agent: string | null;
+  failures: number;
+}
+
 // keeper_interactions has a generated tsvector column (fts) for search — never
 // select('*') from it or every read drags the index payload over the wire.
 const INTERACTION_COLS = 'id, role, content, trigger, created_at';
@@ -785,5 +794,85 @@ export const digests = {
         { onConflict: 'kind' }
       );
     if (error) fail('digests.set', error);
+  },
+};
+
+// ─── Settings ──────────────────────────────────────────
+// Server-side state that must survive a restart but isn't memory *about* him —
+// currently only the VAPID keypair. Deliberately separate from keeper_facts:
+// nothing in here should ever reach the model's context.
+export const settings = {
+  async get<T>(key: string): Promise<T | null> {
+    const { data, error } = await db
+      .from('keeper_settings')
+      .select('value')
+      .eq('key', key)
+      .maybeSingle();
+    if (error) fail('settings.get', error);
+    return (data?.value as T) ?? null;
+  },
+
+  async set(key: string, value: unknown): Promise<void> {
+    const { error } = await db
+      .from('keeper_settings')
+      .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    if (error) fail('settings.set', error);
+  },
+};
+
+// ─── Push subscriptions ────────────────────────────────
+// One row per browser that agreed to be interrupted. See migrations/007.
+export const pushSubscriptions = {
+  async list(): Promise<PushSubscriptionRow[]> {
+    const { data, error } = await db
+      .from('keeper_push_subscriptions')
+      .select('endpoint, p256dh, auth, user_agent, failures')
+      .order('created_at', { ascending: true });
+    if (error) fail('pushSubscriptions.list', error);
+    return data as PushSubscriptionRow[];
+  },
+
+  /** Idempotent: the browser hands back the same endpoint every boot. */
+  async save(input: {
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    userAgent?: string | null;
+  }): Promise<void> {
+    const now = new Date().toISOString();
+    const { error } = await db.from('keeper_push_subscriptions').upsert(
+      {
+        endpoint: input.endpoint,
+        p256dh: input.p256dh,
+        auth: input.auth,
+        user_agent: input.userAgent ?? null,
+        last_seen_at: now,
+        failures: 0,
+        last_error: null,
+      },
+      { onConflict: 'endpoint' }
+    );
+    if (error) fail('pushSubscriptions.save', error);
+  },
+
+  async remove(endpoint: string): Promise<void> {
+    const { error } = await db.from('keeper_push_subscriptions').delete().eq('endpoint', endpoint);
+    if (error) fail('pushSubscriptions.remove', error);
+  },
+
+  async markSent(endpoint: string): Promise<void> {
+    const { error } = await db
+      .from('keeper_push_subscriptions')
+      .update({ last_sent_at: new Date().toISOString(), failures: 0, last_error: null })
+      .eq('endpoint', endpoint);
+    if (error) fail('pushSubscriptions.markSent', error);
+  },
+
+  async markFailed(endpoint: string, failures: number, message: string): Promise<void> {
+    const { error } = await db
+      .from('keeper_push_subscriptions')
+      .update({ failures, last_error: message.slice(0, 500) })
+      .eq('endpoint', endpoint);
+    if (error) fail('pushSubscriptions.markFailed', error);
   },
 };

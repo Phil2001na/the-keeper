@@ -26,8 +26,51 @@ npm start              # tsx src/index.ts — no watch
 npm run seed           # tsx src/seed/seed.ts
 npm run google-auth    # tsx scripts/google-auth.ts — re-run Gmail/Drive OAuth flow
 npm run mcp            # tsx src/mcp/server.ts — start the MCP server standalone
+npm run ui             # UI preview on :5173 (token 1234) — canned data, no bot
+npm run icons          # regenerate PWA icons + iOS splash screens
 npm run typecheck
 ```
+
+## The web surface (`src/web/`)
+
+An installable PWA with no build step: `ui.html` + `app.css` + `app.js` served as
+separate public routes by `server.ts`, which holds them in memory and ETags them.
+
+- **Never use `npm run dev` to work on the UI.** It starts the Telegram long-poll,
+  which fights the live Railway instance for the bot token and knocks the real
+  Keeper offline. Use `npm run ui` — same files, canned data, no agent.
+- **The service worker version is a hash of the shell**, stamped into `sw.js` at
+  boot by `loadStatic()`. That's the only reason a deploy reaches installed
+  clients, so don't "simplify" it to a constant.
+- `/events` and `/send` are explicitly excluded from the service worker; routing
+  SSE through a fetch handler breaks streaming.
+- **The whole palette derives from one hue in OKLCH.** `app.js` solves
+  `--accent-l` per hue so white text on the accent always clears 4.5:1 — a fixed
+  lightness looks broken on half the hue circle. Don't hardcode colours in
+  components; use the tokens at the top of `app.css`.
+- Icons and splash screens are **generated** (`npm run icons`), not hand-made.
+  Edit the constants in `scripts/gen-icons.ts` and re-run.
+
+### Notifications (`src/web/push.ts`)
+
+Web Push is what lets the Keeper interrupt him here rather than only on Telegram.
+
+- **It only pushes turns the agent started itself.** `bus` message events carry a
+  `source`; anything `inbound:*` is a reply he asked for and is deliberately
+  silent. That one line in `attachPushToBus` is the whole notification policy.
+- The **VAPID keypair is stored** in `keeper_settings`, minted on first boot if
+  absent. Never regenerate it casually — a subscription is bound to the key that
+  created it, so a new pair silently unsubscribes every installed device. Env
+  (`VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`) overrides the stored pair.
+- Subscriptions are disposable: a 404/410 from the push service means gone, and
+  we prune. The page re-registers on every boot, which is what covers endpoint
+  rotation — there's no `pushsubscriptionchange` handler.
+- The service worker does **not** notify when a window is already visible (it
+  hands the payload to the page instead); `force: true` overrides that, and only
+  the "send a test" button sets it.
+- `npm run ui` serves real push too, with an ephemeral keypair. It also exposes
+  `POST /api/push/reachout?in=8` — fires a proactive push after a delay so you
+  can close the tab and see what an actual reach-out looks like.
 
 ## Conventions / gotchas
 

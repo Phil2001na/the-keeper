@@ -155,6 +155,9 @@ function applyCacheMarks(messages: Anthropic.MessageParam[], histEnd: number): v
 
 async function runTurn(trigger: Trigger): Promise<AgentResult> {
   const surface = trigger.kind === 'inbound' ? trigger.surface ?? 'telegram' : undefined;
+  // Rides on every message event: the web push hook uses it to tell a proactive
+  // reach-out (worth a notification) from a reply he asked for (not).
+  const eventSource = trigger.kind === 'inbound' ? `inbound:${surface}` : trigger.kind;
 
   // Anchored window: everything since the digest anchor rides in context
   // verbatim — hours or days of real conversation, append-only between folds.
@@ -189,7 +192,7 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
         : '';
     const logText = trigger.text || attachMarker;
     await interactions.log({ role: 'user', content: logText, trigger: 'inbound' });
-    bus.publish({ type: 'message', role: 'user', content: logText, ts: new Date().toISOString() });
+    bus.publish({ type: 'message', role: 'user', content: logText, ts: new Date().toISOString(), source: eventSource });
 
     if (trigger.images?.length || trigger.pdfs?.length) {
       const content: Anthropic.ContentBlockParam[] = [];
@@ -361,6 +364,6 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
     content: message,
     trigger: trigger.kind === 'touchpoint' ? `touchpoint:${trigger.touchpoint.id}` : 'inbound',
   });
-  bus.publish({ type: 'message', role: 'agent', content: message, ts: new Date().toISOString() });
+  bus.publish({ type: 'message', role: 'agent', content: message, ts: new Date().toISOString(), source: eventSource });
   return { message, silent: false };
 }

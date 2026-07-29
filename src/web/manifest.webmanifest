@@ -1,0 +1,31 @@
+{
+  "id": "/",
+  "name": "THE KEEPER",
+  "short_name": "Keeper",
+  "description": "A proactive personal agent that knows your life, schedules its own check-ins, and reaches out on its own.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#0b0714",
+  "theme_color": "#0b0714",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["productivity", "lifestyle", "utilities"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "Its mind",
+      "short_name": "Mind",
+      "description": "What it holds about your life, read straight from memory",
+      "url": "/?view=mind",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

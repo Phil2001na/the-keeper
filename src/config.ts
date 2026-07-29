@@ -164,6 +164,17 @@ export const config = {
   // Optional: enables the web UI. Set a long random string; the browser asks
   // for it once. Leave blank to run Telegram-only (no HTTP server at all).
   webToken: (process.env.KEEPER_WEB_TOKEN ?? '').trim(),
+
+  // Web Push (browser notifications). All optional: with none of these set the
+  // server mints a keypair on first boot and stores it in keeper_settings, so
+  // notifications work without a dashboard step. Set them explicitly only to
+  // pin a pair you already have — CHANGING an existing pair unsubscribes every
+  // installed device, since a subscription is bound to the key that made it.
+  vapidPublicKey: (process.env.VAPID_PUBLIC_KEY ?? '').replace(/\s+/g, ''),
+  vapidPrivateKey: (process.env.VAPID_PRIVATE_KEY ?? '').replace(/\s+/g, ''),
+  // Contact address push services use to report abuse. Must be a mailto: or
+  // https: URL — they reject anything else.
+  vapidSubject: optional('VAPID_SUBJECT', 'mailto:philipkantewa@gmail.com'),
   // Railway injects PORT automatically when the service has a domain.
   port: intEnv('PORT', 8080),
 

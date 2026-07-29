@@ -18,7 +18,13 @@ export interface PresentCard {
 export type KeeperEvent =
   | { type: 'turn'; phase: 'start' | 'end'; source: string }
   | { type: 'step'; label: string }
-  | { type: 'message'; role: 'user' | 'agent'; content: string; ts: string }
+  /**
+   * `source` is what the turn was: 'inbound:web', 'inbound:telegram' or
+   * 'touchpoint'. Required rather than optional on purpose — src/web/push.ts
+   * decides whether to buzz his phone from it, and a forgotten field would
+   * either silence proactive reach-outs or notify him about his own replies.
+   */
+  | { type: 'message'; role: 'user' | 'agent'; content: string; ts: string; source: string }
   | { type: 'card'; card: PresentCard }
   | { type: 'media'; kind: 'photo' | 'document'; dataUrl: string; filename?: string };
 
