@@ -87,3 +87,42 @@ export async function readDriveFile(fileId: string): Promise<{ ok: boolean; cont
     return { ok: false, error: (e as Error).message };
   }
 }
+
+/** Create a new file in Drive with the given text content. */
+export async function createDriveFile(
+  name: string,
+  content: string,
+  mimeType = 'text/plain',
+  folderId?: string
+): Promise<{ ok: boolean; id?: string; name?: string; error?: string }> {
+  const drive = client();
+  try {
+    const res = await drive.files.create({
+      requestBody: { name, mimeType, parents: folderId ? [folderId] : undefined },
+      media: { mimeType, body: content },
+      fields: 'id,name',
+    });
+    return { ok: true, id: res.data.id ?? undefined, name: res.data.name ?? name };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+/** Overwrite the content of an existing Drive file by its file id. */
+export async function updateDriveFile(
+  fileId: string,
+  content: string,
+  mimeType = 'text/plain'
+): Promise<{ ok: boolean; name?: string; error?: string }> {
+  const drive = client();
+  try {
+    const res = await drive.files.update({
+      fileId,
+      media: { mimeType, body: content },
+      fields: 'id,name',
+    });
+    return { ok: true, name: res.data.name ?? undefined };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
