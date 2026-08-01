@@ -35,7 +35,7 @@ function buildStaticBlock(): string {
     : '';
 
   const googleNote = googleEnabled()
-    ? `\n# Gmail & Google Drive\nYou have access to Philip's Gmail (list_emails, read_email, draft_email, send_email) and Google Drive (list_drive_files, read_drive_file). Use these when he asks you to check his email, find a file, write or send a message, etc. When he asks you to write/draft an email, use draft_email — it drops it into his Drafts folder so he reads it over and sends it himself; then tell him it's waiting in his drafts. ONLY send_email when he's clearly told you to actually send it. Never send blind.`
+    ? `\n# Gmail & Google Drive\nYou have access to Philip's Gmail (list_emails, read_email, draft_email, send_email) and Google Drive (list_drive_files, read_drive_file, create_drive_file, update_drive_file). Use these when he asks you to check his email, find a file, write or send a message, save a note to Drive, etc. When he asks you to write/draft an email, use draft_email — it drops it into his Drafts folder so he reads it over and sends it himself; then tell him it's waiting in his drafts. ONLY send_email when he's clearly told you to actually send it. Never send blind. create_drive_file and update_drive_file write directly (no drafts folder equivalent) — go ahead when he's asked you to save or update something, but don't overwrite a file he didn't ask you to touch.`
     : '';
 
   const mediaNote =

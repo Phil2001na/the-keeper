@@ -26,7 +26,7 @@ import { imageGenEnabled, generateImage } from '../generate/image.js';
 import { generatePdf } from '../generate/pdf.js';
 import { googleEnabled, getOAuth2Client as _auth } from '../integrations/google.js';
 import { listEmails, readEmail, sendEmail, createDraft } from '../integrations/gmail.js';
-import { listDriveFiles, readDriveFile } from '../integrations/drive.js';
+import { listDriveFiles, readDriveFile, createDriveFile, updateDriveFile } from '../integrations/drive.js';
 import { fetchUrl } from '../integrations/web.js';
 
 /**
@@ -502,6 +502,34 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
       type: 'object',
       properties: { file_id: { type: 'string' } },
       required: ['file_id'],
+    },
+  },
+  {
+    name: 'create_drive_file',
+    description:
+      "Create a new file in Philip's Google Drive with the given text content (e.g. a note, a plain-text doc, a CSV). Not for Google Docs/Sheets conversion — this writes a plain file of the given mime type.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'File name, e.g. "notes.txt".' },
+        content: { type: 'string', description: 'Text content to write.' },
+        mime_type: { type: 'string', description: "Mime type (default 'text/plain'), e.g. 'text/csv', 'text/markdown'." },
+        folder_id: { type: 'string', description: 'Optional Drive folder id to create the file in (default: My Drive root).' },
+      },
+      required: ['name', 'content'],
+    },
+  },
+  {
+    name: 'update_drive_file',
+    description: 'Overwrite the content of an existing Google Drive file by its file id (from list_drive_files).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string' },
+        content: { type: 'string', description: 'New text content, replacing the file entirely.' },
+        mime_type: { type: 'string', description: "Mime type of the new content (default 'text/plain')." },
+      },
+      required: ['file_id', 'content'],
     },
   },
   // ─── Media generation ─────────────────────────────────────────────────────
@@ -1180,6 +1208,27 @@ export async function dispatchTool(
       if (!googleEnabled()) return { output: 'Google Drive not configured.' };
       const res = await readDriveFile(input.file_id as string);
       return { output: res.ok ? `File: ${res.name}\n\n${res.content}` : `Error: ${res.error}` };
+    }
+
+    case 'create_drive_file': {
+      if (!googleEnabled()) return { output: 'Google Drive not configured.' };
+      const res = await createDriveFile(
+        input.name as string,
+        input.content as string,
+        (input.mime_type as string | undefined) ?? 'text/plain',
+        input.folder_id as string | undefined
+      );
+      return { output: res.ok ? `Created "${res.name}" (id: ${res.id}).` : `Error: ${res.error}` };
+    }
+
+    case 'update_drive_file': {
+      if (!googleEnabled()) return { output: 'Google Drive not configured.' };
+      const res = await updateDriveFile(
+        input.file_id as string,
+        input.content as string,
+        (input.mime_type as string | undefined) ?? 'text/plain'
+      );
+      return { output: res.ok ? `Updated "${res.name}".` : `Error: ${res.error}` };
     }
 
     // ─── Media generation ──────────────────────────────────────────────────

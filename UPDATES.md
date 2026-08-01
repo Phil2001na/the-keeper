@@ -1,3 +1,6 @@
+## 2026-08-01 00:00
+- Gave Keeper write access to Google Drive: `create_drive_file` and `update_drive_file` tools (backed by new `createDriveFile`/`updateDriveFile` in `src/integrations/drive.ts`), alongside the existing read-only `list_drive_files`/`read_drive_file`. The OAuth scope was already the full `drive` scope (`scripts/google-auth.ts`), so no re-auth is needed. Unlike email, there's no drafts-folder equivalent for Drive writes — the system prompt tells the agent to go ahead when asked to save/update a file but not to overwrite files unprompted.
+
 ## 2026-07-30 01:05
 - Design decision: dropped the atmosphere customisation. No more five motion modes and no motion-speed slider — the field is now one thing: the liquid five-mass gradient at a fixed moderate tempo (periods retuned to 14–29s from liquid's 19–41s). Settings keeps palette + hue/spread/intensity/glass only; `data-motion`, `--motion-speed` and the dead `.segmented` / drift-hue machinery are gone.
 - Speed is now the agent's pulse instead of a preference. Idle plays at 1×; a turn surges to 1.5–6.5× in randomised bursts (new interval each burst) and every real activity step punches it to 6.5× before it drops back into the random cycle, so the swooshing tracks work actually happening. Turn end eases it back to 1× over ~2.5s. The blooms also brighten ~25% while busy.
