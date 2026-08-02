@@ -159,6 +159,8 @@
     chroma: PRESETS[0].chroma,
     tint: PRESETS[0].tint,
     glass: 42,
+    galaxy: 'deep',
+    galaxyTransparency: 28,
   };
   let theme = loadTheme();
 
@@ -171,6 +173,8 @@
         chroma: Number.isFinite(s.chroma) ? s.chroma : DEFAULT_THEME.chroma,
         tint: Number.isFinite(s.tint) ? s.tint : DEFAULT_THEME.tint,
         glass: Number.isFinite(s.glass) ? clamp(s.glass, 0, 100) : DEFAULT_THEME.glass,
+        galaxy: s.galaxy === 'gargantua' ? 'gargantua' : 'deep',
+        galaxyTransparency: Number.isFinite(s.galaxyTransparency) ? clamp(s.galaxyTransparency, 0, 100) : DEFAULT_THEME.galaxyTransparency,
       };
     } catch {
       return { ...DEFAULT_THEME };
@@ -191,6 +195,8 @@
     root.style.setProperty('--chroma', theme.chroma);
     root.style.setProperty('--tint', theme.tint);
     root.style.setProperty('--glass', theme.glass);
+    root.style.setProperty('--galaxy-opacity', (100 - theme.galaxyTransparency) / 100);
+    root.dataset.galaxy = theme.galaxy;
     // Gates backdrop-filter entirely below a threshold: at low glass the blur
     // is imperceptible but still costs a compositing pass per bubble.
     root.dataset.glass = theme.glass > 6 ? 'on' : 'off';
@@ -224,10 +230,16 @@
     $('spread').value = theme.spread;
     $('chroma').value = Math.round(theme.chroma * 100);
     $('glass').value = theme.glass;
+    $('galaxy-transparency').value = theme.galaxyTransparency;
     $('huev').textContent = Math.round(theme.h) + '°';
     $('spreadv').textContent = (theme.spread > 0 ? '+' : '') + theme.spread + '°';
     $('chromav').textContent = Math.round((theme.chroma / 0.3) * 100) + '%';
     $('glassv').textContent = Math.round(theme.glass) + '%';
+    $('galaxy-transparencyv').textContent = Math.round(theme.galaxyTransparency) + '%';
+
+    for (const b of $('backdrops').children) {
+      b.setAttribute('aria-pressed', String(b.dataset.galaxy === theme.galaxy));
+    }
 
     for (const b of $('presets').children) {
       const p = PRESETS.find((x) => x.id === b.dataset.preset);
@@ -266,6 +278,13 @@
     bind('spread', 'spread', (v) => v);
     bind('chroma', 'chroma', (v) => v / 100);
     bind('glass', 'glass', (v) => v);
+    bind('galaxy-transparency', 'galaxyTransparency', (v) => v);
+    for (const b of $('backdrops').children) {
+      b.addEventListener('click', () => {
+        theme = { ...theme, galaxy: b.dataset.galaxy };
+        applyTheme(true);
+      });
+    }
   }
 
   // ══ the field's pulse ═════════════════════════════════════════════════

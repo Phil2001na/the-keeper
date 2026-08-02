@@ -1,3 +1,7 @@
+## 2026-08-03 01:01
+- Added persisted galaxy backdrop selection and transparency controls to Settings.
+- Added a star-dense Gargantua backdrop and cached both space choices for offline PWA use.
+
 ## 2026-08-03 00:47
 - Replaced the procedural star pattern with a project-local photographic galaxy backdrop, keeping the conversation lane dark and recolouring the image through the selected liquid palette.
 - Added the galaxy asset to the offline PWA shell so installed clients retain the full atmosphere without a network connection.

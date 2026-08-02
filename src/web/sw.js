@@ -35,6 +35,7 @@ const SHELL = [
   '/app.css',
   '/app.js',
   '/icons/galaxy-backdrop.png',
+  '/icons/galaxy-gargantua.png',
   '/manifest.webmanifest',
   '/fonts/inter-var.woff2',
   '/icons/icon-192.png',
