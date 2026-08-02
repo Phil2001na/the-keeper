@@ -1,3 +1,7 @@
+## 2026-08-03 00:47
+- Replaced the procedural star pattern with a project-local photographic galaxy backdrop, keeping the conversation lane dark and recolouring the image through the selected liquid palette.
+- Added the galaxy asset to the offline PWA shell so installed clients retain the full atmosphere without a network connection.
+
 ## 2026-08-03 00:24
 - Reworked the live web activity rail into one smoothly transitioning, tool-aware status pill, with branded Drive/Gmail marks and palette-consistent SVGs.
 - Refined the existing liquid atmosphere with a restrained stellar layer and conversation-lane vignette; both inherit the selected palette instead of locking the UI to purple.

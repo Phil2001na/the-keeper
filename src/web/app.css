@@ -218,23 +218,31 @@ textarea {
   pointer-events: none;
 }
 
-/* A sparse stellar layer gives the field depth without turning the transcript
-   into wallpaper. Every point is drawn from the active palette, so changing
-   hue in Settings changes the whole atmosphere rather than leaving fixed
-   purple stars behind. */
-.field::before {
+/* A real galaxy photograph provides the irregular dust and star depth that a
+   procedural dot pattern cannot. It is deliberately desaturated here; the
+   active liquid palette paints back through it, so every Settings preset still
+   feels like one environment rather than a purple picture under another UI. */
+.galaxy {
+  position: absolute;
+  inset: -2%;
+  z-index: 0;
+  background: url('/icons/galaxy-backdrop.png') center / cover no-repeat;
+  filter: grayscale(0.68) saturate(0.55) brightness(0.7) contrast(1.05);
+  opacity: 0.72;
+  transform: scale(1.02);
+  transition: opacity var(--d-4) var(--ease), filter var(--d-4) var(--ease);
+}
+
+.galaxy::after {
   content: '';
   position: absolute;
   inset: 0;
-  z-index: 2;
-  background:
-    radial-gradient(circle, oklch(94% calc(var(--chroma) * 0.38) var(--h) / 0.7) 0 0.7px, transparent 1px) 11px 17px / 109px 109px,
-    radial-gradient(circle, oklch(88% calc(var(--chroma) * 0.5) calc(var(--h) + var(--spread)) / 0.5) 0 0.55px, transparent 0.9px) 47px 31px / 173px 173px,
-    radial-gradient(circle, var(--accent-hi) 0 0.8px, transparent 1.25px) 89px 73px / 251px 251px;
-  opacity: 0.42;
-  -webkit-mask-image: linear-gradient(to bottom, #000, rgba(0,0,0,0.55) 48%, #000);
-  mask-image: linear-gradient(to bottom, #000, rgba(0,0,0,0.55) 48%, #000);
-  transition: opacity var(--d-4) var(--ease);
+  background: linear-gradient(
+    145deg,
+    oklch(55% var(--chroma) var(--h) / 0.38),
+    oklch(48% var(--chroma) calc(var(--h) + var(--spread)) / 0.26)
+  );
+  mix-blend-mode: color;
 }
 
 /* Vignette the conversation lane while leaving richer colour around the header
@@ -249,7 +257,10 @@ textarea {
     linear-gradient(180deg, transparent 0 15%, oklch(7% var(--tint) var(--h) / 0.14) 44% 70%, transparent 100%);
 }
 
-:root.busy .field::before { opacity: 0.68; }
+:root.busy .galaxy {
+  opacity: 0.82;
+  filter: grayscale(0.55) saturate(0.66) brightness(0.76) contrast(1.06);
+}
 
 /* Five masses shoved around by invisible currents. Each one rides two
    animations at once — the wrapper translates, the paint inside it scales
