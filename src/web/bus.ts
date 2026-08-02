@@ -17,7 +17,7 @@ export interface PresentCard {
 
 export type KeeperEvent =
   | { type: 'turn'; phase: 'start' | 'end'; source: string }
-  | { type: 'step'; label: string }
+  | { type: 'step'; label: string; tool: string }
   /**
    * `source` is what the turn was: 'inbound:web', 'inbound:telegram' or
    * 'touchpoint'. Required rather than optional on purpose — src/web/push.ts
@@ -66,6 +66,8 @@ const STEP_LABELS: Record<string, string> = {
   send_email: 'sending the email',
   list_drive_files: 'looking through the drive',
   read_drive_file: 'reading a file',
+  create_drive_file: 'saving to drive',
+  update_drive_file: 'updating the file',
   deploy_html: 'publishing the site',
   list_sites: 'checking the sites',
   check_site_status: 'checking the build',

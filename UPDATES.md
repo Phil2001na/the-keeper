@@ -1,3 +1,7 @@
+## 2026-08-03 00:24
+- Reworked the live web activity rail into one smoothly transitioning, tool-aware status pill, with branded Drive/Gmail marks and palette-consistent SVGs.
+- Refined the existing liquid atmosphere with a restrained stellar layer and conversation-lane vignette; both inherit the selected palette instead of locking the UI to purple.
+
 ## 2026-08-01 00:00
 - Gave Keeper write access to Google Drive: `create_drive_file` and `update_drive_file` tools (backed by new `createDriveFile`/`updateDriveFile` in `src/integrations/drive.ts`), alongside the existing read-only `list_drive_files`/`read_drive_file`. The OAuth scope was already the full `drive` scope (`scripts/google-auth.ts`), so no re-auth is needed. Unlike email, there's no drafts-folder equivalent for Drive writes — the system prompt tells the agent to go ahead when asked to save/update a file but not to overwrite files unprompted.
 

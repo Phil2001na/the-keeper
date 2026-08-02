@@ -218,6 +218,39 @@ textarea {
   pointer-events: none;
 }
 
+/* A sparse stellar layer gives the field depth without turning the transcript
+   into wallpaper. Every point is drawn from the active palette, so changing
+   hue in Settings changes the whole atmosphere rather than leaving fixed
+   purple stars behind. */
+.field::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background:
+    radial-gradient(circle, oklch(94% calc(var(--chroma) * 0.38) var(--h) / 0.7) 0 0.7px, transparent 1px) 11px 17px / 109px 109px,
+    radial-gradient(circle, oklch(88% calc(var(--chroma) * 0.5) calc(var(--h) + var(--spread)) / 0.5) 0 0.55px, transparent 0.9px) 47px 31px / 173px 173px,
+    radial-gradient(circle, var(--accent-hi) 0 0.8px, transparent 1.25px) 89px 73px / 251px 251px;
+  opacity: 0.42;
+  -webkit-mask-image: linear-gradient(to bottom, #000, rgba(0,0,0,0.55) 48%, #000);
+  mask-image: linear-gradient(to bottom, #000, rgba(0,0,0,0.55) 48%, #000);
+  transition: opacity var(--d-4) var(--ease);
+}
+
+/* Vignette the conversation lane while leaving richer colour around the header
+   and composer. This is what keeps long messages calmer than the reference. */
+.field::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background:
+    radial-gradient(ellipse 72% 54% at 50% 48%, transparent 0%, oklch(7% var(--tint) var(--h) / 0.2) 72%, oklch(5% var(--tint) var(--h) / 0.52) 100%),
+    linear-gradient(180deg, transparent 0 15%, oklch(7% var(--tint) var(--h) / 0.14) 44% 70%, transparent 100%);
+}
+
+:root.busy .field::before { opacity: 0.68; }
+
 /* Five masses shoved around by invisible currents. Each one rides two
    animations at once — the wrapper translates, the paint inside it scales
    non-uniformly and slides against that. The two periods are coprime, so their
@@ -240,6 +273,7 @@ textarea {
      separate bodies. */
   --bloom-blur: 54px;
   will-change: transform, opacity;
+  z-index: 1;
 }
 
 /* The paint lives on ::before so a single mass can carry two independent
@@ -644,11 +678,10 @@ main {
 /* ── live activity rail ───────────────────────────────────────────────── */
 .activity {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   margin: 0 0 14px;
-  min-height: 26px;
+  min-height: 34px;
   animation: mount var(--d-3) var(--ease) both;
 }
 
@@ -662,13 +695,21 @@ main {
 .step {
   position: relative;
   overflow: hidden;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  max-width: min(88vw, 360px);
+  font-size: 12.5px;
   color: var(--text-dim);
   border: 1px solid var(--line);
   border-radius: var(--r-full);
-  padding: 4px 12px;
-  background: color-mix(in oklab, var(--surface-1) 70%, transparent);
-  animation: mount var(--d-2) var(--ease) both;
+  padding: 5px 13px 5px 7px;
+  background: linear-gradient(180deg, var(--glass-edge) 0%, transparent 46%),
+    color-mix(in oklab, var(--surface-1) 78%, transparent);
+  box-shadow: var(--e-1), inset 0 1px rgba(255,255,255,0.025);
+  transition: color var(--d-2) var(--ease), border-color var(--d-2) var(--ease),
+    opacity 180ms var(--ease), transform 180ms var(--ease), filter 180ms var(--ease);
 }
 
 .step.live {
@@ -683,6 +724,38 @@ main {
   background: linear-gradient(100deg, transparent 20%, var(--accent-soft) 50%, transparent 80%);
   transform: translateX(-100%);
   animation: sweep 1.6s var(--ease-io) infinite;
+}
+
+.step.swapping {
+  opacity: 0;
+  transform: translateY(4px) scale(0.985);
+  filter: blur(2px);
+}
+
+.step-icon {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  flex: 0 0 21px;
+  width: 21px;
+  height: 21px;
+  border: 1px solid var(--accent-line);
+  border-radius: 50%;
+  color: var(--accent-hi);
+  background: var(--accent-soft);
+}
+.step-icon > svg { display: block; width: 13px; height: 13px; }
+.step-icon.brand {
+  background: rgba(255,255,255,0.94);
+  border-color: rgba(255,255,255,0.72);
+}
+.step-label {
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @keyframes sweep {

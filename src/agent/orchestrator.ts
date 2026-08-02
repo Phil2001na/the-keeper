@@ -276,7 +276,7 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
       // web_search runs inside the API — surface it as a live step anyway.
       for (const block of response.content) {
         if (block.type === 'server_tool_use') {
-          bus.publish({ type: 'step', label: stepLabel(block.name) });
+          bus.publish({ type: 'step', label: stepLabel(block.name), tool: block.name });
         }
       }
 
@@ -288,7 +288,7 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
         const toolResults: Anthropic.ToolResultBlockParam[] = [];
         for (const block of response.content) {
           if (block.type !== 'tool_use') continue;
-          bus.publish({ type: 'step', label: stepLabel(block.name) });
+          bus.publish({ type: 'step', label: stepLabel(block.name), tool: block.name });
           // A tool that throws (network blip, expired Google token, etc.) must
           // NEVER take down the whole turn — feed the error back to the model as a
           // tool_result so it can recover and still reply, instead of leaving him
