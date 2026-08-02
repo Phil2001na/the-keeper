@@ -62,6 +62,8 @@
       if (t.chroma != null) r.style.setProperty('--chroma', t.chroma);
       if (t.tint != null) r.style.setProperty('--tint', t.tint);
       if (t.glass != null) r.style.setProperty('--glass', t.glass);
+      if (t.galaxyTransparency != null) r.style.setProperty('--galaxy-opacity', Math.max(0, Math.min(1, (100 - t.galaxyTransparency) / 100)));
+      r.dataset.galaxy = t.galaxy === 'gargantua' ? 'gargantua' : 'deep';
       // Solved by app.js and cached here so the first frame already has the
       // right accent lightness rather than snapping a moment later.
       if (t.accentL) r.style.setProperty('--accent-l', t.accentL);
@@ -197,6 +199,22 @@
   <section>
     <h3>palette</h3>
     <div class="swatches" id="presets"></div>
+  </section>
+
+  <section>
+    <h3>space</h3>
+    <div class="backdrops" id="backdrops">
+      <button class="backdrop-option" type="button" data-galaxy="deep" aria-pressed="false">
+        <span class="backdrop-preview deep"></span><span>deep field</span>
+      </button>
+      <button class="backdrop-option" type="button" data-galaxy="gargantua" aria-pressed="false">
+        <span class="backdrop-preview gargantua"></span><span>gargantua</span>
+      </button>
+    </div>
+    <div class="field-row backdrop-transparency">
+      <div class="lbl"><span>transparency</span><span class="val" id="galaxy-transparencyv"></span></div>
+      <input type="range" id="galaxy-transparency" min="0" max="100" step="1" aria-label="galaxy transparency">
+    </div>
   </section>
 
   <section>

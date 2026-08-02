@@ -21,6 +21,7 @@
   --tint: 0.022;
   /* How far every translucent surface thins out, 0–100. */
   --glass: 42;
+  --galaxy-opacity: 0.72;
 
   --h: var(--h-base);
 
@@ -228,9 +229,14 @@ textarea {
   z-index: 0;
   background: url('/icons/galaxy-backdrop.png') center / cover no-repeat;
   filter: grayscale(0.68) saturate(0.55) brightness(0.7) contrast(1.05);
-  opacity: 0.72;
+  opacity: var(--galaxy-opacity);
   transform: scale(1.02);
   transition: opacity var(--d-4) var(--ease), filter var(--d-4) var(--ease);
+}
+
+:root[data-galaxy='gargantua'] .galaxy {
+  background-image: url('/icons/galaxy-gargantua.png');
+  background-position: center;
 }
 
 .galaxy::after {
@@ -258,7 +264,7 @@ textarea {
 }
 
 :root.busy .galaxy {
-  opacity: 0.82;
+  opacity: calc(var(--galaxy-opacity) + 0.1);
   filter: grayscale(0.55) saturate(0.66) brightness(0.76) contrast(1.06);
 }
 
@@ -1536,6 +1542,49 @@ footer {
   color: var(--text);
 }
 
+.backdrops {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.backdrop-option {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: color-mix(in oklab, var(--surface-2) 60%, transparent);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--d-2) var(--ease), transform var(--d-2) var(--ease),
+    background var(--d-2) var(--ease);
+}
+.backdrop-option:hover {
+  transform: translateY(-2px);
+  background: color-mix(in oklab, var(--surface-3) 60%, transparent);
+}
+.backdrop-option[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.backdrop-preview {
+  display: block;
+  height: 68px;
+  border-radius: var(--r-sm);
+  background-position: center;
+  background-size: cover;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+}
+.backdrop-preview.deep { background-image: url('/icons/galaxy-backdrop.png'); }
+.backdrop-preview.gargantua { background-image: url('/icons/galaxy-gargantua.png'); }
+.backdrop-transparency { margin-bottom: 0; }
+
 .field-row {
   margin-bottom: 16px;
 }
@@ -1605,6 +1654,10 @@ input[type='range']::-moz-range-thumb {
    it does — you can see the field through the right-hand end of it. */
 #glass {
   --track: linear-gradient(90deg, var(--surface-3) 0%, oklch(24% var(--tint) var(--h) / 0.12) 100%);
+}
+
+#galaxy-transparency {
+  --track: linear-gradient(90deg, var(--surface-3) 0%, oklch(24% var(--tint) var(--h) / 0.06) 100%);
 }
 
 .btn {
