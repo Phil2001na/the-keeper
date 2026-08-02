@@ -107,11 +107,11 @@ async function fakeTurn(text: string): Promise<void> {
   emit({ type: 'turn', phase: 'start', source: 'inbound' });
   emit({ type: 'message', role: 'user', content: text, ts: new Date().toISOString() });
   await sleep(700);
-  emit({ type: 'step', label: 'consulting my memory' });
+  emit({ type: 'step', label: 'consulting my memory', tool: 'recall_facts' });
   await sleep(1100);
-  emit({ type: 'step', label: 'reading the trends' });
+  emit({ type: 'step', label: 'looking through the drive', tool: 'list_drive_files' });
   await sleep(900);
-  emit({ type: 'step', label: 'arranging a view' });
+  emit({ type: 'step', label: 'reading a file', tool: 'read_drive_file' });
   await sleep(700);
   emit({
     type: 'message',

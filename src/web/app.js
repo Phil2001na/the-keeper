@@ -18,6 +18,7 @@
   let activitySteps = [];
   let turnStarted = 0;
   let currentStep = null;
+  let stepSwapTimer = null;
   let lastRole = null;
 
   // ── helpers ───────────────────────────────────────────────────────────
@@ -372,6 +373,28 @@
     return '';
   }
 
+  function activityIcon(tool) {
+    if (/^(list|read|create|update)_drive_file/.test(tool)) {
+      return '<span class="step-icon brand" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="#0F9D58" d="M8.2 3h5.1l7.7 13.3h-5.1z"/><path fill="#F4B400" d="M8.2 3 1 15.5l2.6 4.5 7.2-12.5z"/><path fill="#4285F4" d="M3.6 20h14.8l2.6-4.5H6.2z"/></svg></span>';
+    }
+    if (/email/.test(tool)) {
+      return '<span class="step-icon brand" aria-hidden="true"><svg viewBox="0 0 24 24"><path fill="#EA4335" d="M3 5h18v14H3z"/><path fill="#fff" d="M5 8.1V17h3v-6.6l4 3 4-3V17h3V8.1l-7 5.2z"/><path fill="#C5221F" d="m3 6 9 6.8L21 6v3.4l-9 6.8-9-6.8z"/></svg></span>';
+    }
+    if (tool === 'generate_pdf') return '<span class="step-icon" aria-hidden="true">' + icon('doc', 13) + '</span>';
+    if (tool === 'generate_image') return '<span class="step-icon" aria-hidden="true">' + icon('image', 13) + '</span>';
+
+    const paths = /web_search|fetch_url|site|deploy/.test(tool)
+      ? '<circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4a13 13 0 0 1 0 16M12 4a13 13 0 0 0 0 16"/>'
+      : /history|fact|domain|portrait|journal|observation/.test(tool)
+        ? '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4M8 11h6M11 8v6"/>'
+        : '<path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>';
+    return '<span class="step-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + paths + '</svg></span>';
+  }
+
+  function stepContents(label, tool) {
+    return activityIcon(tool) + '<span class="step-label">' + esc(label) + '<span class="dots"></span></span>';
+  }
+
   function beginTurn(source) {
     root.classList.add('busy');
     pulseField(true);
@@ -382,30 +405,37 @@
     activity = el('div', 'activity');
     const tag = sourceTag(source);
     if (tag) activity.appendChild(el('span', 'tag', esc(tag)));
-    const thinking = el('span', 'step live', 'thinking<span class="dots"></span>');
+    const thinking = el('span', 'step live', stepContents('thinking', ''));
     activity.appendChild(thinking);
     currentStep = thinking;
     append(activity);
   }
 
-  function addStep(label) {
+  function addStep(label, tool) {
     if (!activity) return;
-    if (currentStep) {
-      currentStep.classList.remove('live');
-      if (currentStep.textContent.startsWith('thinking')) currentStep.remove();
-    }
     // Every real step kicks the field, so the surges line up with work actually
     // happening rather than only with a timer.
     kickField();
     activitySteps.push(label);
-    currentStep = el('span', 'step live', esc(label) + '<span class="dots"></span>');
     const stick = nearBottom();
-    activity.appendChild(currentStep);
+    if (!currentStep) {
+      currentStep = el('span', 'step live', stepContents(label, tool));
+      activity.appendChild(currentStep);
+    } else {
+      clearTimeout(stepSwapTimer);
+      currentStep.classList.add('swapping');
+      stepSwapTimer = setTimeout(() => {
+        if (!currentStep) return;
+        currentStep.innerHTML = stepContents(label, tool);
+        currentStep.classList.remove('swapping');
+      }, 170);
+    }
     if (stick) stream.scrollTop = stream.scrollHeight;
     setStatus(label);
   }
 
   function endTurn() {
+    clearTimeout(stepSwapTimer);
     root.classList.remove('busy');
     pulseField(false);
     setStatus(navigator.onLine ? 'here' : 'offline');
@@ -528,7 +558,7 @@
   // ══ events ════════════════════════════════════════════════════════════
   function handleEvent(ev) {
     if (ev.type === 'turn') { ev.phase === 'start' ? beginTurn(ev.source) : endTurn(); return; }
-    if (ev.type === 'step') { addStep(ev.label); return; }
+    if (ev.type === 'step') { addStep(ev.label, ev.tool); return; }
     if (ev.type === 'message') { addMessage(ev.role, ev.content, ev.ts); return; }
     if (ev.type === 'card') { addCard(ev.card); return; }
     if (ev.type === 'media') { addMedia(ev); return; }
