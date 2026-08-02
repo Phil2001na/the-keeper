@@ -1,3 +1,7 @@
+## 2026-08-03 01:45
+- Removed the galaxy transparency control and restored both backdrops to their tuned fixed visibility.
+- Added palette-aware zoom controls and a full-size lightbox for both Settings backdrop previews.
+
 ## 2026-08-03 01:01
 - Added persisted galaxy backdrop selection and transparency controls to Settings.
 - Added a star-dense Gargantua backdrop and cached both space choices for offline PWA use.
