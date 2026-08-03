@@ -1,3 +1,7 @@
+## 2026-08-03 11:08
+- Added a direct OpenAI provider for GPT-5.6 Luna with high reasoning, preserving Keeper's existing tool loop.
+- Documented the OpenAI environment settings required for deployment.
+
 ## 2026-08-03 01:45
 - Removed the galaxy transparency control and restored both backdrops to their tuned fixed visibility.
 - Added palette-aware zoom controls and a full-size lightbox for both Settings backdrop previews.
@@ -13,6 +17,31 @@
 ## 2026-08-03 00:24
 - Reworked the live web activity rail into one smoothly transitioning, tool-aware status pill, with branded Drive/Gmail marks and palette-consistent SVGs.
 - Refined the existing liquid atmosphere with a restrained stellar layer and conversation-lane vignette; both inherit the selected palette instead of locking the UI to purple.
+
+## 2026-08-03 00:37
+- Simplified the shared Kantewa Drive pack to the two chronological affidavits only; the other pack copies were moved to Drive Trash (original source records remain unchanged).
+- Rewrote the unsent Jada draft to attach only the initial estimate/impact document, link the affidavits, and offer the fuller prepared evidence on request.
+
+## 2026-08-03 00:22
+- Used the existing evidence tracker to add a plain-language summary of Philip's physical, social, creative and continuity-of-care impacts to the front damages document, Drive copy and unsent Jada draft.
+
+## 2026-08-03 00:18
+- Added the loss of gym/exercise to the local and Drive damages summaries and the unsent Jada draft, framed as a documented daily-life impact caused by fear of aggravating jaw pain and clenching.
+
+## 2026-08-03 00:13
+- Rewrote the two front documents and the unsent Jada email in Philip's plain first-person voice: they now present the facts, acknowledge uncertainty, and ask Jada for guidance instead of adopting legal-counsel language.
+
+## 2026-08-03 00:07
+- Revised the counsel-review damages schedule and Gmail draft: removed the Mentzel estimate and recovery-income claim, added the N$30k surgeon quote, CT/CBCT estimate, N$35k vocational-impact entry, and affidavit context.
+- Preserved a pre-edit desktop backup of the damages schedule; the revised local document and Drive schedule were content-checked, and the Gmail item remains an unsent draft.
+
+## 2026-08-02 23:11
+- Prepared two attachable counsel-review documents (damages schedule and evidence index) on Philip's Desktop, and created an unsent Gmail draft to Jada Guriras linking the organised Drive pack.
+- Confirmed the local DOCX files pass structural checks; visual rendering could not run because the bundled renderer's `pdf2image` dependency is unavailable on this machine.
+
+## 2026-08-02 23:05
+- Created a non-destructive Google Drive counsel-review pack for Kantewa v Kayone: organised copies of 17 source records into clinical, costs, affidavit, and personal-impact folders.
+- Added a proposed N$1.3m damages schedule and evidence index, both explicitly marked as working documents for Jada Guriras's legal review; the conflicting older quantum estimate was preserved but excluded.
 
 ## 2026-08-01 00:00
 - Gave Keeper write access to Google Drive: `create_drive_file` and `update_drive_file` tools (backed by new `createDriveFile`/`updateDriveFile` in `src/integrations/drive.ts`), alongside the existing read-only `list_drive_files`/`read_drive_file`. The OAuth scope was already the full `drive` scope (`scripts/google-auth.ts`), so no re-auth is needed. Unlike email, there's no drafts-folder equivalent for Drive writes — the system prompt tells the agent to go ahead when asked to save/update a file but not to overwrite files unprompted.

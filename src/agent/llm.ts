@@ -48,6 +48,10 @@ const OPENAI_COMPAT: Record<string, { url: string; apiKey: () => string }> = {
     url: 'https://openrouter.ai/api/v1/chat/completions',
     apiKey: () => config.openrouterApiKey,
   },
+  openai: {
+    url: 'https://api.openai.com/v1/chat/completions',
+    apiKey: () => config.openaiApiKey,
+  },
 };
 
 export async function createMessage(req: LlmRequest): Promise<LlmResponse> {
@@ -233,7 +237,9 @@ async function viaOpenAiCompat(req: LlmRequest, url: string, apiKey: string): Pr
   const tools = toolsToOpenAi(req.tools);
   const body = {
     model: req.model,
-    max_tokens: req.max_tokens,
+    ...(config.modelProvider === 'openai'
+      ? { max_completion_tokens: req.max_tokens, reasoning_effort: config.reasoningEffort }
+      : { max_tokens: req.max_tokens }),
     messages: messagesToOpenAi(req),
     tools: tools.length ? tools : undefined,
   };

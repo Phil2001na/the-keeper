@@ -95,6 +95,7 @@ function parseGuestBots(): GuestBot[] {
 //   gemini      → Gemini direct, via Google's OpenAI-compatible endpoint,
 //                 reusing GEMINI_API_KEY. Cheapest path — no extra account.
 //   openrouter  → any model (GPT-5-mini, etc.) over OpenRouter.
+//   openai      → GPT direct, using OPENAI_API_KEY.
 // A stopgap when Anthropic credits run dry: the whole keeper — proactivity,
 // rituals, continuity — keeps running, just on cheaper tokens.
 const modelProvider = optional('MODEL_PROVIDER', 'anthropic');
@@ -105,12 +106,16 @@ const defaultModel =
     ? 'gemini-3.5-flash'
     : modelProvider === 'openrouter'
       ? 'google/gemini-2.5-flash'
+      : modelProvider === 'openai'
+        ? 'gpt-5.6-luna'
       : 'claude-sonnet-4-6';
 const defaultDigestModel =
   modelProvider === 'gemini'
     ? 'gemini-3.5-flash'
     : modelProvider === 'openrouter'
       ? 'google/gemini-2.5-flash'
+      : modelProvider === 'openai'
+        ? 'gpt-5.6-luna'
       : 'claude-haiku-4-5-20251001';
 
 export const config = {
@@ -125,9 +130,14 @@ export const config = {
     modelProvider === 'openrouter'
       ? requiredToken('OPENROUTER_API_KEY')
       : (process.env.OPENROUTER_API_KEY ?? '').replace(/\s+/g, ''),
+  openaiApiKey:
+    modelProvider === 'openai'
+      ? requiredToken('OPENAI_API_KEY')
+      : (process.env.OPENAI_API_KEY ?? '').replace(/\s+/g, ''),
   // Model id; defaults follow the provider. Override to flip models, no code —
   // except Gemini, which is pinned to the regular (flash) model, never pro.
   model: modelProvider === 'gemini' ? defaultModel : optional('MODEL', defaultModel),
+  reasoningEffort: optional('MODEL_REASONING_EFFORT', 'high'),
 
   // Optional: enables voice-note transcription. If unset, voice notes get a
   // friendly "I can't hear that yet" reply instead of crashing.
