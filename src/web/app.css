@@ -21,7 +21,6 @@
   --tint: 0.022;
   /* How far every translucent surface thins out, 0–100. */
   --glass: 42;
-  --galaxy-opacity: 0.72;
 
   --h: var(--h-base);
 
@@ -229,7 +228,7 @@ textarea {
   z-index: 0;
   background: url('/icons/galaxy-backdrop.png') center / cover no-repeat;
   filter: grayscale(0.68) saturate(0.55) brightness(0.7) contrast(1.05);
-  opacity: var(--galaxy-opacity);
+  opacity: 0.72;
   transform: scale(1.02);
   transition: opacity var(--d-4) var(--ease), filter var(--d-4) var(--ease);
 }
@@ -264,7 +263,7 @@ textarea {
 }
 
 :root.busy .galaxy {
-  opacity: calc(var(--galaxy-opacity) + 0.1);
+  opacity: 0.82;
   filter: grayscale(0.55) saturate(0.66) brightness(0.76) contrast(1.06);
 }
 
@@ -1546,8 +1545,9 @@ footer {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 10px;
-  margin-bottom: 18px;
 }
+
+.backdrop-card { position: relative; }
 
 .backdrop-option {
   display: flex;
@@ -1561,6 +1561,7 @@ footer {
   font-size: 11.5px;
   text-align: left;
   cursor: pointer;
+  width: 100%;
   transition: border-color var(--d-2) var(--ease), transform var(--d-2) var(--ease),
     background var(--d-2) var(--ease);
 }
@@ -1583,7 +1584,69 @@ footer {
 }
 .backdrop-preview.deep { background-image: url('/icons/galaxy-backdrop.png'); }
 .backdrop-preview.gargantua { background-image: url('/icons/galaxy-gargantua.png'); }
-.backdrop-transparency { margin-bottom: 0; }
+
+.backdrop-zoom {
+  position: absolute;
+  top: 15px;
+  right: 15px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 50%;
+  background: rgba(5,7,13,0.62);
+  color: rgba(255,255,255,0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  cursor: zoom-in;
+  transition: background var(--d-2) var(--ease), color var(--d-2) var(--ease), transform var(--d-2) var(--ease);
+}
+.backdrop-zoom:hover { background: var(--accent); color: var(--on-accent); transform: scale(1.06); }
+.backdrop-zoom svg { width: 14px; height: 14px; }
+
+.backdrop-dialog {
+  width: min(760px, calc(100vw - 28px));
+  max-width: none;
+  max-height: calc(100dvh - 28px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklab, var(--surface-1) 94%, transparent);
+  color: var(--text);
+  box-shadow: var(--e-3);
+  overflow: hidden;
+}
+.backdrop-dialog::backdrop {
+  background: oklch(4% 0.01 var(--h) / 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.backdrop-dialog-inner { display: flex; flex-direction: column; max-height: calc(100dvh - 28px); }
+.backdrop-dialog img { display: block; width: 100%; min-height: 0; object-fit: contain; background: #02030a; }
+.backdrop-dialog-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 10px 16px;
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.backdrop-dialog-bar button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.backdrop-dialog-bar button:hover { color: var(--text); border-color: var(--accent-line); }
+.backdrop-dialog-bar svg { width: 14px; height: 14px; }
 
 .field-row {
   margin-bottom: 16px;
@@ -1654,10 +1717,6 @@ input[type='range']::-moz-range-thumb {
    it does — you can see the field through the right-hand end of it. */
 #glass {
   --track: linear-gradient(90deg, var(--surface-3) 0%, oklch(24% var(--tint) var(--h) / 0.12) 100%);
-}
-
-#galaxy-transparency {
-  --track: linear-gradient(90deg, var(--surface-3) 0%, oklch(24% var(--tint) var(--h) / 0.06) 100%);
 }
 
 .btn {
