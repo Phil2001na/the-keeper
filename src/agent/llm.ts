@@ -238,7 +238,13 @@ async function viaOpenAiCompat(req: LlmRequest, url: string, apiKey: string): Pr
   const body = {
     model: req.model,
     ...(config.modelProvider === 'openai'
-      ? { max_completion_tokens: req.max_tokens, reasoning_effort: config.reasoningEffort }
+      ? {
+          max_completion_tokens: req.max_tokens,
+          // gpt-5.6-luna's Chat Completions endpoint rejects a reasoning
+          // setting whenever function tools are present. Keeper is tool-first,
+          // so preserve the configured effort for plain requests only.
+          reasoning_effort: tools.length ? 'none' : config.reasoningEffort,
+        }
       : { max_tokens: req.max_tokens }),
     messages: messagesToOpenAi(req),
     tools: tools.length ? tools : undefined,

@@ -1,4 +1,5 @@
 ## 2026-08-03 12:57
+- 13:40 — Fixed GPT-5.6 Luna tool calls being rejected by the Chat Completions API: Keeper now automatically disables reasoning effort only when function tools are included.
 - Added durable follow-ups for active open loops: default five-day check-ins are scheduled with each watched thread.
 - Closing or rescheduling a thread now cancels or replaces its matching nudge, preventing stale reminders.
 
