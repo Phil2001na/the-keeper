@@ -833,14 +833,20 @@ export async function dispatchTool(
         return { output: `next_check must be YYYY-MM-DD, got "${nextCheck}".` };
       }
       const domainId = await resolveDomainId(input.domain_slug as string | undefined);
+      const effectiveNextCheck = nextCheck || new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const t = await threads.create({
         domain_id: domainId,
         title,
         note: (input.note as string | undefined)?.trim() || null,
-        next_check: nextCheck || null,
+        next_check: effectiveNextCheck,
+      });
+      const followUp = await touchpoints.create({
+        fire_at: new Date(`${effectiveNextCheck}T10:00:00+02:00`).toISOString(),
+        domain_id: domainId,
+        reason: `[thread:${t.id}] Follow up on "${t.title}". If Philip has not brought it up, ask once what happened; encourage or help close the loop, then update or close the thread. Stay silent if it is clearly not worth interrupting him.`,
       });
       return {
-        output: `Now watching [${t.id.slice(0, 8)}]: ${t.title}` + (t.next_check ? ` (next look ${t.next_check})` : ''),
+        output: `Now watching [${t.id.slice(0, 8)}]: ${t.title} (next look ${t.next_check}; follow-up ${followUp.id.slice(0, 8)} is scheduled).`,
       };
     }
 
@@ -858,6 +864,17 @@ export async function dispatchTool(
       }
       if (Object.keys(patch).length === 0) return { output: 'Nothing to update — pass at least one field.' };
       const updated = await threads.update(t.id, patch);
+      const tagged = (await touchpoints.pending()).filter((tp) => tp.reason.includes(`[thread:${t.id}]`));
+      if (patch.status === 'closed') {
+        await Promise.all(tagged.map((tp) => touchpoints.setStatus(tp.id, 'cancelled')));
+      } else if (patch.next_check) {
+        await Promise.all(tagged.map((tp) => touchpoints.setStatus(tp.id, 'cancelled')));
+        await touchpoints.create({
+          fire_at: new Date(`${patch.next_check}T10:00:00+02:00`).toISOString(),
+          domain_id: updated?.domain_id ?? t.domain_id,
+          reason: `[thread:${t.id}] Follow up on "${updated?.title ?? t.title}". If Philip has not brought it up, ask once what happened; encourage or help close the loop, then update or close the thread. Stay silent if it is clearly not worth interrupting him.`,
+        });
+      }
       return {
         output: `Thread [${t.id.slice(0, 8)}] updated${patch.status ? ` → ${patch.status}` : ''}: ${updated?.title ?? t.title}`,
       };

@@ -1,3 +1,7 @@
+## 2026-08-03 12:57
+- Added durable follow-ups for active open loops: default five-day check-ins are scheduled with each watched thread.
+- Closing or rescheduling a thread now cancels or replaces its matching nudge, preventing stale reminders.
+
 ## 2026-08-03 11:08
 - Added a direct OpenAI provider for GPT-5.6 Luna with high reasoning, preserving Keeper's existing tool loop.
 - Documented the OpenAI environment settings required for deployment.
