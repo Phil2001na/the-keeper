@@ -172,7 +172,7 @@
         chroma: Number.isFinite(s.chroma) ? s.chroma : DEFAULT_THEME.chroma,
         tint: Number.isFinite(s.tint) ? s.tint : DEFAULT_THEME.tint,
         glass: Number.isFinite(s.glass) ? clamp(s.glass, 0, 100) : DEFAULT_THEME.glass,
-        galaxy: s.galaxy === 'gargantua' ? 'gargantua' : 'deep',
+        galaxy: s.galaxy === 'gargantua' || s.galaxy === 'elysium' ? s.galaxy : 'deep',
       };
     } catch {
       return { ...DEFAULT_THEME };

@@ -238,6 +238,25 @@ textarea {
   background-position: center;
 }
 
+/* Elysium is a warm, already-colourful sunset photo, not desaturated dust —
+   the usual heavy grayscale + color-blend combo (built for the mono galaxy
+   shots) would flatten it back to purple. Lighter filter, softer blend. */
+:root[data-galaxy='elysium'] .galaxy {
+  background-image: url('/icons/galaxy-elysium.png');
+  background-position: center;
+  filter: saturate(0.95) brightness(0.66) contrast(1.03);
+  opacity: 0.88;
+}
+
+:root[data-galaxy='elysium'] .galaxy::after {
+  mix-blend-mode: soft-light;
+  opacity: 0.55;
+}
+
+:root.busy[data-galaxy='elysium'] .galaxy {
+  filter: saturate(1) brightness(0.72) contrast(1.04);
+}
+
 .galaxy::after {
   content: '';
   position: absolute;
@@ -1584,6 +1603,7 @@ footer {
 }
 .backdrop-preview.deep { background-image: url('/icons/galaxy-backdrop.png'); }
 .backdrop-preview.gargantua { background-image: url('/icons/galaxy-gargantua.png'); }
+.backdrop-preview.elysium { background-image: url('/icons/galaxy-elysium.png'); }
 
 .backdrop-zoom {
   position: absolute;

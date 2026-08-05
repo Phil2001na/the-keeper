@@ -1,3 +1,6 @@
+## 2026-08-06 00:55
+- Added a new "elysium" backdrop theme to the web UI's Settings > space picker (`galaxy-elysium.png`, cropped from the user's sunset floating-city artwork) alongside the existing "deep field" and "gargantua" backdrops — swappable from the same UI, no color-preset changes needed since backdrop and accent hue are independent settings. Since it's an already-warm photo rather than desaturated dust, gave it its own lighter filter/blend in `app.css` instead of reusing the mono-galaxy grayscale+color-blend treatment, so the sunset palette survives.
+
 ## 2026-08-05 (time not specified)
 - Added `plan_errand_route` tool (`src/agent/route.ts`, wired in `src/agent/tools.ts`), ported from EggRun's delivery route-planner (`egg-delivery/src/lib/route.ts`): nearest-neighbour stop ordering when coordinates are known, plus Google Maps / Apple Maps deep links falling back to address text when they aren't. Closes the System Self-Improvement note `eggrun_route_planner_integration_request` — lets morning briefs turn a list of errands into an ordered plan with tap-to-navigate links.
 - Simplified `plan_errand_route` per feedback: dropped lat/lng input, nearest-neighbour ordering, and Apple Maps — it now just takes place names in the order mentioned and builds one Google Maps directions link, letting Google Maps own the actual routing.
