@@ -1,5 +1,6 @@
 ## 2026-08-05 (time not specified)
 - Added `plan_errand_route` tool (`src/agent/route.ts`, wired in `src/agent/tools.ts`), ported from EggRun's delivery route-planner (`egg-delivery/src/lib/route.ts`): nearest-neighbour stop ordering when coordinates are known, plus Google Maps / Apple Maps deep links falling back to address text when they aren't. Closes the System Self-Improvement note `eggrun_route_planner_integration_request` — lets morning briefs turn a list of errands into an ordered plan with tap-to-navigate links.
+- Simplified `plan_errand_route` per feedback: dropped lat/lng input, nearest-neighbour ordering, and Apple Maps — it now just takes place names in the order mentioned and builds one Google Maps directions link, letting Google Maps own the actual routing.
 
 ## 2026-08-03 12:57
 - 13:40 — Fixed GPT-5.6 Luna tool calls being rejected by the Chat Completions API: Keeper now automatically disables reasoning effort only when function tools are included.

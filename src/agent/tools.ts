@@ -28,7 +28,7 @@ import { googleEnabled, getOAuth2Client as _auth } from '../integrations/google.
 import { listEmails, readEmail, sendEmail, createDraft } from '../integrations/gmail.js';
 import { listDriveFiles, readDriveFile, createDriveFile, updateDriveFile } from '../integrations/drive.js';
 import { fetchUrl } from '../integrations/web.js';
-import { orderStops, googleMapsDirUrl, appleMapsUrl, type Stop } from './route.js';
+import { googleMapsDirUrl } from './route.js';
 
 /**
  * The tools the orchestrator can call. The database is the agent's hands:
@@ -578,35 +578,22 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
       required: ['url'],
     },
   },
-  // ─── Errand route planning (ported from EggRun) ────────────────────────────
+  // ─── Errand route planning ─────────────────────────────────────────────────
   {
     name: 'plan_errand_route',
     description:
-      'Turn a list of errands/stops into an ordered route plus one-tap Google Maps / Apple Maps links, ' +
-      'for morning briefs or whenever he mentions several places to go in a day. ' +
-      'Give each stop a short label and either an address (place name / street) or lat/lng if known. ' +
-      'If every stop AND an origin have lat/lng, stops are reordered by nearest-neighbour distance; ' +
-      'otherwise stops are kept in the order given (say so — you cannot compute distance from addresses alone).',
+      'Turn the places he says he needs to go today into a single Google Maps link, for morning briefs or ' +
+      'whenever he mentions several errands in one day. Just pass the place names/addresses in the order he ' +
+      'mentioned them (or a sensible order from context) — Google Maps handles the actual turn-by-turn routing.',
     input_schema: {
       type: 'object',
       properties: {
         stops: {
           type: 'array',
-          description: 'The errands, in the order he mentioned them if no better ordering is possible.',
-          items: {
-            type: 'object',
-            properties: {
-              label: { type: 'string', description: 'Short name, e.g. "Pharmacy" or "Drop off parcel".' },
-              address: { type: 'string', description: 'Street address or place name (used if lat/lng are not known).' },
-              lat: { type: 'number' },
-              lng: { type: 'number' },
-            },
-            required: ['label'],
-          },
+          description: 'Place names or addresses, in visiting order.',
+          items: { type: 'string' },
         },
-        origin_address: { type: 'string', description: 'Where the day starts, as text (e.g. "home").' },
-        origin_lat: { type: 'number' },
-        origin_lng: { type: 'number' },
+        origin: { type: 'string', description: 'Where the day starts, e.g. "home". Optional.' },
       },
       required: ['stops'],
     },
@@ -1242,40 +1229,13 @@ export async function dispatchTool(
 
     // ─── Errand route planning ─────────────────────────────────────────────
     case 'plan_errand_route': {
-      const rawStops = Array.isArray(input.stops) ? (input.stops as Record<string, unknown>[]) : [];
-      if (rawStops.length === 0) return { output: 'No stops given.' };
-      const stops: Stop[] = rawStops.map((s) => ({
-        label: String(s.label ?? '').trim() || 'Stop',
-        address: typeof s.address === 'string' ? s.address.trim() || undefined : undefined,
-        lat: typeof s.lat === 'number' ? s.lat : undefined,
-        lng: typeof s.lng === 'number' ? s.lng : undefined,
-      }));
-      if (stops.some((s) => !s.address && (s.lat === undefined || s.lng === undefined))) {
-        return { output: 'Every stop needs either an address or lat/lng.' };
-      }
-      const originAddress = (input.origin_address as string | undefined)?.trim();
-      const originLat = typeof input.origin_lat === 'number' ? input.origin_lat : undefined;
-      const originLng = typeof input.origin_lng === 'number' ? input.origin_lng : undefined;
-      const origin: Stop | undefined =
-        originAddress || (originLat !== undefined && originLng !== undefined)
-          ? { label: 'Start', address: originAddress, lat: originLat, lng: originLng }
-          : undefined;
-
-      const originCoords = originLat !== undefined && originLng !== undefined ? { lat: originLat, lng: originLng } : undefined;
-      const { ordered, reordered } = orderStops(stops, originCoords);
-
-      const list = ordered.map((s, i) => `${i + 1}. ${s.label}${s.address ? ` — ${s.address}` : ''}`).join('\n');
-      const gmaps = googleMapsDirUrl(ordered, origin);
-      const amaps = appleMapsUrl(ordered, origin);
-      return {
-        output:
-          `${list}\n\n` +
-          `Google Maps: ${gmaps}\n` +
-          `Apple Maps: ${amaps}\n\n` +
-          (reordered
-            ? 'Reordered by nearest-neighbour distance from the origin.'
-            : 'Kept in the order given — no coordinates to compute an optimal order, so this is not necessarily the shortest route.'),
-      };
+      const stops = (Array.isArray(input.stops) ? input.stops : [])
+        .map((s) => String(s).trim())
+        .filter(Boolean);
+      if (stops.length === 0) return { output: 'No stops given.' };
+      const origin = (input.origin as string | undefined)?.trim() || undefined;
+      const list = stops.map((s, i) => `${i + 1}. ${s}`).join('\n');
+      return { output: `${list}\n\nGoogle Maps: ${googleMapsDirUrl(stops, origin)}` };
     }
 
     // ─── Google Drive ───────────────────────────────────────────────────────
