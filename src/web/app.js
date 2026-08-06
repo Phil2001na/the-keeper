@@ -149,6 +149,13 @@
     { id: 'mono', name: 'mono', h: 270, spread: 0, chroma: 0.03, tint: 0.008 },
   ];
 
+  // Deep field / gargantua are neutral space photography — any color preset
+  // reads fine over them. Elysium is a warm sunset photo with its own palette,
+  // so picking it is a full takeover: accent hue, bubbles, glass and blooms
+  // all shift to match, the same way a PRESETS swatch would, not just the
+  // photo behind everything.
+  const ELYSIUM_THEME = { h: 38, spread: -22, chroma: 0.15, tint: 0.026, glass: 48 };
+
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
   // Only the inputs — a preset's id/name would go stale the moment a slider
@@ -275,7 +282,8 @@
     bind('glass', 'glass', (v) => v);
     for (const b of document.querySelectorAll('.backdrop-option')) {
       b.addEventListener('click', () => {
-        theme = { ...theme, galaxy: b.dataset.galaxy };
+        const galaxy = b.dataset.galaxy;
+        theme = galaxy === 'elysium' ? { ...theme, ...ELYSIUM_THEME, galaxy } : { ...theme, galaxy };
         applyTheme(true);
       });
     }
