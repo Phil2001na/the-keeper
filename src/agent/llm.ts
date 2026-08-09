@@ -204,7 +204,14 @@ interface OpenAiResponse {
       tool_calls?: OpenAiToolCall[];
     };
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    // OpenAI reports automatic prefix-cache hits here. Without reading it, every
+    // cached token was billed to /status at full input price.
+    prompt_tokens_details?: { cached_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens?: number };
+  };
   error?: { message?: string };
 }
 
@@ -306,12 +313,20 @@ async function viaOpenAiCompat(req: LlmRequest, url: string, apiKey: string): Pr
     content.push(block as unknown as Anthropic.ContentBlock);
   }
 
+  // Translate OpenAI's accounting into Anthropic's. The two differ in one way
+  // that matters: OpenAI's prompt_tokens INCLUDES cache hits, Anthropic's
+  // input_tokens excludes them. Subtracting keeps the buckets disjoint so
+  // estimateCostUsd() doesn't charge cached tokens twice.
+  //
+  // There's no cache-write bucket to fill: prefix caching here is automatic and
+  // not separately billed, unlike Anthropic's explicit ephemeral breakpoints.
   const u = data.usage ?? {};
+  const cached = u.prompt_tokens_details?.cached_tokens ?? 0;
   const usage = {
-    input_tokens: u.prompt_tokens ?? 0,
+    input_tokens: Math.max(0, (u.prompt_tokens ?? 0) - cached),
     output_tokens: u.completion_tokens ?? 0,
     cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0,
+    cache_read_input_tokens: cached,
   } as unknown as Anthropic.Usage;
 
   const stop_reason = choice?.finish_reason === 'tool_calls' ? 'tool_use' : 'end_turn';

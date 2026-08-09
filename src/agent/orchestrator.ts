@@ -228,8 +228,9 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
 
   // A single attempt at the full tool-use loop. Mutates `messages` in place —
   // callers that want to retry from scratch must snapshot/restore its length.
-  async function attemptTurn(): Promise<{ text: string; silent: boolean }> {
+  async function attemptTurn(): Promise<{ text: string; silent: boolean; toolsRan: boolean }> {
     let silent = false;
+    let toolsRan = false;
     // The model often writes its reply in the SAME turn as a tool call (e.g.
     // "got it 👍" alongside schedule_touchpoint). That turn's stop_reason is
     // "tool_use", so we must capture text from every turn, not just the final
@@ -288,6 +289,7 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
         const toolResults: Anthropic.ToolResultBlockParam[] = [];
         for (const block of response.content) {
           if (block.type !== 'tool_use') continue;
+          toolsRan = true;
           bus.publish({ type: 'step', label: stepLabel(block.name), tool: block.name });
           // A tool that throws (network blip, expired Google token, etc.) must
           // NEVER take down the whole turn — feed the error back to the model as a
@@ -316,13 +318,23 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
     }
 
     logUsage(trigger.kind, config.model, usages);
-    return { text: textParts.join('\n\n').trim(), silent };
+    return { text: textParts.join('\n\n').trim(), silent, toolsRan };
   }
 
   // Philip must never see a "blanked, say that again?" placeholder or any
   // other meta-talk about a transient failure — retry the whole turn silently
   // instead. Blank final text on an inbound message is almost always a
   // transient hiccup (model returned no content), not a real "nothing to say".
+  //
+  // How the retry rewinds depends on whether the blank attempt actually did
+  // anything. Rewinding past executed tools would re-run their side effects —
+  // a second remember_fact, a duplicate schedule_touchpoint, an email sent
+  // twice — and re-pay for every round that got us there. So:
+  //   - no tools ran  → discard the attempt entirely and start fresh
+  //   - tools ran     → KEEP their results in `messages` and ask again. The
+  //                     work is done and paid for; all that's missing is the
+  //                     text, and the model now has everything it needs to
+  //                     write it in a single cheap round.
   const baseMessagesLen = messages.length;
   const MAX_BLANK_RETRIES = 2;
   let text = '';
@@ -333,7 +345,15 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
     silent = result.silent;
     if (text !== '' || silent || trigger.kind !== 'inbound') break;
     console.error(`[agent] blank response on inbound turn (attempt ${attempt + 1}/${MAX_BLANK_RETRIES + 1}) — retrying silently`);
-    messages.length = baseMessagesLen; // discard the blank attempt's turns and try fresh
+    if (result.toolsRan) {
+      messages.push({
+        role: 'user',
+        content:
+          '[system] Your last response came back empty. Everything above already ran — do NOT repeat any tool call. Just reply to him now, in your own voice, as if this note were not here.',
+      });
+    } else {
+      messages.length = baseMessagesLen; // nothing happened — try fresh
+    }
   }
 
   // Reflection is always silent: it's the agent thinking, not talking. Its
