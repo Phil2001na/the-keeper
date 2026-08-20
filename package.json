@@ -11,6 +11,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "seed": "tsx src/seed/seed.ts",
+    "backfill:state": "tsx scripts/backfill_state_captures.ts",
     "google-auth": "tsx scripts/google-auth.ts",
     "mcp": "tsx src/mcp/server.ts",
     "icons": "tsx scripts/gen-icons.ts",
