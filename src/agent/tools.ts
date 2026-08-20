@@ -11,6 +11,8 @@ import {
   journal,
   portrait,
   threads,
+  skills,
+  stateCaptures,
 } from '../db/repositories.js';
 import { parseRecurrence, nextOccurrence, monthStartUtc } from './recurrence.js';
 import { bus, type PresentCard } from '../web/bus.js';
@@ -373,6 +375,78 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
         text: { type: 'string', description: 'The full revised portrait (replaces the previous one).' },
       },
       required: ['text'],
+    },
+  },
+  // ─── Skills: state capture ────────────────────────────────────────────────
+  {
+    name: 'list_skills',
+    description:
+      'List capabilities you have beyond the fixed tool list (currently just state_capture) — what each one is for and when you may use it.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'capture_state',
+    description:
+      "Persist a guided snapshot of how he actually is right now — body, emotion, thoughts, behaviour, context, meaning, need, relationships, identity. " +
+      "This is NOT a fact and NOT a diagnosis: it's a dated, structured record of a moment, kept separate from keeper_facts so the raw texture survives instead of getting flattened. " +
+      "Three modes:\n" +
+      "  quick — 2-4 questions, held live in conversation when he opts in to a check-in.\n" +
+      "  deep — 8-12 questions, held live in conversation, ONLY after he has explicitly consented (\"deep dive\", \"interview me\", \"help me document this\"). Never start a deep capture unprompted.\n" +
+      "  retrospective — you extract this yourself from search_history/a date range instead of asking him live.\n" +
+      "Call this AFTER the conversational exchange (or extraction) is done, not to conduct it — the questions and his answers happen as normal messages first. " +
+      "For quick/deep, mark each dimension's certainty 'reported' (his own words) unless you are paraphrasing/inferring, in which case use 'inferred' and say so. " +
+      "For retrospective, most dimensions should be 'inferred' with evidence_text quoting what he actually said; do not overclaim. " +
+      "Never invent a psychiatric label as a dimension value — describe what was said or observed, not a diagnosis.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['quick', 'deep', 'retrospective'] },
+        summary: { type: 'string', description: 'One or two honest sentences on the state of him at this moment/period.' },
+        raw_text: { type: 'string', description: 'His own words for the emotionally important parts, preserved verbatim where it matters.' },
+        confidence: { type: 'string', enum: ['low', 'medium', 'high'], description: 'How solid this read is. Default medium.' },
+        approval_status: {
+          type: 'string',
+          enum: ['approved', 'provisional', 'rejected'],
+          description: "Default: 'approved' for quick/deep (self-reported live), 'provisional' for retrospective (needs his review before it's treated as settled).",
+        },
+        period_start: { type: 'string', description: 'retrospective only: ISO start of the period this captures.' },
+        period_end: { type: 'string', description: 'retrospective only: ISO end of the period this captures.' },
+        dimensions: {
+          type: 'array',
+          description: '1-9 entries, one per dimension actually covered — do not force every dimension if it was not touched on.',
+          items: {
+            type: 'object',
+            properties: {
+              dimension: {
+                type: 'string',
+                enum: ['body', 'emotion', 'thoughts', 'behaviour', 'context', 'meaning', 'need', 'relationships', 'identity'],
+              },
+              value: { type: 'string', description: 'The read on this dimension, in plain language.' },
+              intensity: { type: 'number', description: 'Optional 1-10.' },
+              certainty: { type: 'string', enum: ['reported', 'inferred'] },
+              evidence_text: { type: 'string', description: 'Optional short quote/paraphrase backing this up.' },
+            },
+            required: ['dimension', 'value'],
+          },
+        },
+      },
+      required: ['mode', 'summary', 'dimensions'],
+    },
+  },
+  {
+    name: 'query_state_captures',
+    description:
+      'Read back state captures to answer things like "what was I like six months ago compared to now?". ' +
+      'mode "recent" = the last N captures. mode "range" = every capture whose captured_at falls between from_iso and to_iso.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['recent', 'range'] },
+        limit: { type: 'number', description: 'recent only: how many (default 5).' },
+        from_iso: { type: 'string', description: 'range only.' },
+        to_iso: { type: 'string', description: 'range only.' },
+      },
+      required: ['mode'],
     },
   },
   {
@@ -1151,6 +1225,96 @@ export async function dispatchTool(
 
     case 'stay_silent': {
       return { output: 'Staying silent.', silent: true };
+    }
+
+    // ─── Skills: state capture ─────────────────────────────────────────────
+    case 'list_skills': {
+      const list = await skills.list();
+      if (list.length === 0) return { output: 'No skills registered yet.' };
+      return {
+        output: list
+          .map((s) => `- ${s.slug} (${s.name}) [v${s.version}, trigger: ${s.trigger_policy}] — ${s.description}`)
+          .join('\n'),
+      };
+    }
+
+    case 'capture_state': {
+      const mode = String(input.mode ?? '');
+      if (!['quick', 'deep', 'retrospective'].includes(mode)) {
+        return { output: `Bad mode "${input.mode}" — use quick, deep, or retrospective.` };
+      }
+      const summary = String(input.summary ?? '').trim();
+      if (!summary) return { output: 'A capture needs a summary.' };
+      const rawDims = Array.isArray(input.dimensions) ? (input.dimensions as Record<string, unknown>[]) : [];
+      if (rawDims.length === 0) return { output: 'A capture needs at least one dimension.' };
+      const validDims = new Set([
+        'body', 'emotion', 'thoughts', 'behaviour', 'context', 'meaning', 'need', 'relationships', 'identity',
+      ]);
+      const dimensions: Array<{
+        dimension: string; value: string; intensity?: number | null; certainty?: 'reported' | 'inferred'; evidence_text?: string | null;
+      }> = [];
+      for (const d of rawDims) {
+        const dimension = String(d.dimension ?? '');
+        if (!validDims.has(dimension)) return { output: `Bad dimension "${d.dimension}".` };
+        const value = String(d.value ?? '').trim();
+        if (!value) return { output: `Dimension "${dimension}" needs a value.` };
+        dimensions.push({
+          dimension,
+          value,
+          intensity: typeof d.intensity === 'number' ? d.intensity : null,
+          certainty: d.certainty === 'inferred' ? 'inferred' : 'reported',
+          evidence_text: typeof d.evidence_text === 'string' ? d.evidence_text.trim() || null : null,
+        });
+      }
+      const approval = input.approval_status as string | undefined;
+      const capture = await stateCaptures.create({
+        mode: mode as 'quick' | 'deep' | 'retrospective',
+        summary,
+        raw_text: (input.raw_text as string | undefined)?.trim() || null,
+        confidence: (input.confidence as 'low' | 'medium' | 'high' | undefined) ?? 'medium',
+        approval_status: approval === 'approved' || approval === 'provisional' || approval === 'rejected' ? approval : undefined,
+        period_start: (input.period_start as string | undefined) || null,
+        period_end: (input.period_end as string | undefined) || null,
+        dimensions,
+      });
+      return {
+        output: `Captured [${capture.id.slice(0, 8)}] (${capture.mode}, ${capture.approval_status}): ${capture.summary} — ${capture.dimensions.length} dimension(s).`,
+      };
+    }
+
+    case 'query_state_captures': {
+      const mode = String(input.mode ?? '');
+      if (mode === 'recent') {
+        const limit = Math.min(Math.max(Number(input.limit ?? 5) || 5, 1), 30);
+        const rows = await stateCaptures.recent(limit);
+        if (rows.length === 0) return { output: 'No state captures logged yet.' };
+        return {
+          output: rows
+            .map(
+              (c) =>
+                `[${c.captured_at.slice(0, 16).replace('T', ' ')}] (${c.mode}, ${c.approval_status}) ${c.summary}\n` +
+                c.dimensions.map((d) => `  - ${d.dimension} (${d.certainty}): ${d.value}`).join('\n')
+            )
+            .join('\n\n'),
+        };
+      }
+      if (mode === 'range') {
+        const from = input.from_iso as string | undefined;
+        const to = input.to_iso as string | undefined;
+        if (!from || !to) return { output: 'range mode needs both from_iso and to_iso.' };
+        const rows = await stateCaptures.range(from, to);
+        if (rows.length === 0) return { output: `No state captures between ${from} and ${to}.` };
+        return {
+          output: rows
+            .map(
+              (c) =>
+                `[${c.captured_at.slice(0, 16).replace('T', ' ')}] (${c.mode}, ${c.approval_status}) ${c.summary}\n` +
+                c.dimensions.map((d) => `  - ${d.dimension} (${d.certainty}): ${d.value}`).join('\n')
+            )
+            .join('\n\n'),
+        };
+      }
+      return { output: `Unknown mode "${mode}" — use recent or range.` };
     }
 
     // ─── Website deployment ────────────────────────────────────────────────

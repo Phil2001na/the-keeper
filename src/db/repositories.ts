@@ -103,6 +103,44 @@ export interface JournalEntry {
   created_at: string;
 }
 
+/** A capability the agent can invoke beyond the fixed tool list. Metadata only. */
+export interface Skill {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  trigger_policy: string;
+  version: number;
+  active: boolean;
+}
+
+/** One reported/inferred dimension of a state capture. */
+export interface StateDimension {
+  id: string;
+  state_capture_id: string;
+  dimension: string;
+  value: string;
+  intensity: number | null;
+  certainty: 'reported' | 'inferred';
+  evidence_text: string | null;
+}
+
+/** A guided snapshot of how he actually is at a moment, kept separate from durable facts. */
+export interface StateCapture {
+  id: string;
+  skill_slug: string;
+  captured_at: string;
+  period_start: string | null;
+  period_end: string | null;
+  mode: 'quick' | 'deep' | 'retrospective';
+  summary: string;
+  raw_text: string | null;
+  confidence: 'low' | 'medium' | 'high';
+  approval_status: 'approved' | 'provisional' | 'rejected';
+  created_at: string;
+  dimensions: StateDimension[];
+}
+
 /** One browser that agreed to be interrupted (Web Push, RFC 8291). */
 export interface PushSubscriptionRow {
   endpoint: string;
@@ -874,5 +912,128 @@ export const pushSubscriptions = {
       .update({ failures, last_error: message.slice(0, 500) })
       .eq('endpoint', endpoint);
     if (error) fail('pushSubscriptions.markFailed', error);
+  },
+};
+
+// ─── Skills ────────────────────────────────────────────
+// Declarative registry of capabilities beyond the fixed tool list. See
+// migrations/008_skills.sql. Metadata only — dispatch still lives in tools.ts.
+export const skills = {
+  async list(activeOnly = true): Promise<Skill[]> {
+    let q = db.from('keeper_skills').select('*').order('slug', { ascending: true });
+    if (activeOnly) q = q.eq('active', true);
+    const { data, error } = await q;
+    if (error) fail('skills.list', error);
+    return data as Skill[];
+  },
+};
+
+// ─── State captures ────────────────────────────────────
+// The state_capture skill's ledger: guided snapshots of how he actually is,
+// kept separate from keeper_facts so the raw texture of a moment survives.
+// See migrations/008_skills.sql.
+function attachDimensions(rows: StateCapture[], dims: StateDimension[]): StateCapture[] {
+  const byCapture = new Map<string, StateDimension[]>();
+  for (const d of dims) {
+    const list = byCapture.get(d.state_capture_id) ?? [];
+    list.push(d);
+    byCapture.set(d.state_capture_id, list);
+  }
+  return rows.map((r) => ({ ...r, dimensions: byCapture.get(r.id) ?? [] }));
+}
+
+export const stateCaptures = {
+  /** Persist a finished capture (quick/deep already held in conversation, or a retrospective extraction). */
+  async create(input: {
+    skill_slug?: string;
+    mode: 'quick' | 'deep' | 'retrospective';
+    summary: string;
+    raw_text?: string | null;
+    confidence?: 'low' | 'medium' | 'high';
+    approval_status?: 'approved' | 'provisional' | 'rejected';
+    period_start?: string | null;
+    period_end?: string | null;
+    captured_at?: string;
+    dimensions: Array<{
+      dimension: string;
+      value: string;
+      intensity?: number | null;
+      certainty?: 'reported' | 'inferred';
+      evidence_text?: string | null;
+    }>;
+  }): Promise<StateCapture> {
+    const { data, error } = await db
+      .from('keeper_state_captures')
+      .insert({
+        skill_slug: input.skill_slug ?? 'state_capture',
+        mode: input.mode,
+        summary: input.summary,
+        raw_text: input.raw_text ?? null,
+        confidence: input.confidence ?? 'medium',
+        approval_status: input.approval_status ?? (input.mode === 'retrospective' ? 'provisional' : 'approved'),
+        period_start: input.period_start ?? null,
+        period_end: input.period_end ?? null,
+        captured_at: input.captured_at ?? new Date().toISOString(),
+      })
+      .select('*')
+      .single();
+    if (error) fail('stateCaptures.create', error);
+    const capture = data as Omit<StateCapture, 'dimensions'>;
+
+    let dimensions: StateDimension[] = [];
+    if (input.dimensions.length > 0) {
+      const { data: dimRows, error: dimError } = await db
+        .from('keeper_state_dimensions')
+        .insert(
+          input.dimensions.map((d) => ({
+            state_capture_id: capture.id,
+            dimension: d.dimension,
+            value: d.value,
+            intensity: d.intensity ?? null,
+            certainty: d.certainty ?? 'reported',
+            evidence_text: d.evidence_text ?? null,
+          }))
+        )
+        .select('*');
+      if (dimError) fail('stateCaptures.create (dimensions)', dimError);
+      dimensions = dimRows as StateDimension[];
+    }
+    return { ...capture, dimensions };
+  },
+
+  async recent(limit = 5): Promise<StateCapture[]> {
+    const { data, error } = await db
+      .from('keeper_state_captures')
+      .select('*')
+      .order('captured_at', { ascending: false })
+      .limit(limit);
+    if (error) fail('stateCaptures.recent', error);
+    const rows = data as Omit<StateCapture, 'dimensions'>[];
+    if (rows.length === 0) return [];
+    const { data: dims, error: dimError } = await db
+      .from('keeper_state_dimensions')
+      .select('*')
+      .in('state_capture_id', rows.map((r) => r.id));
+    if (dimError) fail('stateCaptures.recent (dimensions)', dimError);
+    return attachDimensions(rows as StateCapture[], dims as StateDimension[]);
+  },
+
+  /** Captures whose captured_at falls in [fromIso, toIso) — "what was I like in this window". */
+  async range(fromIso: string, toIso: string): Promise<StateCapture[]> {
+    const { data, error } = await db
+      .from('keeper_state_captures')
+      .select('*')
+      .gte('captured_at', fromIso)
+      .lt('captured_at', toIso)
+      .order('captured_at', { ascending: true });
+    if (error) fail('stateCaptures.range', error);
+    const rows = data as Omit<StateCapture, 'dimensions'>[];
+    if (rows.length === 0) return [];
+    const { data: dims, error: dimError } = await db
+      .from('keeper_state_dimensions')
+      .select('*')
+      .in('state_capture_id', rows.map((r) => r.id));
+    if (dimError) fail('stateCaptures.range (dimensions)', dimError);
+    return attachDimensions(rows as StateCapture[], dims as StateDimension[]);
   },
 };
