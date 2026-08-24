@@ -449,15 +449,24 @@ export const interactions = {
    * anchored context window. Capped for safety; if over the cap, the newest
    * survive (the digest will catch the overflow on the next fold).
    */
-  async sinceAnchor(anchorIso: string, cap = 200): Promise<Interaction[]> {
+  /**
+   * Messages after the anchor, always returned oldest-first.
+   *
+   * `end` picks which end of the range the cap keeps when there are more than
+   * `cap` of them: 'newest' (default) for the context window, which wants the
+   * most recent; 'oldest' for the digest fold, which must work through the
+   * backlog in order or it would skip past unfolded messages.
+   */
+  async sinceAnchor(anchorIso: string, cap = 200, end: 'newest' | 'oldest' = 'newest'): Promise<Interaction[]> {
     const { data, error } = await db
       .from('keeper_interactions')
       .select(INTERACTION_COLS)
       .gt('created_at', anchorIso)
-      .order('created_at', { ascending: false })
+      .order('created_at', { ascending: end === 'oldest' })
       .limit(cap);
     if (error) fail('interactions.sinceAnchor', error);
-    return (data as Interaction[]).reverse();
+    const rows = data as Interaction[];
+    return end === 'oldest' ? rows : rows.reverse();
   },
 
   async countSince(iso: string): Promise<number> {

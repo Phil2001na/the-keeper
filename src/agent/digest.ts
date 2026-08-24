@@ -44,7 +44,10 @@ const FOLD_SYSTEM =
 export async function foldNow(): Promise<void> {
   const dig = await digests.get('rolling');
   if (!dig?.covered_until) return;
-  const rows = await interactions.sinceAnchor(dig.covered_until, 400);
+  // Oldest-first: the fold must consume the BACKLOG from the anchor forward.
+  // Taking the newest N instead would advance the anchor past everything older
+  // that was never folded, silently dropping it from the digest.
+  const rows = await interactions.sinceAnchor(dig.covered_until, 400, 'oldest');
   if (rows.length <= config.foldAt) return;
 
   const toFold = rows.slice(0, rows.length - config.keepRecent);
@@ -61,9 +64,17 @@ export async function foldNow(): Promise<void> {
 
   const res = await createMessage({
     model: config.digestModel,
-    max_tokens: 500,
+    // ~220 words of digest needs far less than this, but a reasoning model
+    // bills its thinking against the same budget — leave headroom so the text
+    // still fits after it thinks.
+    max_tokens: 2000,
     system: FOLD_SYSTEM,
     tools: [],
+    // Never let the fold reason: with tools empty it would otherwise inherit
+    // the configured effort, spend the entire output budget on reasoning
+    // tokens, and return zero text blocks — which is exactly how this silently
+    // stopped folding for 440 turns after the OpenAI provider landed.
+    reasoningEffort: 'none',
     messages: [
       {
         role: 'user',
@@ -81,7 +92,13 @@ export async function foldNow(): Promise<void> {
     .map((b) => b.text)
     .join('\n')
     .trim();
-  if (!text) return;
+  if (!text) {
+    console.error(
+      `[digest] fold produced no text (model=${config.digestModel}, stop=${res.stop_reason}, ` +
+        `out=${res.usage.output_tokens}) — anchor left at ${dig.covered_until}.`
+    );
+    return;
+  }
 
   await digests.set('rolling', text, last.created_at);
   console.log(`[digest] folded ${toFold.length} messages (anchor → ${last.created_at}).`);

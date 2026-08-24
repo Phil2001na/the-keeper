@@ -29,6 +29,13 @@ export interface LlmRequest {
   system: Anthropic.TextBlockParam[] | string;
   tools: Anthropic.Messages.ToolUnion[];
   messages: Anthropic.MessageParam[];
+  /**
+   * Force a reasoning effort for this one call instead of inheriting the
+   * configured default. Background jobs that just need prose back (the digest
+   * fold) set 'none' so a reasoning model can't spend the whole output budget
+   * thinking and return no text at all.
+   */
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
 }
 
 /** Just the slice of an Anthropic message the orchestrator actually reads. */
@@ -249,8 +256,9 @@ async function viaOpenAiCompat(req: LlmRequest, url: string, apiKey: string): Pr
           max_completion_tokens: req.max_tokens,
           // gpt-5.6-luna's Chat Completions endpoint rejects a reasoning
           // setting whenever function tools are present. Keeper is tool-first,
-          // so preserve the configured effort for plain requests only.
-          reasoning_effort: tools.length ? 'none' : config.reasoningEffort,
+          // so preserve the configured effort for plain requests only — and let
+          // a caller override it outright (see LlmRequest.reasoningEffort).
+          reasoning_effort: req.reasoningEffort ?? (tools.length ? 'none' : config.reasoningEffort),
         }
       : { max_tokens: req.max_tokens }),
     messages: messagesToOpenAi(req),
