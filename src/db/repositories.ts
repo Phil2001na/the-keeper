@@ -1046,3 +1046,444 @@ export const stateCaptures = {
     return attachDimensions(rows as StateCapture[], dims as StateDimension[]);
   },
 };
+
+// ─── Decision queue ────────────────────────────────────
+// A project's open questions, worked through in conversation one at a time and
+// exported as a brief a coding agent can implement from. See
+// migrations/009_decisions.sql — the tables predate the code by three days,
+// which is exactly the gap this closes.
+
+/** How a single question stands. 'routed' = not Philip's call to make. */
+export type DecisionStatus =
+  | 'open'
+  | 'discussed'
+  | 'confirmed'
+  | 'skipped'
+  | 'unresolved'
+  | 'routed'
+  | 'implemented'
+  | 'verified';
+
+/** A question's status once it no longer needs to be put to him. */
+const SETTLED: readonly DecisionStatus[] = ['confirmed', 'routed', 'implemented', 'verified'];
+
+export type DecisionSetStatus = 'open' | 'paused' | 'completed' | 'implemented' | 'closed';
+
+export interface DecisionOption {
+  label: string;
+  detail?: string;
+}
+
+export interface Decision {
+  id: string;
+  set_id: string;
+  ref: string;
+  area: string | null;
+  question: string;
+  context: string | null;
+  options: DecisionOption[];
+  recommendation: string | null;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  status: DecisionStatus;
+  answer: string | null;
+  rationale: string | null;
+  routed_to: string | null;
+  confidence: string | null;
+  /** Another decision's ref (not id) that must settle first. */
+  blocked_by: string | null;
+  sort_order: number;
+  decided_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DecisionSet {
+  id: string;
+  slug: string;
+  project: string;
+  title: string;
+  context: string | null;
+  source_ref: string | null;
+  repo_owner: string | null;
+  repo_name: string | null;
+  export_path: string | null;
+  status: DecisionSetStatus;
+  closed_at: string | null;
+  closure_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Live counts for a set — never inferred, always read. */
+export interface DecisionCounts {
+  total: number;
+  open: number;
+  settled: number;
+  confirmed: number;
+  routed: number;
+  skipped: number;
+  unresolved: number;
+  implemented: number;
+  verified: number;
+}
+
+export interface DecisionArtifact {
+  id: string;
+  set_id: string;
+  artifact_type: string;
+  content: string;
+  version: number;
+  content_hash: string | null;
+  committed_url: string | null;
+  created_at: string;
+  supersedes_id: string | null;
+}
+
+export interface DecisionHistoryRow {
+  id: string;
+  decision_id: string;
+  previous_status: string | null;
+  new_status: string;
+  previous_answer: string | null;
+  previous_rationale: string | null;
+  answer: string | null;
+  rationale: string | null;
+  changed_by: string;
+  note: string | null;
+  created_at: string;
+}
+
+export interface DecisionLink {
+  id: string;
+  set_id: string;
+  decision_id: string | null;
+  link_type: string;
+  ref: string;
+  note: string | null;
+  created_at: string;
+}
+
+export function countDecisions(list: Decision[]): DecisionCounts {
+  const by = (s: DecisionStatus): number => list.filter((d) => d.status === s).length;
+  const settled = list.filter((d) => SETTLED.includes(d.status)).length;
+  return {
+    total: list.length,
+    // 'open' here means still needing him: open + discussed. Skipped and
+    // unresolved are deliberately parked, so they are not counted as remaining.
+    open: by('open') + by('discussed'),
+    settled,
+    confirmed: by('confirmed'),
+    routed: by('routed'),
+    skipped: by('skipped'),
+    unresolved: by('unresolved'),
+    implemented: by('implemented'),
+    verified: by('verified'),
+  };
+}
+
+export const decisionSets = {
+  async list(statuses?: DecisionSetStatus[]): Promise<DecisionSet[]> {
+    let q = db
+      .from('keeper_decision_sets')
+      .select('*')
+      .order('updated_at', { ascending: false })
+      .limit(50);
+    if (statuses && statuses.length > 0) q = q.in('status', statuses);
+    const { data, error } = await q;
+    if (error) fail('decisionSets.list', error);
+    return data as DecisionSet[];
+  },
+
+  /** Resolve by slug, full id, or unambiguous id prefix — prompts carry all three. */
+  async resolve(key: string): Promise<DecisionSet | null> {
+    const trimmed = key.trim();
+    if (!trimmed) return null;
+    const { data, error } = await db
+      .from('keeper_decision_sets')
+      .select('*')
+      .eq('slug', trimmed)
+      .maybeSingle();
+    if (error) fail('decisionSets.resolve (slug)', error);
+    if (data) return data as DecisionSet;
+    const all = await this.list();
+    const matches = all.filter((s) => s.id.startsWith(trimmed));
+    return matches.length === 1 ? (matches[0] as DecisionSet) : null;
+  },
+
+  async create(input: {
+    slug: string;
+    project: string;
+    title: string;
+    context?: string | null;
+    source_ref?: string | null;
+    repo_owner?: string | null;
+    repo_name?: string | null;
+    export_path?: string | null;
+  }): Promise<DecisionSet> {
+    const { data, error } = await db
+      .from('keeper_decision_sets')
+      .insert({
+        slug: input.slug,
+        project: input.project,
+        title: input.title,
+        context: input.context ?? null,
+        source_ref: input.source_ref ?? null,
+        repo_owner: input.repo_owner ?? null,
+        repo_name: input.repo_name ?? null,
+        export_path: input.export_path ?? null,
+      })
+      .select('*')
+      .single();
+    if (error) fail('decisionSets.create', error);
+    return data as DecisionSet;
+  },
+
+  async setStatus(
+    id: string,
+    status: DecisionSetStatus,
+    closureReason?: string | null
+  ): Promise<DecisionSet | null> {
+    const closing = status === 'closed' || status === 'completed' || status === 'implemented';
+    const { data, error } = await db
+      .from('keeper_decision_sets')
+      .update({
+        status,
+        closure_reason: closureReason ?? null,
+        closed_at: closing ? new Date().toISOString() : null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .select('*')
+      .maybeSingle();
+    if (error) fail('decisionSets.setStatus', error);
+    return (data as DecisionSet) ?? null;
+  },
+
+  /** Counts for many sets at once, so a listing never has to guess them. */
+  async countsFor(setIds: string[]): Promise<Map<string, DecisionCounts>> {
+    const out = new Map<string, DecisionCounts>();
+    if (setIds.length === 0) return out;
+    const { data, error } = await db
+      .from('keeper_decisions')
+      .select('set_id, status')
+      .in('set_id', setIds);
+    if (error) fail('decisionSets.countsFor', error);
+    const bySet = new Map<string, Decision[]>();
+    for (const row of data as { set_id: string; status: DecisionStatus }[]) {
+      const list = bySet.get(row.set_id) ?? [];
+      list.push({ status: row.status } as Decision);
+      bySet.set(row.set_id, list);
+    }
+    for (const id of setIds) out.set(id, countDecisions(bySet.get(id) ?? []));
+    return out;
+  },
+};
+
+export const decisions = {
+  async forSet(setId: string): Promise<Decision[]> {
+    const { data, error } = await db
+      .from('keeper_decisions')
+      .select('*')
+      .eq('set_id', setId)
+      .order('sort_order', { ascending: true })
+      .order('ref', { ascending: true });
+    if (error) fail('decisions.forSet', error);
+    return data as Decision[];
+  },
+
+  /** Resolve within a set by ref (D-01), full id, or unambiguous id prefix. */
+  async resolve(setId: string, key: string): Promise<Decision | null> {
+    const trimmed = key.trim();
+    if (!trimmed) return null;
+    const all = await this.forSet(setId);
+    const byRef = all.find((d) => d.ref.toLowerCase() === trimmed.toLowerCase());
+    if (byRef) return byRef;
+    const matches = all.filter((d) => d.id.startsWith(trimmed));
+    return matches.length === 1 ? (matches[0] as Decision) : null;
+  },
+
+  /**
+   * The next question actually worth putting to him: still open or discussed,
+   * and not waiting on another question that has not settled yet. Returns null
+   * when everything left is blocked or already dealt with — which is a real
+   * answer, not an empty queue.
+   */
+  next(list: Decision[]): Decision | null {
+    const settledRefs = new Set(list.filter((d) => SETTLED.includes(d.status)).map((d) => d.ref));
+    const pending = list.filter((d) => d.status === 'open' || d.status === 'discussed');
+    const unblocked = pending.filter((d) => !d.blocked_by || settledRefs.has(d.blocked_by));
+    return unblocked[0] ?? null;
+  },
+
+  async create(input: {
+    set_id: string;
+    ref: string;
+    question: string;
+    area?: string | null;
+    context?: string | null;
+    options?: DecisionOption[];
+    recommendation?: string | null;
+    priority?: string;
+    blocked_by?: string | null;
+    sort_order?: number;
+  }): Promise<Decision> {
+    const { data, error } = await db
+      .from('keeper_decisions')
+      .insert({
+        set_id: input.set_id,
+        ref: input.ref,
+        question: input.question,
+        area: input.area ?? null,
+        context: input.context ?? null,
+        options: input.options ?? [],
+        recommendation: input.recommendation ?? null,
+        priority: input.priority ?? 'medium',
+        blocked_by: input.blocked_by ?? null,
+        sort_order: input.sort_order ?? 0,
+      })
+      .select('*')
+      .single();
+    if (error) fail('decisions.create', error);
+    return data as Decision;
+  },
+
+  /**
+   * Record or revise an answer. Runs in the keeper_record_decision SQL
+   * function so the history append and the row update are one transaction —
+   * an answer is never overwritten without its predecessor being kept.
+   * Re-sending an identical answer is a no-op, so a retried call is safe.
+   */
+  async record(input: {
+    decision_id: string;
+    status: DecisionStatus;
+    answer?: string | null;
+    rationale?: string | null;
+    routed_to?: string | null;
+    confidence?: string | null;
+    changed_by?: string;
+    note?: string | null;
+  }): Promise<Decision> {
+    const { data, error } = await db.rpc('keeper_record_decision', {
+      p_decision_id: input.decision_id,
+      p_status: input.status,
+      p_answer: input.answer ?? null,
+      p_rationale: input.rationale ?? null,
+      p_routed_to: input.routed_to ?? null,
+      p_confidence: input.confidence ?? null,
+      p_changed_by: input.changed_by ?? 'philip',
+      p_note: input.note ?? null,
+    });
+    if (error) fail('decisions.record', error);
+    // A set-returning plpgsql function comes back as a row, or a 1-row array
+    // depending on how PostgREST resolves it.
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) fail('decisions.record', { message: 'no row returned' });
+    return row as Decision;
+  },
+
+  async history(decisionId: string): Promise<DecisionHistoryRow[]> {
+    const { data, error } = await db
+      .from('keeper_decision_history')
+      .select('*')
+      .eq('decision_id', decisionId)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (error) fail('decisions.history', error);
+    return data as DecisionHistoryRow[];
+  },
+};
+
+export const decisionArtifacts = {
+  async latest(setId: string, type = 'implementation_brief'): Promise<DecisionArtifact | null> {
+    const { data, error } = await db
+      .from('keeper_decision_artifacts')
+      .select('*')
+      .eq('set_id', setId)
+      .eq('artifact_type', type)
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) fail('decisionArtifacts.latest', error);
+    return (data as DecisionArtifact) ?? null;
+  },
+
+  /**
+   * Record where an existing artifact landed. Used when a brief was exported
+   * earlier without committing and the commit is asked for afterwards — the
+   * content is identical, so it is the same version, not a new one.
+   */
+  async markCommitted(id: string, committedUrl: string | null): Promise<DecisionArtifact> {
+    const { data, error } = await db
+      .from('keeper_decision_artifacts')
+      .update({ committed_url: committedUrl })
+      .eq('id', id)
+      .select('*')
+      .single();
+    if (error) fail('decisionArtifacts.markCommitted', error);
+    return data as DecisionArtifact;
+  },
+
+  async create(input: {
+    set_id: string;
+    artifact_type?: string;
+    content: string;
+    content_hash?: string | null;
+    committed_url?: string | null;
+  }): Promise<DecisionArtifact> {
+    const type = input.artifact_type ?? 'implementation_brief';
+    const prev = await this.latest(input.set_id, type);
+    const { data, error } = await db
+      .from('keeper_decision_artifacts')
+      .insert({
+        set_id: input.set_id,
+        artifact_type: type,
+        content: input.content,
+        content_hash: input.content_hash ?? null,
+        committed_url: input.committed_url ?? null,
+        version: (prev?.version ?? 0) + 1,
+        supersedes_id: prev?.id ?? null,
+      })
+      .select('*')
+      .single();
+    if (error) fail('decisionArtifacts.create', error);
+    return data as DecisionArtifact;
+  },
+};
+
+export const decisionLinks = {
+  async forSet(setId: string): Promise<DecisionLink[]> {
+    const { data, error } = await db
+      .from('keeper_decision_links')
+      .select('*')
+      .eq('set_id', setId)
+      .order('created_at', { ascending: true });
+    if (error) fail('decisionLinks.forSet', error);
+    return data as DecisionLink[];
+  },
+
+  /** Idempotent: the same (set, type, ref) twice is one link, not two. */
+  async add(input: {
+    set_id: string;
+    decision_id?: string | null;
+    link_type: string;
+    ref: string;
+    note?: string | null;
+  }): Promise<DecisionLink> {
+    const { data, error } = await db
+      .from('keeper_decision_links')
+      .upsert(
+        {
+          set_id: input.set_id,
+          decision_id: input.decision_id ?? null,
+          link_type: input.link_type,
+          ref: input.ref,
+          note: input.note ?? null,
+        },
+        { onConflict: 'set_id,link_type,ref' }
+      )
+      .select('*')
+      .single();
+    if (error) fail('decisionLinks.add', error);
+    return data as DecisionLink;
+  },
+};

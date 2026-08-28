@@ -185,3 +185,55 @@ export const listSites = () => listSitesFor(keeperCreds);
 export const checkSiteStatus = (repo: string) => checkSiteStatusFor(keeperCreds, repo);
 export const renameSite = (from: string, to: string) => renameSiteFor(keeperCreds, from, to);
 export const deleteSite = (repo: string) => deleteSiteFor(keeperCreds, repo);
+
+/**
+ * Commit a text file to an existing repo, creating or updating it in place.
+ * Used to land a decision set's implementation brief in the project's own repo
+ * (Contents API rather than the Git Data API — one file, well under 1 MB).
+ */
+export async function commitFileFor(
+  creds: GithubCreds,
+  input: { owner: string; repo: string; path: string; content: string; message: string }
+): Promise<DeployResult & { url?: string; commit?: string }> {
+  const octokit = clientFor(creds);
+  try {
+    // An update needs the blob sha of what is already there; a create must not
+    // send one. A 404 here means "new file", not a failure.
+    let sha: string | undefined;
+    try {
+      const existing = await octokit.repos.getContent({
+        owner: input.owner,
+        repo: input.repo,
+        path: input.path,
+      });
+      if (!Array.isArray(existing.data) && 'sha' in existing.data) sha = existing.data.sha;
+    } catch (e) {
+      if ((e as { status?: number }).status !== 404) throw e;
+    }
+
+    const res = await octokit.repos.createOrUpdateFileContents({
+      owner: input.owner,
+      repo: input.repo,
+      path: input.path,
+      message: input.message,
+      content: Buffer.from(input.content, 'utf8').toString('base64'),
+      ...(sha ? { sha } : {}),
+    });
+
+    return {
+      ok: true,
+      url: res.data.content?.html_url ?? undefined,
+      commit: res.data.commit?.sha ?? undefined,
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+export const commitFile = (input: {
+  owner: string;
+  repo: string;
+  path: string;
+  content: string;
+  message: string;
+}) => commitFileFor(keeperCreds, input);
