@@ -53,6 +53,9 @@ create table if not exists keeper_decisions (
   unique (set_id, ref)
 );
 create index if not exists keeper_decisions_set on keeper_decisions(set_id, sort_order);
+-- Zero-policy RLS is the boundary that keeps anon/authenticated PostgREST
+-- clients out of keeper_* entirely; only the service-role backend reads these.
+alter table keeper_decisions enable row level security;
 
 -- Columns the live tables predate. Additive and idempotent.
 -- closure_reason records WHY a set was closed, which matters when it was
@@ -138,17 +141,32 @@ as $$
 declare
   cur keeper_decisions;
   updated keeper_decisions;
+  eff_answer text;
+  eff_rationale text;
+  eff_routed text;
+  eff_confidence text;
 begin
   select * into cur from keeper_decisions where id = p_decision_id for update;
   if not found then
     raise exception 'decision % not found', p_decision_id;
   end if;
 
-  -- No-op retry: same status, same answer, same rationale. Return as-is and
-  -- do not append a second identical history row.
+  -- A null argument means "leave this alone", so the no-op test has to compare
+  -- what the row WOULD become, not the raw arguments. Comparing the arguments
+  -- got both directions wrong: update_decision passes null answer/rationale to
+  -- preserve them, so retrying a status change on an answered decision looked
+  -- like a change and appended history forever; and a call that altered only
+  -- routed_to or confidence looked like a no-op and was silently discarded.
+  eff_answer     := coalesce(p_answer, cur.answer);
+  eff_rationale  := coalesce(p_rationale, cur.rationale);
+  eff_routed     := coalesce(p_routed_to, cur.routed_to);
+  eff_confidence := coalesce(p_confidence, cur.confidence);
+
   if cur.status = p_status
-     and cur.answer is not distinct from p_answer
-     and cur.rationale is not distinct from p_rationale then
+     and cur.answer is not distinct from eff_answer
+     and cur.rationale is not distinct from eff_rationale
+     and cur.routed_to is not distinct from eff_routed
+     and cur.confidence is not distinct from eff_confidence then
     return cur;
   end if;
 
@@ -157,15 +175,15 @@ begin
     answer, rationale, changed_by, note
   ) values (
     cur.id, cur.status, p_status, cur.answer, cur.rationale,
-    p_answer, p_rationale, p_changed_by, p_note
+    eff_answer, eff_rationale, p_changed_by, p_note
   );
 
   update keeper_decisions set
     status      = p_status,
-    answer      = coalesce(p_answer, answer),
-    rationale   = coalesce(p_rationale, rationale),
-    routed_to   = coalesce(p_routed_to, routed_to),
-    confidence  = coalesce(p_confidence, confidence),
+    answer      = eff_answer,
+    rationale   = eff_rationale,
+    routed_to   = eff_routed,
+    confidence  = eff_confidence,
     decided_at  = case when p_status in ('confirmed', 'routed') then now() else decided_at end,
     updated_at  = now()
   where id = cur.id

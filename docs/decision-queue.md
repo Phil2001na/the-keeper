@@ -56,6 +56,14 @@ longer count as remaining. `skipped` and `unresolved` are parked: also not
 remaining, but not settled either, and they show up in the brief's unresolved
 section.
 
+That distinction is load-bearing at closing time. "Nothing is open" and
+"everything is settled" are different facts, and a set whose remaining
+questions are all parked satisfies only the first. So `completed` and
+`implemented` — which both assert the work is *done* — require
+`settled === total`; `closed` only requires nothing actively open; `paused` is
+parking and requires nothing. Anything short of that needs `force` **and** a
+`closure_reason`.
+
 `discussed` is deliberately not `confirmed`. Talking about a decision is not
 making one, and marking one `implemented` because it was discussed is the
 failure mode this taxonomy exists to prevent.
@@ -86,8 +94,13 @@ That function exists because recording an answer is two writes — append to
 no transaction API. Doing it in SQL makes it one statement and one transaction.
 It also gives two properties for free:
 
-- **Idempotent.** An identical `(status, answer, rationale)` returns the current
-  row and appends no history. A retried tool call is safe.
+- **Idempotent.** A call that would leave every field as it already is returns
+  the current row and appends no history, so a retried tool call is safe. The
+  comparison is against the *effective* post-`coalesce` values, not the raw
+  arguments — a null argument means "leave this alone", so comparing arguments
+  gets it wrong in both directions: `update_decision` passes null
+  answer/rationale to preserve them (making every retry look like a change), and
+  a call touching only `routed_to` would look like a no-op and be discarded.
 - **Non-destructive.** The previous answer and its reasoning land in history
   *before* the row is overwritten. Nothing deletes from that table.
 
@@ -114,7 +127,12 @@ Versions chain through `supersedes_id`, and the full content is stored verbatim
 afterwards.
 
 With `commit: true` the brief is also committed to the project's own repo at
-`export_path` via `commitFileFor` in `src/deploy/github.ts`.
+`export_path` via `commitFileFor` in `src/deploy/github.ts`. The
+unchanged-content short-circuit yields to that: if the existing version was
+never committed and a commit is now asked for, the export proceeds to the
+commit and records the URL against that same version rather than minting an
+identical v+1. Otherwise "export it and commit it" would silently do nothing
+until some decision happened to change.
 
 **Exporting does not close the set.** They are separate calls because they are
 separate facts.

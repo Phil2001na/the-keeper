@@ -1463,6 +1463,15 @@ export async function dispatchTool(
                 '.',
             };
           }
+          const parked = list.filter((d) => d.status === 'skipped' || d.status === 'unresolved');
+          if (parked.length > 0) {
+            return {
+              output:
+                `${header}\n\nNothing is waiting on him right now, but ${parked.length} question(s) are parked ` +
+                `rather than settled: ${parked.map((d) => `${d.ref} (${d.status})`).join(', ')}. ` +
+                `Reopen one with update_decision when it is worth another go.`,
+            };
+          }
           return { output: `${header}\n\nEvery question in this set is settled. Nothing left to put to him.` };
         }
       }
@@ -1577,17 +1586,24 @@ export async function dispatchTool(
       }
 
       const previous = await decisionArtifacts.latest(set.id);
-      if (previous && previous.content_hash === brief.contentHash) {
+      const unchanged = Boolean(previous && previous.content_hash === brief.contentHash);
+      // An unchanged brief still needs writing OUT when a commit is asked for and
+      // the existing version was never committed — otherwise "export and commit
+      // it" silently does nothing until some decision happens to change.
+      const commitWanted = input.commit === true;
+      if (unchanged && (!commitWanted || previous!.committed_url)) {
         return {
           output:
-            `Nothing has changed since v${previous.version} (hash ${brief.contentHash}) — no new version written.` +
-            (previous.committed_url ? ` It is at ${previous.committed_url}.` : ''),
+            `Nothing has changed since v${previous!.version} (hash ${brief.contentHash}) — no new version written.` +
+            (previous!.committed_url
+              ? ` It is at ${previous!.committed_url}.`
+              : ' Pass commit:true to land it in the repo.'),
         };
       }
 
       let committedUrl: string | null = null;
       let commitNote = '';
-      if (input.commit === true) {
+      if (commitWanted) {
         if (!githubEnabled()) {
           commitNote = ' GitHub is not configured, so it was saved but not committed.';
         } else if (!set.repo_owner || !set.repo_name || !set.export_path) {
@@ -1609,16 +1625,19 @@ export async function dispatchTool(
         }
       }
 
-      const artifact = await decisionArtifacts.create({
-        set_id: set.id,
-        content: brief.content,
-        content_hash: brief.contentHash,
-        committed_url: committedUrl,
-      });
+      const artifact = unchanged
+        ? await decisionArtifacts.markCommitted(previous!.id, committedUrl)
+        : await decisionArtifacts.create({
+            set_id: set.id,
+            content: brief.content,
+            content_hash: brief.contentHash,
+            committed_url: committedUrl,
+          });
 
       return {
         output:
-          `Exported v${artifact.version} of the ${set.slug} brief (hash ${brief.contentHash}): ` +
+          `${unchanged ? 'Re-committed' : 'Exported'} v${artifact.version} of the ${set.slug} brief ` +
+          `(hash ${brief.contentHash}): ` +
           `${counts.confirmed} confirmed, ${counts.routed} routed, ${counts.open} still open, ` +
           `${counts.skipped + counts.unresolved} parked.${commitNote}\n` +
           `The set is still ${set.status} — exporting does not close it.\n\n${brief.content}`,
@@ -1635,16 +1654,27 @@ export async function dispatchTool(
       const counts = countDecisions(await decisions.forSet(set.id));
       const reason = (input.closure_reason as string | undefined)?.trim() || null;
 
-      if (counts.open > 0 && status !== 'paused') {
+      // 'completed' and 'implemented' both assert the work is DONE, so they need
+      // every question settled — skipped and unresolved ones are parked, not
+      // answered, and the brief still lists them under unresolved. 'closed' only
+      // needs nothing left actively open; 'paused' is parking and needs nothing.
+      const strict = status === 'completed' || status === 'implemented';
+      const blocking = strict ? counts.total - counts.settled : counts.open;
+      if (blocking > 0 && status !== 'paused') {
         if (input.force !== true) {
+          const what = strict
+            ? `${blocking} of ${counts.total} questions are not settled ` +
+              `(${counts.open} open, ${counts.skipped} skipped, ${counts.unresolved} unresolved)`
+            : `${counts.open} of ${counts.total} questions are still open`;
           return {
             output:
-              `Not closing ${set.slug}: ${counts.open} of ${counts.total} questions are still open. ` +
-              `Work through them, or pass force:true with a closure_reason if he has explicitly decided to stop here.`,
+              `Not marking ${set.slug} ${status}: ${what}. ` +
+              `Work through them, use 'paused' to park the set, or pass force:true with a closure_reason ` +
+              `if he has explicitly decided to stop here.`,
           };
         }
         if (!reason) {
-          return { output: 'Forcing closure over open questions requires a closure_reason.' };
+          return { output: `Forcing ${status} with questions unsettled requires a closure_reason.` };
         }
       }
 

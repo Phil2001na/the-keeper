@@ -1407,6 +1407,22 @@ export const decisionArtifacts = {
     return (data as DecisionArtifact) ?? null;
   },
 
+  /**
+   * Record where an existing artifact landed. Used when a brief was exported
+   * earlier without committing and the commit is asked for afterwards — the
+   * content is identical, so it is the same version, not a new one.
+   */
+  async markCommitted(id: string, committedUrl: string | null): Promise<DecisionArtifact> {
+    const { data, error } = await db
+      .from('keeper_decision_artifacts')
+      .update({ committed_url: committedUrl })
+      .eq('id', id)
+      .select('*')
+      .single();
+    if (error) fail('decisionArtifacts.markCommitted', error);
+    return data as DecisionArtifact;
+  },
+
   async create(input: {
     set_id: string;
     artifact_type?: string;

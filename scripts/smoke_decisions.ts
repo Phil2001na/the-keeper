@@ -152,6 +152,20 @@ async function main(): Promise<void> {
   check('skipped', skipped?.status === 'skipped');
   const afterSkip = await call('get_decision_set', { set: slug });
   check('skipped is not counted as remaining', afterSkip.includes('1 of 3 still need him'), afterSkip);
+  // Regression (Codex P2): update_decision passes null answer/rationale to
+  // preserve them, so the no-op test must compare EFFECTIVE values. Retrying
+  // the same status change on an answered decision used to append history
+  // forever.
+  const answered = await decisions.resolve(set.id, 'S-01');
+  await call('update_decision', { set: slug, ref: 'S-01', status: 'discussed', note: 'reopening' });
+  const hBefore = (await decisions.history(answered!.id)).length;
+  await call('update_decision', { set: slug, ref: 'S-01', status: 'discussed', note: 'reopening' });
+  await call('update_decision', { set: slug, ref: 'S-01', status: 'discussed', note: 'reopening' });
+  const hAfter = (await decisions.history(answered!.id)).length;
+  check('retried update_decision appends no duplicate history', hBefore === hAfter, `${hBefore} -> ${hAfter}`);
+  check('update_decision preserved the answer through a status change',
+    (await decisions.resolve(set.id, 'S-01'))?.answer === 'Beta');
+
   await call('update_decision', { set: slug, ref: 'S-03', status: 'open', note: 'back on' });
   check('reopened', (await decisions.resolve(set.id, 'S-03'))?.status === 'open');
   check('update_decision kept the answer it did not set', (await decisions.resolve(set.id, 'S-01'))?.answer === 'Beta');
@@ -162,6 +176,23 @@ async function main(): Promise<void> {
   check('closure refused with open questions', refusedClose.includes('Not closing'), refusedClose);
   const forcedNoReason = await call('close_decision_set', { set: slug, status: 'closed', force: true });
   check('forcing without a reason refused', forcedNoReason.includes('closure_reason'), forcedNoReason);
+
+  // Regression (Codex P2): with every remaining question parked (skipped /
+  // unresolved), counts.open is 0 — 'completed' used to sail through unforced
+  // even though nothing was settled.
+  await call('update_decision', { set: slug, ref: 'S-01', status: 'unresolved', note: 'parked' });
+  await call('update_decision', { set: slug, ref: 'S-02', status: 'skipped', note: 'parked' });
+  await call('update_decision', { set: slug, ref: 'S-03', status: 'skipped', note: 'parked' });
+  const parkedNext = await call('get_decision_set', { set: slug });
+  check('nothing counts as open once all are parked', parkedNext.includes('0 still open'), parkedNext);
+  check('parked questions are not reported as settled',
+    parkedNext.includes('parked') && !parkedNext.includes('Every question in this set is settled'), parkedNext);
+  const parkedComplete = await call('close_decision_set', { set: slug, status: 'completed' });
+  check('completed refused while questions are only parked, not settled',
+    parkedComplete.includes('not settled'), parkedComplete);
+  await call('record_decision', { set: slug, ref: 'S-01', answer: 'Beta', rationale: 'settled after all', revise: true });
+  await call('update_decision', { set: slug, ref: 'S-02', status: 'open' });
+  await call('update_decision', { set: slug, ref: 'S-03', status: 'open' });
 
   // 9. Deterministic export.
   console.log('\nexport');
@@ -176,6 +207,16 @@ async function main(): Promise<void> {
   check('re-export of an unchanged set writes no new version', ex2.includes('Nothing has changed'), ex2.slice(0, 200));
   const preview = await call('export_decision_brief', { set: slug, preview: true });
   check('preview saves nothing', preview.startsWith('Preview only'), preview.slice(0, 80));
+
+  // Regression (Codex P1): an unchanged brief exported earlier without a commit
+  // used to return "nothing has changed" and never honour a later commit:true.
+  check('unchanged export says how to commit it', ex2.includes('commit:true'), ex2.slice(0, 200));
+  const ex3 = await call('export_decision_brief', { set: slug, commit: true });
+  check('commit:true on an unchanged brief reaches the commit path, not the early return',
+    !ex3.includes('Nothing has changed'), ex3.slice(0, 200));
+  check('unchanged commit re-uses the same version rather than minting one',
+    ex3.includes('Re-committed v1') || ex3.includes('not committed') || ex3.includes('commit failed'),
+    ex3.slice(0, 200));
 
   // 11. Explicit closure over unresolved questions.
   const forced = await call('close_decision_set', {
