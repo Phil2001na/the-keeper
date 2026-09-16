@@ -160,3 +160,6 @@
 ## 2026-06-25
 - Added semantic (vector) search to conversation memory using Gemini `text-embedding-004` and pgvector.
 - Embeddings are generated fire-and-forget on every interaction write; search_history now runs both semantic and FTS in parallel and merges results, with graceful fallback to FTS-only if no Gemini key.
+## 2026-09-16 23:24
+- Extended Gmail email reading to download and extract attached PDFs, Word `.docx` files, and text/CSV files, so Keeper can analyse documents sent by email alongside the message body.
+- Added bounded attachment handling (five files, 15 MB each, 60k total extracted characters) with clear notices for oversized, unsupported, or truncated files.

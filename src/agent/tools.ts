@@ -671,7 +671,7 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
   },
   {
     name: 'read_email',
-    description: 'Read the full body of a specific email by its message id (from list_emails).',
+    description: 'Read the full body of a specific email by its message id (from list_emails), including readable attachments. PDFs, Word .docx files, and text/CSV files are extracted and included with their filenames; unsupported or oversized files are identified.',
     input_schema: {
       type: 'object',
       properties: { message_id: { type: 'string' } },
@@ -1853,8 +1853,12 @@ export async function dispatchTool(
     case 'read_email': {
       if (!googleEnabled()) return { output: 'Gmail not configured.' };
       const email = await readEmail(input.message_id as string);
+      const attachments = email.attachments.length ? `\n\nAttachments:\n${email.attachments.map((attachment) => {
+        const label = attachment.filename ? `--- ${attachment.filename}${attachment.mimeType ? ` (${attachment.mimeType})` : ''} ---` : '--- Attachment notice ---';
+        return `${label}${attachment.content ? `\n${attachment.content}` : ''}${attachment.note ? `\n(${attachment.note})` : ''}`;
+      }).join('\n\n')}` : '';
       return {
-        output: `From: ${email.from}\nDate: ${email.date}\nSubject: ${email.subject}\n\n${email.body}`,
+        output: `From: ${email.from}\nDate: ${email.date}\nSubject: ${email.subject}\n\n${email.body}${attachments}`,
       };
     }
 

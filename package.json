@@ -27,6 +27,7 @@
     "@supabase/supabase-js": "^2.45.4",
     "dotenv": "^16.4.5",
     "googleapis": "^173.0.0",
+    "mammoth": "^1.12.3",
     "node-telegram-bot-api": "^0.66.0",
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.19.0",
