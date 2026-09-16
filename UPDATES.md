@@ -163,3 +163,5 @@
 ## 2026-09-16 23:24
 - Extended Gmail email reading to download and extract attached PDFs, Word `.docx` files, and text/CSV files, so Keeper can analyse documents sent by email alongside the message body.
 - Added bounded attachment handling (five files, 15 MB each, 60k total extracted characters) with clear notices for oversized, unsupported, or truncated files.
+## 2026-09-17 00:00
+- Made Gmail document reading inspect every message in the selected email thread, so a document attached to an earlier message is not missed when Keeper opens a later reply.

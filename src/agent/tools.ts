@@ -1854,7 +1854,7 @@ export async function dispatchTool(
       if (!googleEnabled()) return { output: 'Gmail not configured.' };
       const email = await readEmail(input.message_id as string);
       const attachments = email.attachments.length ? `\n\nAttachments:\n${email.attachments.map((attachment) => {
-        const label = attachment.filename ? `--- ${attachment.filename}${attachment.mimeType ? ` (${attachment.mimeType})` : ''} ---` : '--- Attachment notice ---';
+        const label = attachment.filename ? `--- ${attachment.filename}${attachment.mimeType ? ` (${attachment.mimeType})` : ''}${attachment.messageId ? ` | email ${attachment.messageId}` : ''} ---` : '--- Attachment notice ---';
         return `${label}${attachment.content ? `\n${attachment.content}` : ''}${attachment.note ? `\n(${attachment.note})` : ''}`;
       }).join('\n\n')}` : '';
       return {
