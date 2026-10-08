@@ -1,6 +1,7 @@
 ## 2026-10-09 01:45
 - **Remote browser for job-site logins** (`src/web/remoteBrowser.ts`, `src/web/remote.html`): Philip opens `/remote` on his phone and controls a headless Chrome running on his PC (job-scout's login profile), so the auto-submitter can reuse logins for micro1/Upwork without AnyDesk. The PC only calls out to the relay (frames up, input long-poll); agent routes need `REMOTE_BROWSER_TOKEN`, viewer routes the normal web token. Typed text is never logged.
 - Service worker now skips `/remote` and `/rb/*`; caching that navigation would have replaced the offline app shell.
+- Second lock on the remote browser: each session has a random key that only reaches Philip in the Telegram link (`/remote?k=...`); frames and input need it as well as the web token, because `KEEPER_WEB_TOKEN` on Railway is only 4 characters.
 
 ## 2026-08-28 10:05
 - **Four fixes from Codex's review of the decision queue (PR #9), all real.**

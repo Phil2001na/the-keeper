@@ -21,6 +21,11 @@ import { fileURLToPath } from 'node:url';
  * Typed text (passwords) only ever sits in the in-memory input queue until the
  * agent collects it. It is never logged, stored or put on the bus.
  *
+ * Second lock: every session has a random key that the PC sends Philip on
+ * Telegram as part of the /remote?k=... link. Seeing frames or sending input
+ * needs that key as well as the web token, so the web token alone (which has
+ * been short) can't open a browser that holds his logins.
+ *
  *  GET  /remote               the viewer page (shell is public, like ui.html)
  *  GET  /rb/events            SSE: frame / status events            (viewer)
  *  POST /rb/input             one input event                      (viewer)
@@ -66,7 +71,7 @@ type InputEvent =
 
 const KEYS = new Set(['Enter', 'Backspace', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 
-const viewers = new Set<ServerResponse>();
+const viewers = new Map<ServerResponse, string>(); // viewer -> session key it presented
 let frame: Frame | null = null;
 let seq = 0;
 let status: Status = { state: 'idle', at: Date.now() };
@@ -76,6 +81,13 @@ let agentSeen = 0;
 let listenerSeen = 0;
 let sites: string[] = [];
 let pendingRequest: { site: string; at: number } | null = null;
+let sessionKey = '';
+
+function keyOk(k: string | null | undefined): boolean {
+  if (!sessionKey || !k) return false;
+  const a = Buffer.from(k), b = Buffer.from(sessionKey);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 let page: Buffer | null = null;
 function viewerPage(): Buffer {
@@ -131,7 +143,7 @@ function publicStatus() {
 
 function broadcastStatus(): void {
   const s = publicStatus();
-  for (const v of viewers) send(v, 'status', s);
+  for (const [v, k] of viewers) send(v, 'status', { ...s, keyOk: keyOk(k) });
 }
 
 function flush(): void {
@@ -211,17 +223,19 @@ export function handleRemoteBrowser(req: IncomingMessage, res: ServerResponse, p
           meta = JSON.parse(String(req.headers['x-meta'] ?? '{}')) as Record<string, unknown>;
         } catch { /* keep empty */ }
         frame = { seq: ++seq, meta, b64: buf.toString('base64') };
-        for (const v of viewers) send(v, 'frame', frame);
+        for (const [v, k] of viewers) if (keyOk(k)) send(v, 'frame', frame);
         json(res, 200, { ok: true });
       }).catch(() => json(res, 413, { ok: false }));
       return true;
     }
     if (req.method === 'POST' && path === '/rb/agent/status') {
-      void readJson<Partial<Status>>(req).then((b) => {
+      void readJson<Partial<Status> & { key?: unknown }>(req).then((b) => {
+        if (typeof b.key === 'string' && b.key.length >= 20 && b.key.length <= 200) sessionKey = b.key;
         agentSeen = Date.now();
         const state = b.state && ['starting', 'live', 'ended'].includes(b.state) ? b.state : status.state;
         status = { state, tabs: Array.isArray(b.tabs) ? b.tabs.slice(0, 20) : status.tabs, note: typeof b.note === 'string' ? b.note.slice(0, 300) : undefined, at: Date.now() };
         if (state === 'ended') {
+          sessionKey = '';
           frame = null;
           queue = [];
         }
@@ -264,10 +278,11 @@ export function handleRemoteBrowser(req: IncomingMessage, res: ServerResponse, p
       'X-Accel-Buffering': 'no',
     });
     res.write(': connected\n\n');
-    viewers.add(res);
-    send(res, 'status', publicStatus());
-    if (frame && Date.now() - agentSeen < AGENT_ALIVE_MS) send(res, 'frame', frame);
-    const ping = setInterval(() => send(res, 'status', publicStatus()), 20_000);
+    const k = new URL(req.url ?? '/', 'http://x').searchParams.get('k') ?? '';
+    viewers.set(res, k);
+    send(res, 'status', { ...publicStatus(), keyOk: keyOk(k) });
+    if (frame && keyOk(k) && Date.now() - agentSeen < AGENT_ALIVE_MS) send(res, 'frame', frame);
+    const ping = setInterval(() => send(res, 'status', { ...publicStatus(), keyOk: keyOk(k) }), 20_000);
     res.on('close', () => {
       clearInterval(ping);
       viewers.delete(res);
@@ -275,6 +290,10 @@ export function handleRemoteBrowser(req: IncomingMessage, res: ServerResponse, p
     return true;
   }
   if (req.method === 'POST' && path === '/rb/input') {
+    if (!keyOk(String(req.headers['x-session-key'] ?? ''))) {
+      json(res, 403, { ok: false, error: 'open the link Keeper sent you on Telegram' });
+      return true;
+    }
     void readJson<Record<string, unknown>>(req).then((b) => {
       const ev = cleanInput(b);
       if (!ev) return json(res, 400, { ok: false, error: 'bad input' });

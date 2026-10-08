@@ -73,7 +73,7 @@
   <img id="screen" alt="Remote browser" draggable="false">
   <div id="idle">
     <h1>No login session running</h1>
-    <p id="idleNote">Pick a site and your PC opens it. It can take up to 2 minutes to start.</p>
+    <p id="idleNote">Pick a site and your PC opens it within a minute.</p>
     <div class="sites" id="sites"></div>
   </div>
   <div id="toast"></div>
@@ -103,12 +103,17 @@
   let token = '';
   try { token = localStorage.getItem('keeper_token') || ''; } catch {}
   let es = null, lastStatus = null, hidden = false;
+  // Per-session key from the Telegram link (?k=...). Kept for this tab only, then dropped from the URL.
+  let key = new URLSearchParams(location.search).get('k') || '';
+  try { if (key) sessionStorage.setItem('rb_key', key); else key = sessionStorage.getItem('rb_key') || ''; } catch {}
+  if (location.search) history.replaceState(null, '', location.pathname);
 
   const toast = (msg) => { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 1800); };
 
   async function post(path, body) {
-    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify(body) });
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, 'x-session-key': key }, body: JSON.stringify(body) });
     if (r.status === 401) return showGate();
+    if (r.status === 403) { toast('Open the link Keeper sent you on Telegram'); return r; }
     if (!r.ok) toast('That didn’t go through');
     return r;
   }
@@ -130,7 +135,8 @@
 
   function render(s) {
     lastStatus = s;
-    const live = s.state === 'live';
+    const running = s.state === 'live';
+    const live = running && s.keyOk;
     $('screen').style.display = live ? 'block' : 'none';
     $('idle').style.display = live ? 'none' : 'block';
     $('controls').style.display = live ? 'block' : 'none';
@@ -142,16 +148,17 @@
     tabs.hidden = !live || (s.tabs || []).length < 2;
     tabs.innerHTML = (s.tabs || []).map((t, i) => `<option value="${i}" ${t.active ? 'selected' : ''}>${(t.title || t.url).replace(/</g, '&lt;').slice(0, 40)}</option>`).join('');
     if (!live) {
-      $('idleNote').textContent = s.note && s.state === 'starting' ? s.note
-        : s.pending ? `Waiting for your PC to open ${s.pending}… (up to 2 min)`
-        : s.pcOnline ? 'Pick a site and your PC opens it. It can take up to 2 minutes to start.'
+      $('idleNote').textContent = running ? 'A login browser is running. Open the secure link Keeper sent you on Telegram to see it.'
+        : s.note && s.state === 'starting' ? s.note + ' Keeper will text you a secure link.'
+        : s.pending ? `Waiting for your PC to open ${s.pending}… Keeper will text you a secure link (up to a minute).`
+        : s.pcOnline ? 'Pick a site and your PC opens it within a minute. Keeper texts you a secure link to it.'
         : 'Your PC hasn’t checked in for a while. It may be asleep or off.';
       $('sites').innerHTML = '';
       for (const site of s.sites || []) {
         const b = document.createElement('button');
         b.textContent = site.replace(/\..*$/, '');
         b.className = 'primary';
-        b.disabled = !!s.pending;
+        b.disabled = !!s.pending || running || s.state === 'starting';
         b.onclick = () => post('/rb/request', { site }).then(() => toast('Asked your PC'));
         $('sites').appendChild(b);
       }
@@ -160,12 +167,12 @@
 
   function connect() {
     if (!token) return showGate();
-    es = new EventSource('/rb/events?t=' + encodeURIComponent(token));
+    es = new EventSource('/rb/events?t=' + encodeURIComponent(token) + '&k=' + encodeURIComponent(key));
     es.addEventListener('status', (e) => render(JSON.parse(e.data)));
     es.addEventListener('frame', (e) => {
       const f = JSON.parse(e.data);
       $('screen').src = 'data:image/jpeg;base64,' + f.b64;
-      if (lastStatus && lastStatus.state !== 'live') render({ ...lastStatus, state: 'live' });
+      if (lastStatus && lastStatus.state !== 'live') render({ ...lastStatus, state: 'live', keyOk: true });
     });
     es.onerror = () => {
       $('url').textContent = 'reconnecting…';
