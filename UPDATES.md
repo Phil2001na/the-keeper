@@ -1,3 +1,7 @@
+## 2026-10-09 01:45
+- **Remote browser for job-site logins** (`src/web/remoteBrowser.ts`, `src/web/remote.html`): Philip opens `/remote` on his phone and controls a headless Chrome running on his PC (job-scout's login profile), so the auto-submitter can reuse logins for micro1/Upwork without AnyDesk. The PC only calls out to the relay (frames up, input long-poll); agent routes need `REMOTE_BROWSER_TOKEN`, viewer routes the normal web token. Typed text is never logged.
+- Service worker now skips `/remote` and `/rb/*`; caching that navigation would have replaced the offline app shell.
+
 ## 2026-08-28 10:05
 - **Four fixes from Codex's review of the decision queue (PR #9), all real.**
 - **P1 — `keeper_decisions` was the one table of five with no RLS.** Zero-policy RLS is what keeps anon/authenticated PostgREST clients out of `keeper_*` entirely (the pattern `007_web_push.sql` documents); without it, on a *fresh* database the decision questions and answers would be readable and writable outside the service-role backend, including through the new RPC. The live table already had it — it predates the migration — so this was latent, not live. Added.

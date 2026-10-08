@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>Remote Login</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --line: #2a2f3a; --text: #e8eaef; --dim: #9aa3b2;
+    --accent: #6ea8ff; --ok: #3ecf8e; --warn: #f5b942; --bad: #ff6b6b;
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f6f8; --panel: #ffffff; --line: #dde1e7; --text: #1c2027; --dim: #5d6675;
+    --accent: #2563eb; --ok: #12925b; --warn: #b07800; --bad: #d63c3c;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f5f6f8; --panel: #ffffff; --line: #dde1e7; --text: #1c2027; --dim: #5d6675;
+      --accent: #2563eb; --ok: #12925b; --warn: #b07800; --bad: #d63c3c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+  .dot.live { background: var(--ok); } .dot.wait { background: var(--warn); } .dot.off { background: var(--bad); }
+  #where { flex: 1; min-width: 0; }
+  #title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #url { color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  main { flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; overflow: hidden; position: relative; }
+  #screen { max-width: 100%; max-height: 100%; touch-action: none; user-select: none; -webkit-user-select: none;
+    display: none; background: #fff; }
+  #idle { padding: 32px 16px; max-width: 420px; text-align: center; }
+  #idle h1 { font-size: 20px; margin: 0 0 8px; }
+  #idle p { color: var(--dim); margin: 0 0 20px; }
+  .sites { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 14px; min-height: 44px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:active { transform: scale(.97); }
+  footer { border-top: 1px solid var(--line); background: var(--panel); padding: 8px 12px; display: none; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  .row:first-child { margin-top: 0; }
+  .row button { flex: 1; padding: 8px 6px; }
+  #text { flex: 1; min-width: 0; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); min-height: 44px; }
+  #tabs { font: inherit; max-width: 40%; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 6px; }
+  #toast { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+  #gate { padding: 32px 16px; max-width: 420px; margin: 0 auto; display: none; }
+  #gate input { width: 100%; margin: 12px 0; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <div id="where"><div id="title">Remote login</div><div id="url">connecting…</div></div>
+  <select id="tabs" hidden aria-label="Tabs"></select>
+</header>
+
+<div id="gate">
+  <h1>Keeper token</h1>
+  <p>Paste the same token you use for the Keeper app.</p>
+  <input id="tok" type="password" autocomplete="off">
+  <button class="primary" id="tokGo">Continue</button>
+</div>
+
+<main>
+  <img id="screen" alt="Remote browser" draggable="false">
+  <div id="idle">
+    <h1>No login session running</h1>
+    <p id="idleNote">Pick a site and your PC opens it. It can take up to 2 minutes to start.</p>
+    <div class="sites" id="sites"></div>
+  </div>
+  <div id="toast"></div>
+</main>
+
+<footer id="controls">
+  <div class="row">
+    <input id="text" placeholder="Type here, then Send" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button id="hide" title="Hide what I type" aria-label="Hide typing" style="flex:none">👁</button>
+    <button class="primary" id="sendText" style="flex:none">Send</button>
+  </div>
+  <div class="row">
+    <button data-key="Enter">⏎ Enter</button>
+    <button data-key="Backspace">⌫</button>
+    <button data-key="Tab">Tab</button>
+    <button id="back">← Back</button>
+    <button id="reload">↻</button>
+  </div>
+  <div class="row">
+    <button class="primary" id="done">Done, I'm logged in</button>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let token = '';
+  try { token = localStorage.getItem('keeper_token') || ''; } catch {}
+  let es = null, lastStatus = null, hidden = false;
+
+  const toast = (msg) => { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 1800); };
+
+  async function post(path, body) {
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify(body) });
+    if (r.status === 401) return showGate();
+    if (!r.ok) toast('That didn’t go through');
+    return r;
+  }
+  const input = (ev) => post('/rb/input', ev);
+
+  function showGate() {
+    if (es) es.close();
+    $('gate').style.display = 'block';
+    document.querySelector('main').style.display = 'none';
+    $('controls').style.display = 'none';
+  }
+  $('tokGo').onclick = () => {
+    token = $('tok').value.trim();
+    try { localStorage.setItem('keeper_token', token); } catch {}
+    $('gate').style.display = 'none';
+    document.querySelector('main').style.display = '';
+    connect();
+  };
+
+  function render(s) {
+    lastStatus = s;
+    const live = s.state === 'live';
+    $('screen').style.display = live ? 'block' : 'none';
+    $('idle').style.display = live ? 'none' : 'block';
+    $('controls').style.display = live ? 'block' : 'none';
+    $('dot').className = 'dot ' + (live ? 'live' : (s.pending || s.state === 'starting') ? 'wait' : s.pcOnline ? '' : 'off');
+    const active = (s.tabs || []).find((t) => t.active);
+    $('title').textContent = live ? (active?.title || 'Remote login') : 'Remote login';
+    $('url').textContent = live ? (active?.url || '') : s.pcOnline ? 'PC online' : 'PC offline (asleep or off?)';
+    const tabs = $('tabs');
+    tabs.hidden = !live || (s.tabs || []).length < 2;
+    tabs.innerHTML = (s.tabs || []).map((t, i) => `<option value="${i}" ${t.active ? 'selected' : ''}>${(t.title || t.url).replace(/</g, '&lt;').slice(0, 40)}</option>`).join('');
+    if (!live) {
+      $('idleNote').textContent = s.note && s.state === 'starting' ? s.note
+        : s.pending ? `Waiting for your PC to open ${s.pending}… (up to 2 min)`
+        : s.pcOnline ? 'Pick a site and your PC opens it. It can take up to 2 minutes to start.'
+        : 'Your PC hasn’t checked in for a while. It may be asleep or off.';
+      $('sites').innerHTML = '';
+      for (const site of s.sites || []) {
+        const b = document.createElement('button');
+        b.textContent = site.replace(/\..*$/, '');
+        b.className = 'primary';
+        b.disabled = !!s.pending;
+        b.onclick = () => post('/rb/request', { site }).then(() => toast('Asked your PC'));
+        $('sites').appendChild(b);
+      }
+    }
+  }
+
+  function connect() {
+    if (!token) return showGate();
+    es = new EventSource('/rb/events?t=' + encodeURIComponent(token));
+    es.addEventListener('status', (e) => render(JSON.parse(e.data)));
+    es.addEventListener('frame', (e) => {
+      const f = JSON.parse(e.data);
+      $('screen').src = 'data:image/jpeg;base64,' + f.b64;
+      if (lastStatus && lastStatus.state !== 'live') render({ ...lastStatus, state: 'live' });
+    });
+    es.onerror = () => {
+      $('url').textContent = 'reconnecting…';
+      // A 401 on EventSource looks like a generic error; probe once.
+      fetch('/rb/events?t=' + encodeURIComponent(token), { method: 'GET' }).then((r) => { if (r.status === 401) showGate(); r.body?.cancel?.(); }).catch(() => {});
+    };
+  }
+
+  // Taps and drags on the screen image.
+  const img = $('screen');
+  let start = null, lastY = 0, moved = false, pend = 0, flushT = null;
+  const frac = (x, y) => { const r = img.getBoundingClientRect(); return { x: (x - r.left) / r.width, y: (y - r.top) / r.height, h: r.height }; };
+  const sendScroll = () => { if (pend) { const dy = pend; pend = 0; input({ type: 'scroll', dy }); } flushT = null; };
+  img.addEventListener('pointerdown', (e) => { start = { x: e.clientX, y: e.clientY }; lastY = e.clientY; moved = false; try { img.setPointerCapture(e.pointerId); } catch {} });
+  img.addEventListener('pointermove', (e) => {
+    if (!start) return;
+    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) moved = true;
+    if (!moved) return;
+    const r = img.getBoundingClientRect();
+    const scale = (img.naturalHeight / 2 || r.height) / r.height; // frames are 2x the CSS viewport
+    pend += (lastY - e.clientY) * scale * 1.5;
+    lastY = e.clientY;
+    flushT ??= setTimeout(sendScroll, 90);
+  });
+  img.addEventListener('pointerup', (e) => {
+    if (start && !moved) { const p = frac(e.clientX, e.clientY); input({ type: 'tap', x: p.x, y: p.y }); }
+    start = null;
+  });
+  img.addEventListener('wheel', (e) => { e.preventDefault(); pend += e.deltaY; flushT ??= setTimeout(sendScroll, 90); }, { passive: false });
+
+  const sendText = () => { const v = $('text').value; if (!v) return; input({ type: 'text', text: v }); $('text').value = ''; toast(hidden ? 'Sent (hidden)' : 'Sent'); };
+  $('sendText').onclick = sendText;
+  $('text').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendText(); } });
+  $('hide').onclick = () => { hidden = !hidden; $('text').type = hidden ? 'password' : 'text'; $('hide').textContent = hidden ? '🙈' : '👁'; };
+  document.querySelectorAll('[data-key]').forEach((b) => b.onclick = () => input({ type: 'key', key: b.dataset.key }));
+  $('back').onclick = () => input({ type: 'back' });
+  $('reload').onclick = () => input({ type: 'reload' });
+  $('tabs').onchange = (e) => input({ type: 'tab', index: Number(e.target.value) });
+  $('done').onclick = () => { input({ type: 'done' }); toast('Closing and saving the login…'); };
+
+  connect();
+})();
+</script>
+</body>
+</html>
