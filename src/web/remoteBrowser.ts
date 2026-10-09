@@ -84,7 +84,8 @@ let pendingRequest: { site: string; at: number } | null = null;
 let sessionKey = '';
 
 function keyOk(k: string | null | undefined): boolean {
-  if (!sessionKey || !k) return false;
+  // A key dies with its session: also when the PC goes quiet without saying 'ended'.
+  if (!sessionKey || !k || Date.now() - agentSeen > AGENT_ALIVE_MS) return false;
   const a = Buffer.from(k), b = Buffer.from(sessionKey);
   return a.length === b.length && timingSafeEqual(a, b);
 }
