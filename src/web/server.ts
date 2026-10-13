@@ -19,6 +19,7 @@ import {
 import { drainMedia } from '../generate/queue.js';
 import { getFile, putFile, safeFilename } from './files.js';
 import { bus, type KeeperEvent } from './bus.js';
+import { handleRemoteBrowser } from './remoteBrowser.js';
 import {
   attachPushToBus,
   initPush,
@@ -41,6 +42,7 @@ import {
  *  POST /api/push/subscribe     register this device for notifications
  *  POST /api/push/unsubscribe   drop it again
  *  POST /api/push/test          prove the whole chain works, end to end
+ *  GET  /remote, /rb/*          remote browser for job-site logins (remoteBrowser.ts)
  *
  * Auth: a single shared token (KEEPER_WEB_TOKEN). The browser asks once and
  * keeps it in localStorage. EventSource can't set headers, so /events accepts
@@ -415,6 +417,10 @@ export function startWebServer(): void {
 
   const server = createServer((req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
+
+    // Remote browser (job-site logins from the phone). Has its own agent-token
+    // gate for the PC side; viewer routes use the normal token.
+    if ((path === '/remote' || path.startsWith('/rb/')) && handleRemoteBrowser(req, res, path, authed(req))) return;
 
     // The shell and its assets: public, and never cached at the HTTP layer for
     // anything that changes on deploy. The service worker is what makes these

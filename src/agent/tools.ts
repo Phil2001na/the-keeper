@@ -16,8 +16,13 @@ import {
   decisionSets,
   decisions,
   lockIn,
+  decisionArtifacts,
+  decisionLinks,
+  countDecisions,
+  type Decision,
+  type DecisionStatus,
+  type DecisionSetStatus,
 } from '../db/repositories.js';
-import type { DecisionStatus } from '../db/repositories.js';
 import { parseRecurrence, nextOccurrence, monthStartUtc } from './recurrence.js';
 import { bus, type PresentCard } from '../web/bus.js';
 import {
@@ -37,7 +42,7 @@ import { listEmails, readEmail, sendEmail, createDraft } from '../integrations/g
 import { listDriveFiles, readDriveFile, createDriveFile, updateDriveFile } from '../integrations/drive.js';
 import { fetchUrl } from '../integrations/web.js';
 import { googleMapsDirUrl } from './route.js';
-import { renderBriefMarkdown, renderBriefJson } from './decisionBrief.js';
+import { renderDecisionBrief } from './decisionBrief.js';
 import { renderLockIn, minutesLeft } from './lockIn.js';
 
 /**
@@ -457,6 +462,149 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
       required: ['mode'],
     },
   },
+  // ─── Decision queue ───────────────────────────────────────────────────────
+  {
+    name: 'list_decision_sets',
+    description:
+      "List the projects that have a queue of open decisions waiting on Philip, with real counts read from the database. " +
+      "Call this FIRST whenever a decision-queue touchpoint fires, or when he asks what is outstanding — never guess whether " +
+      "anything is open, and never state a remaining count you did not get from here. If it comes back empty, there is genuinely " +
+      "nothing to work through: say so, or stay_silent if this was a proactive check-in.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          description:
+            "Which sets to list: 'open' (default — open + paused, the ones still needing him), 'all', or a specific status.",
+        },
+      },
+    },
+  },
+  {
+    name: 'get_decision_set',
+    description:
+      "Read one decision set. Default mode 'next' returns just the next question actually worth putting to him — skipping any " +
+      "that are blocked by an unsettled question — plus its context, options, your recommendation, and how many are left. " +
+      "That is the mode to use in conversation: one decision at a time. mode 'full' returns every question and its current state " +
+      "(use when he asks for the whole picture, or before exporting). mode 'one' with a ref (D-01) returns that specific question. " +
+      "Reading a question does NOT answer it — record_decision does.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        set: { type: 'string', description: 'Set slug (secpay-uat-2026-08-20) or id / id prefix.' },
+        mode: { type: 'string', enum: ['next', 'full', 'one'], description: "Default 'next'." },
+        ref: { type: 'string', description: "mode 'one' only: the decision ref, e.g. D-01." },
+      },
+      required: ['set'],
+    },
+  },
+  {
+    name: 'record_decision',
+    description:
+      "Save what Philip actually decided on ONE question, in his own words where the wording matters. " +
+      "status 'confirmed' = he made the call; 'discussed' = you talked it through but he has not landed on it; " +
+      "'routed' = it is the client's or a lawyer's call, not his (give routed_to). " +
+      "Preserve his reasoning in `rationale` — it is what a coding agent reads later to understand why. " +
+      "This never silently overwrites: an existing answer is kept in history, and revising one requires revise:true so you " +
+      "cannot blank a considered answer by accident. Only claim a decision is saved after this returns successfully.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        set: { type: 'string', description: 'Set slug or id.' },
+        ref: { type: 'string', description: 'Decision ref (D-01) or id.' },
+        status: {
+          type: 'string',
+          enum: ['discussed', 'confirmed', 'routed'],
+          description: "Default 'confirmed'.",
+        },
+        answer: { type: 'string', description: "The option he chose, or his answer in free text." },
+        rationale: { type: 'string', description: "Why — his reasoning, preserved as close to his words as matters." },
+        routed_to: { type: 'string', description: "status 'routed' only: whose call it actually is." },
+        confidence: { type: 'string', enum: ['low', 'medium', 'high'], description: 'How settled he sounded. Optional.' },
+        revise: { type: 'boolean', description: 'Required true to change an answer that is already recorded.' },
+      },
+      required: ['set', 'ref', 'answer'],
+    },
+  },
+  {
+    name: 'update_decision',
+    description:
+      "Change a decision's state without recording a new answer: 'skipped' (he passed on it for now), 'unresolved' (it was " +
+      "discussed and genuinely cannot be settled yet), or 'open' to reopen something parked. Also how you mark 'implemented' " +
+      "or 'verified' once work is actually done — never mark either merely because it was discussed. The previous state and " +
+      "answer are kept in history either way.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        set: { type: 'string', description: 'Set slug or id.' },
+        ref: { type: 'string', description: 'Decision ref (D-01) or id.' },
+        status: {
+          type: 'string',
+          enum: ['open', 'discussed', 'skipped', 'unresolved', 'implemented', 'verified'],
+        },
+        note: { type: 'string', description: 'Why it moved — kept in the history row.' },
+      },
+      required: ['set', 'ref', 'status'],
+    },
+  },
+  {
+    name: 'export_decision_brief',
+    description:
+      "Compile the set into an implementation brief a coding agent can work from without Philip present: confirmed decisions " +
+      "and his reasoning, options not taken, what is routed elsewhere, what is still unresolved, constraints and verification " +
+      "requirements. Deterministic — re-exporting an unchanged set produces the same content hash. With commit:true it also " +
+      "commits the brief to the project's own repo at its export_path. Exporting does NOT close the set and does NOT mark " +
+      "anything implemented.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        set: { type: 'string', description: 'Set slug or id.' },
+        commit: { type: 'boolean', description: "Also commit it to the set's repo at export_path. Default false." },
+        preview: { type: 'boolean', description: 'Render and return it without saving a new version. Default false.' },
+      },
+      required: ['set'],
+    },
+  },
+  {
+    name: 'close_decision_set',
+    description:
+      "Mark a decision set finished. Refuses while questions are still open unless force:true — and forcing requires a " +
+      "closure_reason, because closing over unresolved questions is a decision in itself. status 'completed' = every question " +
+      "is settled; 'implemented' = the brief has actually been built; 'closed' = stopping regardless; 'paused' = parking it " +
+      "without finishing. Never close a set just because a brief was exported.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        set: { type: 'string', description: 'Set slug or id.' },
+        status: { type: 'string', enum: ['completed', 'implemented', 'closed', 'paused'] },
+        closure_reason: { type: 'string', description: 'Why it is being closed in this state.' },
+        force: { type: 'boolean', description: 'Close despite open questions. Requires closure_reason.' },
+      },
+      required: ['set', 'status'],
+    },
+  },
+  {
+    name: 'link_decision_artifact',
+    description:
+      "Connect a decision set (or one decision) to something outside it: the UAT file it came from, a thread you are watching, " +
+      "a commit, PR, deployment, or verification run. This is how the trail survives — a brief that was implemented should end " +
+      "up with the commit linked to it. Adding the same link twice is one link.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        set: { type: 'string', description: 'Set slug or id.' },
+        link_type: {
+          type: 'string',
+          enum: ['uat', 'thread', 'file', 'commit', 'pr', 'deployment', 'verification'],
+        },
+        ref: { type: 'string', description: 'URL, path, commit sha, or entity id.' },
+        decision_ref: { type: 'string', description: 'Optional: attach to one decision (D-01) rather than the whole set.' },
+        note: { type: 'string', description: 'Optional short note.' },
+      },
+      required: ['set', 'link_type', 'ref'],
+    },
+  },
   {
     name: 'stay_silent',
     description:
@@ -560,125 +708,6 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
         },
       },
       required: ['score', 'debrief'],
-    },
-  },
-  // ─── Decision queue ───────────────────────────────────────────────────────
-  {
-    name: 'list_decision_sets',
-    description:
-      'List the projects that have a queue of decisions waiting on Philip, with how many are still open. ' +
-      'Call this when he asks what he owes a decision on, or before nudging him about one.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        include_archived: { type: 'boolean', description: 'Include finished/archived sets (default false).' },
-      },
-    },
-  },
-  {
-    name: 'list_decisions',
-    description:
-      'Read a decision set: every question, its context, its options, your recommendation, and what has been ' +
-      'decided so far. Call this BEFORE starting or resuming a decision session so you know exactly where he left off. ' +
-      'Filter by status to see just what is still open.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        set_slug: { type: 'string', description: 'The decision set, e.g. "secpay-uat-2026-08-20".' },
-        status: {
-          type: 'string',
-          enum: ['open', 'answered', 'deferred', 'needs_client', 'needs_legal'],
-          description: 'Optional filter. Omit to see the whole set.',
-        },
-      },
-      required: ['set_slug'],
-    },
-  },
-  {
-    name: 'answer_decision',
-    description:
-      'Record what Philip decided on ONE question, in his words, as soon as he decides it — never batch them up ' +
-      'until the end of the conversation, because the point of this queue is that it survives him being ' +
-      'interrupted. Capture his reasoning in `rationale` too: the implementer will need it. ' +
-      'If the question is not his to answer (it belongs to the client or a lawyer), set status to needs_client / ' +
-      'needs_legal and put what he wants asked in `answer` — do not invent a decision for him. ' +
-      'If he wants to think about it, use deferred.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        set_slug: { type: 'string' },
-        ref: { type: 'string', description: 'The question ref, e.g. "UAT-01".' },
-        answer: { type: 'string', description: 'The decision, stated plainly enough for an implementer to act on.' },
-        rationale: { type: 'string', description: 'Why he chose it — constraints, trade-offs, what he ruled out.' },
-        status: {
-          type: 'string',
-          enum: ['answered', 'deferred', 'needs_client', 'needs_legal', 'open'],
-          description: 'Defaults to answered.',
-        },
-      },
-      required: ['set_slug', 'ref'],
-    },
-  },
-  {
-    name: 'add_decisions',
-    description:
-      'Create a decision set, or add questions to one. Use this when Philip hands you a new batch of things to ' +
-      'decide (a UAT round, a review, a spec). Re-adding an existing ref updates it rather than duplicating it. ' +
-      'Give the repo coordinates if the answered brief should later be committed back to that project.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        set_slug: { type: 'string', description: 'Stable slug for the set, e.g. "secpay-uat-2026-08-20".' },
-        project: { type: 'string', description: 'Project name, e.g. "security-payroll-demo".' },
-        title: { type: 'string' },
-        context: { type: 'string', description: 'What this batch is about, so you can frame it later.' },
-        source_ref: { type: 'string', description: 'Where the questions came from, e.g. "uat/2026-08-20/UAT.md".' },
-        repo_owner: { type: 'string' },
-        repo_name: { type: 'string' },
-        export_path: { type: 'string', description: 'Where the brief should be committed, e.g. "uat/2026-08-20/DECISIONS.md".' },
-        decisions: {
-          type: 'array',
-          description: 'The questions to add.',
-          items: {
-            type: 'object',
-            properties: {
-              ref: { type: 'string' },
-              area: { type: 'string' },
-              question: { type: 'string' },
-              context: { type: 'string' },
-              options: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: { label: { type: 'string' }, detail: { type: 'string' } },
-                  required: ['label'],
-                },
-              },
-              recommendation: { type: 'string' },
-              priority: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
-              blocked_by: { type: 'string', description: 'Ref of a question that must be settled first.' },
-            },
-            required: ['ref', 'question'],
-          },
-        },
-      },
-      required: ['set_slug', 'project', 'title', 'decisions'],
-    },
-  },
-  {
-    name: 'export_decisions',
-    description:
-      'Commit the answered set into its repo as an implementation brief (markdown + json), so a coding agent can ' +
-      'pick the work up from the repo alone without Philip present. Tell him what still is not actionable before ' +
-      'you export, and say so again after. Exporting a partly-finished set is fine — the brief marks the rest as ' +
-      'hard stops — but never export as if a question were settled when it is not.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        set_slug: { type: 'string' },
-        mark_complete: { type: 'boolean', description: 'Mark the set complete after exporting (default false).' },
-      },
-      required: ['set_slug'],
     },
   },
   // ─── Website deployment (GitHub Pages) ───────────────────────────────────
@@ -1467,6 +1496,349 @@ export async function dispatchTool(
       return { output: 'Card rendered on his screen. Write your reply as if the card may not be there.' };
     }
 
+    // ─── Decision queue ────────────────────────────────────────────────────
+    case 'list_decision_sets': {
+      const want = String(input.status ?? 'open').trim().toLowerCase();
+      const statuses: DecisionSetStatus[] | undefined =
+        want === 'all'
+          ? undefined
+          : want === 'open'
+            ? ['open', 'paused']
+            : ([want] as DecisionSetStatus[]);
+      const sets = await decisionSets.list(statuses);
+      if (sets.length === 0) {
+        return {
+          output:
+            want === 'all'
+              ? 'No decision sets exist at all.'
+              : 'No open decision sets. Nothing is waiting on him — do not manufacture a nudge.',
+        };
+      }
+      const counts = await decisionSets.countsFor(sets.map((s) => s.id));
+      return {
+        output: sets
+          .map((s) => {
+            const c = counts.get(s.id);
+            const tally = c
+              ? `${c.open} open of ${c.total} (${c.confirmed} confirmed, ${c.routed} routed, ${c.skipped + c.unresolved} parked)`
+              : 'counts unavailable';
+            return (
+              `- [${s.slug}] ${s.title} — ${s.project} | status ${s.status} | ${tally}` +
+              ` | updated ${s.updated_at.slice(0, 10)}` +
+              (s.source_ref ? ` | source ${s.source_ref}` : '')
+            );
+          })
+          .join('\n'),
+      };
+    }
+
+    case 'get_decision_set': {
+      const set = await decisionSets.resolve(String(input.set ?? ''));
+      if (!set) return { output: `No decision set matches "${input.set}" — call list_decision_sets for the slugs.` };
+      const list = await decisions.forSet(set.id);
+      const counts = countDecisions(list);
+      const mode = String(input.mode ?? 'next');
+      const header =
+        `${set.title} [${set.slug}] — ${set.project}, status ${set.status}\n` +
+        (set.context ? `Set context: ${set.context}\n` : '') +
+        `Counts: ${counts.open} still open, ${counts.confirmed} confirmed, ${counts.routed} routed, ` +
+        `${counts.skipped} skipped, ${counts.unresolved} unresolved, ${counts.total} total.`;
+
+      if (mode === 'full') {
+        return {
+          output:
+            `${header}\n\n` +
+            list
+              .map(
+                (d) =>
+                  `${d.ref} [${d.status}${d.priority === 'critical' || d.priority === 'high' ? `, ${d.priority}` : ''}]` +
+                  `${d.area ? ` (${d.area})` : ''} ${d.question}` +
+                  (d.blocked_by ? `\n    blocked by ${d.blocked_by}` : '') +
+                  (d.answer ? `\n    answer: ${d.answer}` : '') +
+                  (d.rationale ? `\n    why: ${d.rationale}` : '') +
+                  (d.routed_to ? `\n    routed to: ${d.routed_to}` : '')
+              )
+              .join('\n'),
+        };
+      }
+
+      let target: Decision | null;
+      if (mode === 'one') {
+        const ref = String(input.ref ?? '').trim();
+        if (!ref) return { output: "mode 'one' needs a ref, e.g. D-01." };
+        target = await decisions.resolve(set.id, ref);
+        if (!target) return { output: `No decision "${ref}" in ${set.slug}.` };
+      } else {
+        target = decisions.next(list);
+        if (!target) {
+          const blocked = list.filter(
+            (d) => (d.status === 'open' || d.status === 'discussed') && d.blocked_by
+          );
+          if (blocked.length > 0) {
+            return {
+              output:
+                `${header}\n\nNothing is answerable right now: ${blocked.length} question(s) remain but each is ` +
+                `waiting on another that has not settled — ` +
+                blocked.map((d) => `${d.ref} needs ${d.blocked_by}`).join('; ') +
+                '.',
+            };
+          }
+          const parked = list.filter((d) => d.status === 'skipped' || d.status === 'unresolved');
+          if (parked.length > 0) {
+            return {
+              output:
+                `${header}\n\nNothing is waiting on him right now, but ${parked.length} question(s) are parked ` +
+                `rather than settled: ${parked.map((d) => `${d.ref} (${d.status})`).join(', ')}. ` +
+                `Reopen one with update_decision when it is worth another go.`,
+            };
+          }
+          return { output: `${header}\n\nEvery question in this set is settled. Nothing left to put to him.` };
+        }
+      }
+
+      const opts = Array.isArray(target.options) ? target.options : [];
+      return {
+        output:
+          `${header}\n\n` +
+          `${target.ref} [${target.status}, ${target.priority}]${target.area ? ` — ${target.area}` : ''}\n` +
+          `Question: ${target.question}\n` +
+          (target.context ? `Context: ${target.context}\n` : '') +
+          (opts.length > 0
+            ? `Options:\n${opts.map((o, i) => `  ${i + 1}. ${o.label}${o.detail ? ` — ${o.detail}` : ''}`).join('\n')}\n`
+            : '') +
+          (target.recommendation ? `Your recommendation: ${target.recommendation}\n` : '') +
+          (target.blocked_by ? `Blocked by: ${target.blocked_by}\n` : '') +
+          (target.answer ? `Already answered: ${target.answer}\n` : '') +
+          `${counts.open} of ${counts.total} still need him.`,
+      };
+    }
+
+    case 'record_decision': {
+      const set = await decisionSets.resolve(String(input.set ?? ''));
+      if (!set) return { output: `No decision set matches "${input.set}".` };
+      const target = await decisions.resolve(set.id, String(input.ref ?? ''));
+      if (!target) return { output: `No decision "${input.ref}" in ${set.slug}.` };
+
+      const status = String(input.status ?? 'confirmed') as DecisionStatus;
+      if (!['discussed', 'confirmed', 'routed'].includes(status)) {
+        return { output: `record_decision takes discussed, confirmed or routed — use update_decision for "${status}".` };
+      }
+      const answer = String(input.answer ?? '').trim();
+      if (!answer) return { output: 'An answer is required — what did he actually decide?' };
+      const routedTo = (input.routed_to as string | undefined)?.trim() || null;
+      if (status === 'routed' && !routedTo) {
+        return { output: "status 'routed' needs routed_to — whose call is it?" };
+      }
+      // Never blank a considered answer by accident.
+      if (target.answer && target.answer !== answer && input.revise !== true) {
+        return {
+          output:
+            `${target.ref} already has an answer: "${target.answer}"` +
+            (target.rationale ? ` (because: ${target.rationale})` : '') +
+            `. Pass revise:true to change it — the previous answer is kept in history either way.`,
+        };
+      }
+
+      const saved = await decisions.record({
+        decision_id: target.id,
+        status,
+        answer,
+        rationale: (input.rationale as string | undefined)?.trim() || null,
+        routed_to: routedTo,
+        confidence: (input.confidence as string | undefined) ?? null,
+        changed_by: 'philip',
+        note: input.revise === true ? 'revised' : null,
+      });
+
+      const after = countDecisions(await decisions.forSet(set.id));
+      return {
+        output:
+          `Saved ${saved.ref} as ${saved.status}: ${saved.answer}` +
+          (saved.rationale ? `\nReasoning kept: ${saved.rationale}` : '') +
+          `\n${after.open} of ${after.total} still need him in ${set.slug}.`,
+      };
+    }
+
+    case 'update_decision': {
+      const set = await decisionSets.resolve(String(input.set ?? ''));
+      if (!set) return { output: `No decision set matches "${input.set}".` };
+      const target = await decisions.resolve(set.id, String(input.ref ?? ''));
+      if (!target) return { output: `No decision "${input.ref}" in ${set.slug}.` };
+      const status = String(input.status ?? '') as DecisionStatus;
+      const allowed = ['open', 'discussed', 'skipped', 'unresolved', 'implemented', 'verified'];
+      if (!allowed.includes(status)) {
+        return { output: `Bad status "${input.status}" — use one of ${allowed.join(', ')}.` };
+      }
+
+      const saved = await decisions.record({
+        decision_id: target.id,
+        status,
+        // Keep whatever answer/rationale is already there: this tool moves
+        // state, it does not record a new answer.
+        answer: null,
+        rationale: null,
+        changed_by: 'keeper',
+        note: (input.note as string | undefined)?.trim() || null,
+      });
+
+      const after = countDecisions(await decisions.forSet(set.id));
+      return {
+        output:
+          `${saved.ref} is now ${saved.status}` +
+          (target.status !== saved.status ? ` (was ${target.status})` : ' (unchanged)') +
+          `. ${after.open} of ${after.total} still need him in ${set.slug}.`,
+      };
+    }
+
+    case 'export_decision_brief': {
+      const set = await decisionSets.resolve(String(input.set ?? ''));
+      if (!set) return { output: `No decision set matches "${input.set}".` };
+      const list = await decisions.forSet(set.id);
+      if (list.length === 0) return { output: `${set.slug} has no decisions to export.` };
+      const links = await decisionLinks.forSet(set.id);
+      const brief = renderDecisionBrief(set, list, links);
+      const counts = countDecisions(list);
+
+      if (input.preview === true) {
+        return {
+          output: `Preview only — nothing saved (hash ${brief.contentHash}).\n\n${brief.content}`,
+        };
+      }
+
+      const previous = await decisionArtifacts.latest(set.id);
+      const unchanged = Boolean(previous && previous.content_hash === brief.contentHash);
+      // An unchanged brief still needs writing OUT when a commit is asked for and
+      // the existing version was never committed — otherwise "export and commit
+      // it" silently does nothing until some decision happens to change.
+      const commitWanted = input.commit === true;
+      if (unchanged && (!commitWanted || previous!.committed_url)) {
+        return {
+          output:
+            `Nothing has changed since v${previous!.version} (hash ${brief.contentHash}) — no new version written.` +
+            (previous!.committed_url
+              ? ` It is at ${previous!.committed_url}.`
+              : ' Pass commit:true to land it in the repo.'),
+        };
+      }
+
+      let committedUrl: string | null = null;
+      let commitNote = '';
+      if (commitWanted) {
+        if (!githubEnabled()) {
+          commitNote = ' GitHub is not configured, so it was saved but not committed.';
+        } else if (!set.repo_owner || !set.repo_name || !set.export_path) {
+          commitNote = ' The set has no repo/export_path recorded, so it was saved but not committed.';
+        } else {
+          const res = await commitFile({
+            owner: set.repo_owner,
+            repo: set.repo_name,
+            path: set.export_path,
+            content: brief.content,
+            message: `Decision brief for ${set.slug} (${counts.confirmed} confirmed, ${counts.open} still open)`,
+          });
+          if (res.ok) {
+            committedUrl = res.url ?? null;
+            commitNote = ` Committed to ${set.repo_owner}/${set.repo_name}:${set.export_path}${res.url ? ` — ${res.url}` : ''}.`;
+          } else {
+            commitNote = ` Saved, but the commit failed: ${res.error}`;
+          }
+        }
+      }
+
+      const artifact = unchanged
+        ? await decisionArtifacts.markCommitted(previous!.id, committedUrl)
+        : await decisionArtifacts.create({
+            set_id: set.id,
+            content: brief.content,
+            content_hash: brief.contentHash,
+            committed_url: committedUrl,
+          });
+
+      return {
+        output:
+          `${unchanged ? 'Re-committed' : 'Exported'} v${artifact.version} of the ${set.slug} brief ` +
+          `(hash ${brief.contentHash}): ` +
+          `${counts.confirmed} confirmed, ${counts.routed} routed, ${counts.open} still open, ` +
+          `${counts.skipped + counts.unresolved} parked.${commitNote}\n` +
+          `The set is still ${set.status} — exporting does not close it.\n\n${brief.content}`,
+      };
+    }
+
+    case 'close_decision_set': {
+      const set = await decisionSets.resolve(String(input.set ?? ''));
+      if (!set) return { output: `No decision set matches "${input.set}".` };
+      const status = String(input.status ?? '') as DecisionSetStatus;
+      if (!['completed', 'implemented', 'closed', 'paused'].includes(status)) {
+        return { output: `Bad status "${input.status}" — use completed, implemented, closed or paused.` };
+      }
+      const counts = countDecisions(await decisions.forSet(set.id));
+      const reason = (input.closure_reason as string | undefined)?.trim() || null;
+
+      // 'completed' and 'implemented' both assert the work is DONE, so they need
+      // every question settled — skipped and unresolved ones are parked, not
+      // answered, and the brief still lists them under unresolved. 'closed' only
+      // needs nothing left actively open; 'paused' is parking and needs nothing.
+      const strict = status === 'completed' || status === 'implemented';
+      const blocking = strict ? counts.total - counts.settled : counts.open;
+      if (blocking > 0 && status !== 'paused') {
+        if (input.force !== true) {
+          const what = strict
+            ? `${blocking} of ${counts.total} questions are not settled ` +
+              `(${counts.open} open, ${counts.skipped} skipped, ${counts.unresolved} unresolved)`
+            : `${counts.open} of ${counts.total} questions are still open`;
+          return {
+            output:
+              `Not marking ${set.slug} ${status}: ${what}. ` +
+              `Work through them, use 'paused' to park the set, or pass force:true with a closure_reason ` +
+              `if he has explicitly decided to stop here.`,
+          };
+        }
+        if (!reason) {
+          return { output: `Forcing ${status} with questions unsettled requires a closure_reason.` };
+        }
+      }
+
+      const saved = await decisionSets.setStatus(set.id, status, reason);
+      return {
+        output:
+          `${set.slug} is now ${saved?.status ?? status}` +
+          (reason ? ` — ${reason}` : '') +
+          `. Final state: ${counts.confirmed} confirmed, ${counts.routed} routed, ` +
+          `${counts.open} left open, ${counts.skipped + counts.unresolved} parked.`,
+      };
+    }
+
+    case 'link_decision_artifact': {
+      const set = await decisionSets.resolve(String(input.set ?? ''));
+      if (!set) return { output: `No decision set matches "${input.set}".` };
+      const linkType = String(input.link_type ?? '').trim();
+      const allowed = ['uat', 'thread', 'file', 'commit', 'pr', 'deployment', 'verification'];
+      if (!allowed.includes(linkType)) {
+        return { output: `Bad link_type "${linkType}" — use one of ${allowed.join(', ')}.` };
+      }
+      const ref = String(input.ref ?? '').trim();
+      if (!ref) return { output: 'A link needs a ref (url, path, sha, or id).' };
+
+      let decisionId: string | null = null;
+      const decisionRef = (input.decision_ref as string | undefined)?.trim();
+      if (decisionRef) {
+        const d = await decisions.resolve(set.id, decisionRef);
+        if (!d) return { output: `No decision "${decisionRef}" in ${set.slug}.` };
+        decisionId = d.id;
+      }
+
+      const link = await decisionLinks.add({
+        set_id: set.id,
+        decision_id: decisionId,
+        link_type: linkType,
+        ref,
+        note: (input.note as string | undefined)?.trim() || null,
+      });
+      return {
+        output: `Linked ${link.link_type} ${link.ref} to ${set.slug}${decisionRef ? ` (${decisionRef})` : ''}.`,
+      };
+    }
+
     case 'stay_silent': {
       return { output: 'Staying silent.', silent: true };
     }
@@ -1674,119 +2046,6 @@ export async function dispatchTool(
     }
 
     // ─── Website deployment ────────────────────────────────────────────────
-    case 'list_decision_sets': {
-      const sets = await decisionSets.list(Boolean(input.include_archived));
-      if (sets.length === 0) return { output: 'No decision sets.' };
-      const lines: string[] = [];
-      for (const set of sets) {
-        const c = await decisions.counts(set.id);
-        lines.push(
-          `- ${set.slug} — ${set.title} (${set.project}) [${set.status}] | ` +
-            `open ${c.open}, answered ${c.answered}, deferred ${c.deferred}, ` +
-            `client ${c.needs_client}, legal ${c.needs_legal}`
-        );
-      }
-      return { output: lines.join('\n') };
-    }
-
-    case 'list_decisions': {
-      const set = await decisionSets.get(input.set_slug as string);
-      if (!set) return { output: `No decision set "${input.set_slug}".` };
-      const rows = await decisions.list(set.id, input.status as DecisionStatus | undefined);
-      if (rows.length === 0) return { output: `Nothing in ${set.slug} matching that.` };
-      const body = rows
-        .map((d) => {
-          const parts = [`${d.ref} [${d.priority}] [${d.status}]${d.area ? ` (${d.area})` : ''}`];
-          parts.push(`  Q: ${d.question}`);
-          if (d.context) parts.push(`  Context: ${d.context}`);
-          if (d.options.length > 0)
-            parts.push(
-              `  Options: ${d.options.map((o) => o.label + (o.detail ? ` — ${o.detail}` : '')).join(' | ')}`
-            );
-          if (d.recommendation) parts.push(`  Your steer: ${d.recommendation}`);
-          if (d.blocked_by) parts.push(`  Blocked by: ${d.blocked_by}`);
-          if (d.answer) parts.push(`  Answer: ${d.answer}`);
-          if (d.rationale) parts.push(`  Why: ${d.rationale}`);
-          return parts.join('\n');
-        })
-        .join('\n\n');
-      return { output: `${set.title} — ${set.source_ref ?? set.project}\n\n${body}` };
-    }
-
-    case 'answer_decision': {
-      const set = await decisionSets.get(input.set_slug as string);
-      if (!set) return { output: `No decision set "${input.set_slug}".` };
-      const row = await decisions.answer(set.id, input.ref as string, {
-        answer: (input.answer as string | undefined) ?? null,
-        rationale: (input.rationale as string | undefined) ?? null,
-        status: (input.status as DecisionStatus | undefined) ?? 'answered',
-      });
-      const c = await decisions.counts(set.id);
-      return {
-        output:
-          `Recorded ${row.ref} as ${row.status}. ` +
-          `${c.open} still open in ${set.slug} (${c.needs_client + c.needs_legal} routed out, ${c.deferred} deferred).`,
-      };
-    }
-
-    case 'add_decisions': {
-      const set = await decisionSets.upsert({
-        slug: input.set_slug as string,
-        project: input.project as string,
-        title: input.title as string,
-        context: (input.context as string | undefined) ?? null,
-        source_ref: (input.source_ref as string | undefined) ?? null,
-        repo_owner: (input.repo_owner as string | undefined) ?? null,
-        repo_name: (input.repo_name as string | undefined) ?? null,
-        export_path: (input.export_path as string | undefined) ?? null,
-      });
-      const items = (input.decisions as Parameters<typeof decisions.addMany>[1] | undefined) ?? [];
-      const added = await decisions.addMany(set.id, items);
-      const total = (await decisions.list(set.id)).length;
-      return { output: `${set.slug}: ${added.length} question(s) stored. Set now holds ${total}.` };
-    }
-
-    case 'export_decisions': {
-      if (!githubEnabled()) return { output: 'GitHub is not configured, so I cannot commit the brief.' };
-      const set = await decisionSets.get(input.set_slug as string);
-      if (!set) return { output: `No decision set "${input.set_slug}".` };
-      if (!set.repo_owner || !set.repo_name || !set.export_path)
-        return {
-          output: `${set.slug} has no repo/export path set — add_decisions can set repo_owner, repo_name and export_path.`,
-        };
-
-      const rows = await decisions.list(set.id);
-      const now = new Date().toISOString();
-      const jsonPath = set.export_path.replace(/\.md$/i, '') + '.json';
-      const message = `docs(${set.project}): decision brief for ${set.slug}`;
-
-      const mdRes = await commitFile({
-        owner: set.repo_owner,
-        repo: set.repo_name,
-        path: set.export_path,
-        content: renderBriefMarkdown(set, rows, now),
-        message,
-      });
-      if (!mdRes.ok) return { output: `Export failed: ${mdRes.error}` };
-      const jsonRes = await commitFile({
-        owner: set.repo_owner,
-        repo: set.repo_name,
-        path: jsonPath,
-        content: renderBriefJson(set, rows, now),
-        message,
-      });
-
-      if (input.mark_complete) await decisionSets.setStatus(set.slug, 'complete');
-      const c = await decisions.counts(set.id);
-      const held = c.open + c.deferred + c.needs_client + c.needs_legal;
-      return {
-        output:
-          `Committed ${set.export_path}${jsonRes.ok ? ` and ${jsonPath}` : ` (json failed: ${jsonRes.error})`} ` +
-          `to ${set.repo_owner}/${set.repo_name}. ${c.answered} decided, ${held} marked not-actionable. ` +
-          (mdRes.url ?? ''),
-      };
-    }
-
     case 'deploy_html': {
       if (!githubEnabled()) return { output: 'Website deploy is not configured (missing GITHUB_TOKEN / GITHUB_USERNAME).' };
       return { output: JSON.stringify(await deployPending()) };

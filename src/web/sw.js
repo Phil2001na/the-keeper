@@ -10,6 +10,7 @@
  * Caching rules, in short:
  *   /events, /send   never touched — routing SSE or a POST through a fetch
  *                    handler is the classic way to break streaming
+ *   /remote, /rb/*   never touched — the live remote-login page and its stream
  *   navigations      network-first, cached shell as the offline fallback
  *   /api/snapshot    network-first, last good response kept so the transcript
  *                    and the mind drawer stay readable offline (flagged stale)
@@ -132,6 +133,8 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
   // SSE must stream straight through; /send is a POST and already excluded.
   if (url.pathname === '/events' || url.pathname === '/send') return;
+  // The remote-login page is live-only, and caching its navigation would overwrite the app shell at '/'.
+  if (url.pathname === '/remote' || url.pathname.startsWith('/rb/')) return;
 
   if (request.mode === 'navigate') {
     event.respondWith(navigationStrategy(request));

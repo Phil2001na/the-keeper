@@ -1,133 +1,167 @@
-import type { Decision, DecisionSet } from '../db/repositories.js';
+import { createHash } from 'node:crypto';
+import {
+  countDecisions,
+  type Decision,
+  type DecisionLink,
+  type DecisionSet,
+} from '../db/repositories.js';
 
 /**
- * Renders an answered decision set as an implementation brief.
+ * Renders a decision set as an implementation brief — the artifact a coding
+ * agent reads instead of Philip repeating the conversation.
  *
- * The audience is a coding agent working the repo alone, days later, with
- * Philip unreachable — so the brief has to be unambiguous about what was
- * decided AND about what was deliberately not. Anything still open or routed
- * to the client/lawyer is listed as a hard stop, not as latitude to invent a
- * rule.
+ * Deterministic by design: the same decisions in the same states always render
+ * byte-identical, and generated_at is excluded from the hash. That is what
+ * makes "has anything actually changed since the last export?" answerable, and
+ * what stops a re-export from looking like a new decision every time.
  */
 
-const STATUS_LABEL: Record<string, string> = {
-  answered: 'Decided',
-  deferred: 'Deferred',
-  needs_client: 'Client decision — DO NOT IMPLEMENT',
-  needs_legal: 'Legal decision — DO NOT IMPLEMENT',
-  open: 'Unanswered — DO NOT IMPLEMENT',
-};
+function bullet(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
+}
 
-const PRIORITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+function optionLines(d: Decision): string[] {
+  if (!Array.isArray(d.options) || d.options.length === 0) return [];
+  return d.options.map((o) => {
+    const label = typeof o?.label === 'string' ? o.label : String(o);
+    const detail = typeof o?.detail === 'string' && o.detail ? ` — ${o.detail}` : '';
+    return `  - ${label}${detail}`;
+  });
+}
 
-export function renderBriefMarkdown(set: DecisionSet, rows: Decision[], nowIso: string): string {
-  const decided = rows.filter((r) => r.status === 'answered');
-  const blocked = rows.filter((r) => r.status !== 'answered');
+/** The body of the brief, without the generated_at line. Hash this. */
+function renderBody(set: DecisionSet, list: Decision[], links: DecisionLink[]): string {
+  const counts = countDecisions(list);
+  const confirmed = list.filter((d) => d.status === 'confirmed' || d.status === 'implemented' || d.status === 'verified');
+  const routed = list.filter((d) => d.status === 'routed');
+  const openLeft = list.filter((d) => d.status === 'open' || d.status === 'discussed');
+  const parked = list.filter((d) => d.status === 'skipped' || d.status === 'unresolved');
 
   const out: string[] = [];
-  out.push(`# ${set.title} — decisions`);
+  out.push(`# Implementation brief — ${set.title}`);
   out.push('');
   out.push(`**Project:** ${set.project}  `);
-  if (set.source_ref) out.push(`**Questions from:** ${set.source_ref}  `);
-  out.push(`**Decided by:** Philip, in conversation with THE KEEPER  `);
-  out.push(`**Exported:** ${nowIso}  `);
-  out.push(`**Coverage:** ${decided.length} of ${rows.length} decided, ${blocked.length} not actionable`);
+  out.push(`**Decision set:** \`${set.slug}\`  `);
+  if (set.source_ref) out.push(`**Source:** ${set.source_ref}  `);
+  out.push(`**Status:** ${set.status}`);
   out.push('');
-  out.push('> Generated from Keeper\'s decision queue. Implement only the items under');
-  out.push('> **Decided**. Every item under **Not actionable** is an explicit hold —');
-  out.push('> do not guess a rule, do not implement a default, and do not treat silence');
-  out.push('> as permission. If a decided item turns out to depend on a held one, stop');
-  out.push('> and leave it for Philip.');
-  out.push('');
+  out.push(
+    `${counts.confirmed} confirmed · ${counts.routed} routed elsewhere · ` +
+      `${counts.open} still open · ${counts.skipped + counts.unresolved} parked · ${counts.total} total`
+  );
 
-  out.push('## Decided');
-  out.push('');
-  if (decided.length === 0) {
-    out.push('_Nothing decided yet._');
+  if (set.context) {
     out.push('');
+    out.push('## Problem / context');
+    out.push('');
+    out.push(bullet(set.context));
+  }
+
+  out.push('');
+  out.push('## Confirmed decisions');
+  out.push('');
+  if (confirmed.length === 0) {
+    out.push('_None confirmed yet._');
   } else {
-    for (const d of sortForBrief(decided)) {
-      out.push(`### ${d.ref}${d.area ? ` — ${d.area}` : ''}`);
+    for (const d of confirmed) {
+      out.push(`### ${d.ref} — ${d.question}`);
       out.push('');
-      out.push(`**Question:** ${d.question}`);
-      out.push('');
-      out.push(`**Decision:** ${d.answer ?? '(no answer recorded)'}`);
+      if (d.area) out.push(`**Area:** ${d.area}  `);
+      out.push(`**Decision:** ${d.answer ?? '(no answer text recorded)'}`);
       if (d.rationale) {
         out.push('');
-        out.push(`**Why:** ${d.rationale}`);
+        out.push(`**Why:** ${bullet(d.rationale)}`);
+      }
+      const rejected = optionLines(d).filter(
+        (line) => !d.answer || !line.toLowerCase().includes(String(d.answer).toLowerCase().slice(0, 40))
+      );
+      if (rejected.length > 0) {
+        out.push('');
+        out.push('**Options not taken:**');
+        out.push(...rejected);
       }
       out.push('');
-      out.push(`_Priority: ${d.priority}${d.decided_at ? ` · decided ${d.decided_at}` : ''}_`);
-      out.push('');
     }
   }
 
-  out.push('## Not actionable');
-  out.push('');
-  if (blocked.length === 0) {
-    out.push('_Everything was decided._');
+  if (routed.length > 0) {
+    out.push('## Routed — not Philip\'s call');
     out.push('');
+    out.push('These are answered by someone else. Do not implement a guess for them.');
+    out.push('');
+    for (const d of routed) {
+      out.push(`- **${d.ref}** ${d.question}`);
+      out.push(`  - Whose call: ${d.routed_to ?? 'unspecified'}`);
+      if (d.rationale) out.push(`  - Note: ${bullet(d.rationale)}`);
+    }
+    out.push('');
+  }
+
+  out.push('## Unresolved questions');
+  out.push('');
+  if (openLeft.length === 0 && parked.length === 0) {
+    out.push('_None — every question in this set is settled._');
   } else {
-    out.push('| Ref | Area | Status | Question | Note |');
-    out.push('| --- | --- | --- | --- | --- |');
-    for (const d of sortForBrief(blocked)) {
-      const note = [d.answer, d.rationale].filter(Boolean).join(' — ') || '—';
-      out.push(
-        `| ${d.ref} | ${d.area ?? '—'} | ${STATUS_LABEL[d.status] ?? d.status} | ` +
-          `${cell(d.question)} | ${cell(note)} |`
-      );
+    for (const d of [...openLeft, ...parked]) {
+      out.push(`- **${d.ref}** (${d.status}) ${d.question}`);
+      if (d.blocked_by) out.push(`  - Blocked by ${d.blocked_by}`);
+      if (d.rationale) out.push(`  - Note: ${bullet(d.rationale)}`);
+    }
+  }
+  out.push('');
+
+  out.push('## Implementation constraints');
+  out.push('');
+  out.push('- Implement only the confirmed decisions above. A routed or unresolved question is not a licence to pick a default.');
+  out.push('- Where a decision names a rule as configuration rather than fixed behaviour, build it as configuration.');
+  out.push('- If implementing one of these surfaces a question that is not in this brief, stop and raise it rather than deciding it.');
+  out.push('');
+
+  out.push('## Verification requirements');
+  out.push('');
+  out.push('- Each confirmed decision needs a test or a check that would fail if the opposite option had been built.');
+  out.push('- Reference the decision ref (D-nn) in the test name or commit message so the trail back to this brief survives.');
+  out.push('');
+
+  if (links.length > 0) {
+    out.push('## Linked artifacts');
+    out.push('');
+    for (const l of links) {
+      out.push(`- ${l.link_type}: ${l.ref}${l.note ? ` — ${l.note}` : ''}`);
     }
     out.push('');
   }
 
-  out.push('## Suggested order of work');
+  out.push('## Source references');
   out.push('');
-  const ordered = sortForBrief(decided);
-  if (ordered.length === 0) out.push('_Nothing to sequence._');
-  else ordered.forEach((d, i) => out.push(`${i + 1}. **${d.ref}** — ${d.question}`));
-  out.push('');
+  out.push(`- UAT / origin: ${set.source_ref ?? '(none recorded)'}`);
+  if (set.repo_owner && set.repo_name) out.push(`- Repository: ${set.repo_owner}/${set.repo_name}`);
+  if (set.export_path) out.push(`- Brief path: ${set.export_path}`);
+  out.push(`- Decision set id: ${set.id}`);
 
   return out.join('\n');
 }
 
-/** The same content as data, for an agent that would rather parse than read. */
-export function renderBriefJson(set: DecisionSet, rows: Decision[], nowIso: string): string {
-  return JSON.stringify(
-    {
-      set: {
-        slug: set.slug,
-        project: set.project,
-        title: set.title,
-        source_ref: set.source_ref,
-        exported_at: nowIso,
-      },
-      decisions: rows.map((d) => ({
-        ref: d.ref,
-        area: d.area,
-        question: d.question,
-        status: d.status,
-        implementable: d.status === 'answered',
-        answer: d.answer,
-        rationale: d.rationale,
-        priority: d.priority,
-        blocked_by: d.blocked_by,
-        decided_at: d.decided_at,
-      })),
-    },
-    null,
-    2
-  );
+export interface RenderedBrief {
+  /** Full markdown, including the generated_at footer. */
+  content: string;
+  /** Hash of the body only — stable across re-exports when nothing changed. */
+  contentHash: string;
 }
 
-function sortForBrief(rows: Decision[]): Decision[] {
-  return [...rows].sort(
-    (a, b) =>
-      (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9) ||
-      a.sort_order - b.sort_order
-  );
-}
-
-/** Pipes and newlines would break the markdown table row. */
-function cell(text: string): string {
-  return text.replace(/\|/g, '\|').replace(/\s*\n\s*/g, ' ').trim();
+export function renderDecisionBrief(
+  set: DecisionSet,
+  list: Decision[],
+  links: DecisionLink[] = [],
+  generatedAt: Date = new Date()
+): RenderedBrief {
+  const body = renderBody(set, list, links);
+  const contentHash = createHash('sha256').update(body).digest('hex').slice(0, 16);
+  const content =
+    `${body}\n\n---\n\n_Generated by THE KEEPER at ${generatedAt.toISOString()} · content hash \`${contentHash}\`_\n`;
+  return { content, contentHash };
 }

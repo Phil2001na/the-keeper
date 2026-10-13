@@ -16,6 +16,7 @@
     "mcp": "tsx src/mcp/server.ts",
     "icons": "tsx scripts/gen-icons.ts",
     "ui": "tsx scripts/ui-preview.ts",
+    "smoke:decisions": "tsx scripts/smoke_decisions.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
