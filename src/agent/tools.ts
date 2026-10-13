@@ -24,6 +24,7 @@ import {
   type DecisionSetStatus,
 } from '../db/repositories.js';
 import { parseRecurrence, nextOccurrence, monthStartUtc } from './recurrence.js';
+import { startJob, stopJob, getJob, listJobs, jobSummary, openApprovals, pcOnline, pcProjects } from '../web/pcBridge.js';
 import { bus, type PresentCard } from '../web/bus.js';
 import {
   githubEnabled,
@@ -709,6 +710,36 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
       },
       required: ['score', 'debrief'],
     },
+  },
+  // ─── Claude Code on the PC (src/web/pcBridge.ts) ─────────────────────────
+  {
+    name: 'start_claude_session',
+    description:
+      "Start a Claude Code session on Philip's PC, in one of his project folders, with a task. Use it when he asks you to " +
+      'get Claude / a coding session / "the PC" to do something. Write `task` as a complete brief Claude can act on without ' +
+      'this conversation: what to do, where, how he wants to hear back. It runs on the PC (which must be on); risky actions ' +
+      '(sends, deletes, payments, prod) come to his phone as Approve/Deny buttons, and he is told when it finishes. ' +
+      'If the project name does not match, the error lists the allowed ones — ask him which, do not guess.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Project folder name, e.g. "solarize" or "the-keeper".' },
+        task: { type: 'string', description: 'The full brief for Claude.' },
+      },
+      required: ['project', 'task'],
+    },
+  },
+  {
+    name: 'claude_sessions',
+    description:
+      'See whether the PC is online, which projects it allows, and the state of recent Claude sessions (running, waiting on his approval, done + summary). ' +
+      'Pass `id` for one session in detail. Read this before telling him anything about a PC session — never report progress from memory.',
+    input_schema: { type: 'object', properties: { id: { type: 'string', description: 'Session id (or prefix) for detail.' } } },
+  },
+  {
+    name: 'stop_claude_session',
+    description: 'Stop a running or queued Claude session on the PC. Only when he asks.',
+    input_schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
   },
   // ─── Website deployment (GitHub Pages) ───────────────────────────────────
   {
@@ -2043,6 +2074,42 @@ export async function dispatchTool(
           final.map((t) => `  ${t.position}. [${t.status}] ${t.title}`).join('\n') +
           `\nYou are back in CALM. Give him the debrief straight — what landed, where the time went, one thing to carry into the next one — then drop the pressure.`,
       };
+    }
+
+    // ─── Claude Code on the PC ─────────────────────────────────────────────
+    case 'start_claude_session': {
+      if (!pcOnline()) {
+        return { output: "The PC isn't checking in, so it's off, asleep, or the PC agent isn't running. Tell him; nothing was started." };
+      }
+      const r = startJob(String(input.project ?? ''), String(input.task ?? ''));
+      if (!r.ok) return { output: r.error };
+      return {
+        output:
+          `Queued session ${r.job.id} on ${r.job.project}. He'll get a Telegram ping when it starts, Approve/Deny buttons for anything risky, ` +
+          'and the summary when it finishes. Tell him it is on its way — do not claim it has done anything yet.',
+      };
+    }
+    case 'claude_sessions': {
+      if (typeof input.id === 'string' && input.id.trim()) {
+        const j = getJob(input.id);
+        return { output: j ? JSON.stringify(jobSummary(j)) : `No single session matches "${input.id}".` };
+      }
+      return {
+        output: JSON.stringify({
+          pcOnline: pcOnline(),
+          projects: pcProjects(),
+          sessions: listJobs().slice(0, 8).map((j) => {
+            const x = jobSummary(j);
+            return { id: x.id, project: x.project, status: x.status, task: x.task.slice(0, 160), result: x.result?.slice(0, 600) };
+          }),
+          waitingOnHim: openApprovals().map((a) => ({ session: a.jobId, wants: a.summary.slice(0, 200) })),
+        }),
+      };
+    }
+    case 'stop_claude_session': {
+      const j = getJob(String(input.id ?? ''));
+      if (!j) return { output: `No single session matches "${input.id}".` };
+      return { output: stopJob(j.id) ? `Stopping ${j.id} on ${j.project}.` : `${j.id} is already ${j.status}.` };
     }
 
     // ─── Website deployment ────────────────────────────────────────────────

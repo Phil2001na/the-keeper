@@ -1,0 +1,10 @@
+{
+  "root": "C:\Users\phili\OneDrive\Documents\projects",
+  "exclude": ["env files", "personalAI(jarvis)", "artifacts"],
+  "projects": {
+    "the-keeper": { "path": "C:\Users\phili\OneDrive\Documents\projects\personalAI(jarvis)\the-keeper" }
+  },
+  "strict": ["EDU REFACTOR"],
+  "maxParallel": 2,
+  "screenshotOnFinish": true
+}

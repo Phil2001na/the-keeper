@@ -15,6 +15,7 @@ import {
 } from '../deploy/github.js';
 import { extractPdfText, extractPdfTextFromBuffer } from './parsePdf.js';
 import { drainMedia } from '../generate/queue.js';
+import { pcEvents, decide, type PcEvent } from '../web/pcBridge.js';
 
 /**
  * Telegram transport. Long-polling for local dev — no public URL needed.
@@ -229,8 +230,85 @@ async function sendStatus(): Promise<void> {
   );
 }
 
+/**
+ * PC sessions on Telegram: a permission request arrives as a message with
+ * Approve / Deny buttons; the start and the finish (with the last screenshot)
+ * arrive as plain messages. Steps stay on the web — Telegram only buzzes for
+ * what needs him or what he asked to know.
+ */
+function attachPcToTelegram(): void {
+  const approvalMsgs = new Map<string, number>(); // approval id -> Telegram message id
+
+  pcEvents.on('event', (e: PcEvent) => {
+    void (async () => {
+      if (e.type === 'approval') {
+        const m = await keeperBot.sendMessage(
+          OWNER,
+          `🔐 Claude on ${e.job.project} wants to:
+
+${e.approval.summary}`.slice(0, TG_LIMIT),
+          {
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '✅ Approve', callback_data: `pc:y:${e.approval.id}` },
+                { text: '⛔ Deny', callback_data: `pc:n:${e.approval.id}` },
+              ]],
+            },
+          }
+        );
+        approvalMsgs.set(e.approval.id, m.message_id);
+        return;
+      }
+      if (e.type === 'approval_closed') {
+        const mid = approvalMsgs.get(e.approvalId);
+        approvalMsgs.delete(e.approvalId);
+        if (mid) {
+          await keeperBot
+            .editMessageReplyMarkup({ inline_keyboard: [[{ text: e.allow ? '✅ Approved' : '⛔ Denied', callback_data: 'pc:noop' }]] }, { chat_id: OWNER, message_id: mid })
+            .catch(() => {});
+        }
+        return;
+      }
+      const { job, event } = e;
+      if (event.kind === 'started') {
+        await sendToOwner(`▶️ Claude started on ${job.project} (${job.id}).`);
+      } else if (event.kind === 'done') {
+        if (job.shot) {
+          await keeperBot
+            .sendPhoto(OWNER, Buffer.from(job.shot.b64, 'base64'), { caption: (job.shot.caption ?? job.project).slice(0, 1000) }, { filename: 'screen.jpg', contentType: 'image/jpeg' })
+            .catch(() => {});
+        }
+        await sendToOwner(`✅ Claude finished on ${job.project} (${job.id}).
+
+${(event.text ?? '(no summary)').slice(0, 3500)}`);
+      } else if (event.kind === 'error') {
+        await sendToOwner(`⚠️ Claude on ${job.project} (${job.id}) ${job.status === 'stopped' ? 'stopped' : 'failed'}: ${(event.text ?? '').slice(0, 800)}`);
+      }
+    })().catch((err) => console.error('[telegram] pc notify failed:', err));
+  });
+
+  keeperBot.on('callback_query', async (q) => {
+    const data = q.data ?? '';
+    if (String(q.from.id) !== OWNER || !data.startsWith('pc:')) {
+      await keeperBot.answerCallbackQuery(q.id).catch(() => {});
+      return;
+    }
+    const [, verdict, id] = data.split(':');
+    if (verdict !== 'y' && verdict !== 'n') {
+      await keeperBot.answerCallbackQuery(q.id).catch(() => {});
+      return;
+    }
+    const ok = decide(id ?? '', verdict === 'y');
+    await keeperBot
+      .answerCallbackQuery(q.id, { text: ok ? (verdict === 'y' ? 'Approved' : 'Denied') : 'Already answered or expired' })
+      .catch(() => {});
+  });
+}
+
 /** The KEEPER bot — Philip only, full agent. */
 function startKeeperBot(): void {
+  attachPcToTelegram();
+
   keeperBot.on('message', async (msg) => {
     const chatId = String(msg.chat.id);
     // Single-user agent: ignore anyone who isn't the owner.

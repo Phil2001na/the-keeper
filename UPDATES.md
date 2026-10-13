@@ -1,3 +1,7 @@
+## 2026-10-13 17:50
+- PC bridge: start Claude Code sessions on the PC from the phone. Relay `src/web/pcBridge.ts` (/pc/*, PC only calls out), Telegram Approve/Deny buttons + start/finish pings, steps and a finish screenshot into the web chat, start/finish logged to chat history (`pcNotify.ts`). Tools: start_claude_session / claude_sessions / stop_claude_session.
+- `pc-agent/`: Agent SDK runner on the PC (auto permission mode; `strict` projects such as EDU ask for everything), project allowlist in projects.json, ffmpeg screenshot (PowerShell capture is blocked by Defender), `install-autostart.ps1`. Tested end to end against a local relay: approve, deny, summary, screenshot. Not deployed yet.
+
 ## 2026-10-13 17:04
 - Merged the never-deployed local work (LOCK IN, files, Gmail, decision-queue draft) with the deployed main (remote browser, Gmail attachments, decision queue #9). Deployed decision queue kept; the superseded local draft tools/types removed. Typecheck clean; backup of the pre-merge work on branch backup/wip-2026-10-13. Not pushed yet.
 

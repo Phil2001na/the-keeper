@@ -48,6 +48,10 @@ export const bus = new KeeperBus();
 /** Human phrasing for what each tool means the agent is doing right now. */
 const STEP_LABELS: Record<string, string> = {
   list_domains: 'consulting my memory',
+  start_claude_session: 'starting Claude on the PC',
+  claude_sessions: 'checking the PC',
+  stop_claude_session: 'stopping a PC session',
+  pc_session: 'PC',
   recall_facts: 'consulting my memory',
   remember_fact: 'committing that to memory',
   forget_fact: 'letting go of a stale note',

@@ -20,6 +20,7 @@ import { drainMedia } from '../generate/queue.js';
 import { getFile, putFile, safeFilename } from './files.js';
 import { bus, type KeeperEvent } from './bus.js';
 import { handleRemoteBrowser } from './remoteBrowser.js';
+import { handlePcBridge } from './pcBridge.js';
 import {
   attachPushToBus,
   initPush,
@@ -43,6 +44,7 @@ import {
  *  POST /api/push/unsubscribe   drop it again
  *  POST /api/push/test          prove the whole chain works, end to end
  *  GET  /remote, /rb/*          remote browser for job-site logins (remoteBrowser.ts)
+ *  /pc/*                        Claude Code sessions on the PC (pcBridge.ts)
  *
  * Auth: a single shared token (KEEPER_WEB_TOKEN). The browser asks once and
  * keeps it in localStorage. EventSource can't set headers, so /events accepts
@@ -421,6 +423,10 @@ export function startWebServer(): void {
     // Remote browser (job-site logins from the phone). Has its own agent-token
     // gate for the PC side; viewer routes use the normal token.
     if ((path === '/remote' || path.startsWith('/rb/')) && handleRemoteBrowser(req, res, path, authed(req))) return;
+
+    // PC bridge (start Claude Code sessions on the PC from the phone). Agent
+    // routes use the PC agent token; viewer routes the normal token.
+    if (path.startsWith('/pc/') && handlePcBridge(req, res, path, authed(req))) return;
 
     // The shell and its assets: public, and never cached at the HTTP layer for
     // anything that changes on deploy. The service worker is what makes these

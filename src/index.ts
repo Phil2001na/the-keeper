@@ -3,6 +3,7 @@ import { ensureAnchor } from './agent/digest.js';
 import { startTelegram } from './telegram/bot.js';
 import { startScheduler } from './scheduler/dueCheck.js';
 import { startWebServer } from './web/server.js';
+import { attachPcToKeeper } from './web/pcNotify.js';
 
 /**
  * THE KEEPER — entry point.
@@ -22,6 +23,7 @@ function main() {
   startTelegram();
   startScheduler();
   startWebServer();
+  attachPcToKeeper();
 
   console.log('THE KEEPER — up. Reactive (Telegram + web) + proactive (scheduler) live.');
 }
