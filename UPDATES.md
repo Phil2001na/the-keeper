@@ -1,3 +1,7 @@
+## 2026-10-13 18:13
+- Deployed the merge + PC bridge to Railway (live, /pc/state answers, PC online with 53 projects). PC agent auto-starts at logon (scheduled task "Keeper PC Agent"); fixed a projects.json escaping bug that made it exit on boot.
+- Live test session (a25ee4cf) ran start → steps → summary → screenshot in ~45s; auto mode judged the scratch create/delete safe, so the Approve button is not yet exercised live.
+
 ## 2026-10-13 17:50
 - PC bridge: start Claude Code sessions on the PC from the phone. Relay `src/web/pcBridge.ts` (/pc/*, PC only calls out), Telegram Approve/Deny buttons + start/finish pings, steps and a finish screenshot into the web chat, start/finish logged to chat history (`pcNotify.ts`). Tools: start_claude_session / claude_sessions / stop_claude_session.
 - `pc-agent/`: Agent SDK runner on the PC (auto permission mode; `strict` projects such as EDU ask for everything), project allowlist in projects.json, ffmpeg screenshot (PowerShell capture is blocked by Defender), `install-autostart.ps1`. Tested end to end against a local relay: approve, deny, summary, screenshot. Not deployed yet.
