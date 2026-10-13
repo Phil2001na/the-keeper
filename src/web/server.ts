@@ -17,6 +17,7 @@ import {
   journal,
 } from '../db/repositories.js';
 import { drainMedia } from '../generate/queue.js';
+import { getFile, putFile, safeFilename } from './files.js';
 import { bus, type KeeperEvent } from './bus.js';
 import {
   attachPushToBus,
@@ -33,6 +34,7 @@ import {
  *  GET  /app.css /app.js /sw.js /manifest.webmanifest /icons/* /fonts/*
  *                    static assets — public, see the note on auth below
  *  GET  /events      SSE stream — live turn/step/message/card/media events
+ *  GET  /files/<id>  download a file the agent generated this session
  *  POST /send        send a message to the agent from the browser
  *  GET  /api/snapshot  the keeper's mind: sectors, facts, plans, journal, history
  *  GET  /api/push/key           the VAPID public key a browser needs to subscribe
@@ -244,14 +246,20 @@ async function handleSend(req: IncomingMessage, res: ServerResponse): Promise<vo
       images: images.length ? images : undefined,
       pdfs: pdfs.length ? pdfs : undefined,
     });
-    // Media generated this turn (images/PDFs) goes to the screen he's on.
+    // Media generated this turn (images / PDFs / .md files) goes to the screen
+    // he's on. It's parked in the file store and announced by URL, so the
+    // browser downloads it as a real HTTP response with a filename attached.
     for (const item of drainMedia()) {
-      const mime = item.kind === 'photo' ? 'image/png' : 'application/pdf';
+      const filename = item.kind === 'photo' ? 'image.png' : item.filename;
+      const mime = item.kind === 'photo' ? 'image/png' : item.mime;
+      const id = putFile(filename, mime, item.buffer);
       broadcast({
         type: 'media',
         kind: item.kind,
-        dataUrl: `data:${mime};base64,${item.buffer.toString('base64')}`,
+        url: `/files/${id}`,
         filename: item.kind === 'document' ? item.filename : undefined,
+        mime,
+        bytes: item.buffer.length,
       });
     }
     json(res, 200, { ok: true });
@@ -344,6 +352,28 @@ async function handleSubscribe(req: IncomingMessage, res: ServerResponse): Promi
   json(res, 200, { ok: true });
 }
 
+/**
+ * Serve a generated file as a download.
+ *
+ * Content-Disposition: attachment is what makes the browser save it under the
+ * agent's chosen name instead of trying to display it — which for text/markdown
+ * it otherwise would.
+ */
+function handleFile(id: string, res: ServerResponse): void {
+  const file = getFile(id);
+  if (!file) {
+    json(res, 404, { ok: false, error: 'that file has expired' });
+    return;
+  }
+  res.writeHead(200, {
+    'Content-Type': file.mime,
+    'Content-Length': String(file.buffer.length),
+    'Content-Disposition': `attachment; filename="${safeFilename(file.filename)}"`,
+    'Cache-Control': 'private, max-age=3600',
+  });
+  res.end(file.buffer);
+}
+
 function handleEvents(res: ServerResponse): void {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -408,6 +438,10 @@ export function startWebServer(): void {
     }
     if (req.method === 'GET' && path === '/events') {
       handleEvents(res);
+      return;
+    }
+    if (req.method === 'GET' && path.startsWith('/files/')) {
+      handleFile(decodeURIComponent(path.slice('/files/'.length)), res);
       return;
     }
     if (req.method === 'POST' && path === '/send') {

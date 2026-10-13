@@ -141,6 +141,88 @@ export interface StateCapture {
   dimensions: StateDimension[];
 }
 
+/** A bounded, committed work session — the LOCK IN protocol's whole state. */
+export interface LockInSession {
+  id: string;
+  started_at: string;
+  ends_at: string;
+  ended_at: string | null;
+  status: 'active' | 'completed' | 'aborted';
+  intent: string | null;
+  check_in_minutes: number;
+  last_check_in_at: string | null;
+  escalated: boolean;
+  drift_count: number;
+  score: number | null;
+  debrief: string | null;
+  created_at: string;
+}
+
+/** One thing he committed to landing this session. The debrief scores these. */
+export interface LockInTarget {
+  id: string;
+  session_id: string;
+  position: number;
+  title: string;
+  status: 'committed' | 'landed' | 'partial' | 'missed';
+  note: string | null;
+  created_at: string;
+}
+
+/** A ping, a refusal, a progress note — the texture the debrief quotes from. */
+export interface LockInEvent {
+  id: string;
+  session_id: string;
+  at: string;
+  kind: 'check_in' | 'escalation' | 'drift' | 'progress' | 'note';
+  detail: string;
+}
+
+/** A running session bundled with what it committed to. */
+export interface ActiveLockIn {
+  session: LockInSession;
+  targets: LockInTarget[];
+}
+
+export type DecisionStatus = 'open' | 'answered' | 'deferred' | 'needs_client' | 'needs_legal';
+
+/** One batch of a project's open questions — a UAT round, a design review. */
+export interface DecisionSet {
+  id: string;
+  slug: string;
+  project: string;
+  title: string;
+  context: string | null;
+  source_ref: string | null;
+  repo_owner: string | null;
+  repo_name: string | null;
+  export_path: string | null;
+  status: 'open' | 'complete' | 'archived';
+  created_at: string;
+  updated_at: string;
+}
+
+/** One question in a set. `recommendation` is the agent's steer; `answer` is his. */
+export interface Decision {
+  id: string;
+  set_id: string;
+  ref: string;
+  area: string | null;
+  question: string;
+  context: string | null;
+  options: Array<{ label: string; detail?: string }>;
+  recommendation: string | null;
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  status: DecisionStatus;
+  answer: string | null;
+  rationale: string | null;
+  blocked_by: string | null;
+  sort_order: number;
+  decided_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** One browser that agreed to be interrupted (Web Push, RFC 8291). */
 export interface PushSubscriptionRow {
   endpoint: string;
@@ -376,6 +458,21 @@ export const interactions = {
     if (error) fail('interactions.recent', error);
     // return oldest → newest for natural conversation order
     return (data as Interaction[]).reverse();
+  },
+
+  /**
+   * How many messages of a given role have landed since a moment. The lock-in
+   * clock uses it to tell "he answered the check-in" from "he went quiet",
+   * without dragging the messages themselves into memory.
+   */
+  async since(sinceIso: string, role: 'user' | 'agent'): Promise<number> {
+    const { count, error } = await db
+      .from('keeper_interactions')
+      .select('id', { count: 'exact', head: true })
+      .eq('role', role)
+      .gt('created_at', sinceIso);
+    if (error) fail('interactions.since', error);
+    return count ?? 0;
   },
 
   /**
@@ -1044,5 +1141,309 @@ export const stateCaptures = {
       .in('state_capture_id', rows.map((r) => r.id));
     if (dimError) fail('stateCaptures.range (dimensions)', dimError);
     return attachDimensions(rows as StateCapture[], dims as StateDimension[]);
+  },
+};
+
+// ─── Decisions ─────────────────────────────────────────
+// The decision_queue skill's store: a project's open questions, worked
+// through in conversation one at a time and exported as an implementation
+// brief. See migrations/009_decisions.sql.
+export const decisionSets = {
+  async get(slug: string): Promise<DecisionSet | null> {
+    const { data, error } = await db
+      .from('keeper_decision_sets')
+      .select('*')
+      .eq('slug', slug)
+      .maybeSingle();
+    if (error) fail('decisionSets.get', error);
+    return (data as DecisionSet) ?? null;
+  },
+
+  async list(includeArchived = false): Promise<DecisionSet[]> {
+    let q = db.from('keeper_decision_sets').select('*').order('created_at', { ascending: false });
+    if (!includeArchived) q = q.neq('status', 'archived');
+    const { data, error } = await q;
+    if (error) fail('decisionSets.list', error);
+    return data as DecisionSet[];
+  },
+
+  /** Create the set, or return the existing one — importing twice must not fork it. */
+  async upsert(input: {
+    slug: string;
+    project: string;
+    title: string;
+    context?: string | null;
+    source_ref?: string | null;
+    repo_owner?: string | null;
+    repo_name?: string | null;
+    export_path?: string | null;
+  }): Promise<DecisionSet> {
+    const { data, error } = await db
+      .from('keeper_decision_sets')
+      .upsert(
+        {
+          slug: input.slug,
+          project: input.project,
+          title: input.title,
+          context: input.context ?? null,
+          source_ref: input.source_ref ?? null,
+          repo_owner: input.repo_owner ?? null,
+          repo_name: input.repo_name ?? null,
+          export_path: input.export_path ?? null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'slug' }
+      )
+      .select('*')
+      .single();
+    if (error) fail('decisionSets.upsert', error);
+    return data as DecisionSet;
+  },
+
+  async setStatus(slug: string, status: DecisionSet['status']): Promise<void> {
+    const { error } = await db
+      .from('keeper_decision_sets')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('slug', slug);
+    if (error) fail('decisionSets.setStatus', error);
+  },
+};
+
+export const decisions = {
+  /** Add questions to a set. Re-importing the same ref updates it in place. */
+  async addMany(
+    setId: string,
+    items: Array<{
+      ref: string;
+      question: string;
+      area?: string | null;
+      context?: string | null;
+      options?: Array<{ label: string; detail?: string }>;
+      recommendation?: string | null;
+      priority?: Decision['priority'];
+      blocked_by?: string | null;
+      sort_order?: number;
+    }>
+  ): Promise<Decision[]> {
+    const { data, error } = await db
+      .from('keeper_decisions')
+      .upsert(
+        items.map((it, i) => ({
+          set_id: setId,
+          ref: it.ref,
+          question: it.question,
+          area: it.area ?? null,
+          context: it.context ?? null,
+          options: it.options ?? [],
+          recommendation: it.recommendation ?? null,
+          priority: it.priority ?? 'medium',
+          blocked_by: it.blocked_by ?? null,
+          sort_order: it.sort_order ?? i,
+          updated_at: new Date().toISOString(),
+        })),
+        { onConflict: 'set_id,ref' }
+      )
+      .select('*');
+    if (error) fail('decisions.addMany', error);
+    return data as Decision[];
+  },
+
+  async list(setId: string, status?: DecisionStatus): Promise<Decision[]> {
+    let q = db
+      .from('keeper_decisions')
+      .select('*')
+      .eq('set_id', setId)
+      .order('sort_order', { ascending: true });
+    if (status) q = q.eq('status', status);
+    const { data, error } = await q;
+    if (error) fail('decisions.list', error);
+    return data as Decision[];
+  },
+
+  /**
+   * Record what he decided. An answer implies 'answered' unless he routed it
+   * onward (needs_client / needs_legal) or parked it (deferred).
+   */
+  async answer(
+    setId: string,
+    ref: string,
+    input: { answer?: string | null; rationale?: string | null; status?: DecisionStatus }
+  ): Promise<Decision> {
+    const status = input.status ?? 'answered';
+    const { data, error } = await db
+      .from('keeper_decisions')
+      .update({
+        answer: input.answer ?? null,
+        rationale: input.rationale ?? null,
+        status,
+        decided_at: status === 'open' ? null : new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('set_id', setId)
+      .eq('ref', ref)
+      .select('*')
+      .single();
+    if (error) fail('decisions.answer', error);
+    return data as Decision;
+  },
+
+  /** How much is left — drives the nudge and the "shall we keep going" prompt. */
+  async counts(setId: string): Promise<Record<DecisionStatus, number>> {
+    const rows = await this.list(setId);
+    const out: Record<DecisionStatus, number> = {
+      open: 0,
+      answered: 0,
+      deferred: 0,
+      needs_client: 0,
+      needs_legal: 0,
+    };
+    for (const r of rows) out[r.status] = (out[r.status] ?? 0) + 1;
+    return out;
+  },
+};
+
+// ─── Lock-in sessions ──────────────────────────────────
+// The LOCK IN protocol (migrations/010_lock_in.sql). The Keeper has two
+// stances: CALM (the default — space, softness) and LOCK IN. There is no mode
+// flag anywhere: an active session IS lock-in, its absence IS calm. Keeping
+// the state in one row with an end time means a session cannot quietly become
+// the new normal — it expires whether or not anyone remembers it.
+export const lockIn = {
+  /** The running session with its targets, or null when he is in CALM. */
+  async active(): Promise<ActiveLockIn | null> {
+    const { data, error } = await db
+      .from('keeper_lockin_sessions')
+      .select('*')
+      .eq('status', 'active')
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) fail('lockIn.active', error);
+    if (!data) return null;
+    const session = data as LockInSession;
+    return { session, targets: await this.targets(session.id) };
+  },
+
+  async targets(sessionId: string): Promise<LockInTarget[]> {
+    const { data, error } = await db
+      .from('keeper_lockin_targets')
+      .select('*')
+      .eq('session_id', sessionId)
+      .order('position', { ascending: true });
+    if (error) fail('lockIn.targets', error);
+    return data as LockInTarget[];
+  },
+
+  /** Start a session. Refuses silently if one is already running — caller checks first. */
+  async start(input: {
+    ends_at: string;
+    intent?: string | null;
+    check_in_minutes?: number;
+    targets: string[];
+  }): Promise<ActiveLockIn> {
+    const { data, error } = await db
+      .from('keeper_lockin_sessions')
+      .insert({
+        ends_at: input.ends_at,
+        intent: input.intent ?? null,
+        check_in_minutes: input.check_in_minutes ?? 30,
+      })
+      .select('*')
+      .single();
+    if (error) fail('lockIn.start', error);
+    const session = data as LockInSession;
+    const rows = input.targets.map((title, i) => ({ session_id: session.id, position: i + 1, title }));
+    const { error: tErr } = await db.from('keeper_lockin_targets').insert(rows);
+    if (tErr) fail('lockIn.start targets', tErr);
+    return { session, targets: await this.targets(session.id) };
+  },
+
+  async patch(id: string, patch: Partial<LockInSession>): Promise<LockInSession | null> {
+    const { data, error } = await db
+      .from('keeper_lockin_sessions')
+      .update(patch)
+      .eq('id', id)
+      .select('*')
+      .maybeSingle();
+    if (error) fail('lockIn.patch', error);
+    return (data as LockInSession) ?? null;
+  },
+
+  /** Record that a ping went out; resets the escalation latch for the new silence. */
+  async markCheckIn(id: string, escalation: boolean): Promise<void> {
+    const patch = escalation
+      ? { escalated: true }
+      : { last_check_in_at: new Date().toISOString(), escalated: false };
+    await this.patch(id, patch as Partial<LockInSession>);
+  },
+
+  async setTargetStatus(
+    sessionId: string,
+    position: number,
+    status: LockInTarget['status'],
+    note?: string | null
+  ): Promise<LockInTarget | null> {
+    const patch: Record<string, unknown> = { status };
+    if (note !== undefined) patch.note = note;
+    const { data, error } = await db
+      .from('keeper_lockin_targets')
+      .update(patch)
+      .eq('session_id', sessionId)
+      .eq('position', position)
+      .select('*')
+      .maybeSingle();
+    if (error) fail('lockIn.setTargetStatus', error);
+    return (data as LockInTarget) ?? null;
+  },
+
+  async logEvent(sessionId: string, kind: LockInEvent['kind'], detail: string): Promise<void> {
+    const { error } = await db
+      .from('keeper_lockin_events')
+      .insert({ session_id: sessionId, kind, detail });
+    if (error) fail('lockIn.logEvent', error);
+  },
+
+  async events(sessionId: string): Promise<LockInEvent[]> {
+    const { data, error } = await db
+      .from('keeper_lockin_events')
+      .select('*')
+      .eq('session_id', sessionId)
+      .order('at', { ascending: true })
+      .limit(200);
+    if (error) fail('lockIn.events', error);
+    return data as LockInEvent[];
+  },
+
+  /** Close the session out. 'completed' if it ran its time, 'aborted' if cut short. */
+  async end(id: string, input: { score?: number | null; debrief?: string | null }): Promise<LockInSession | null> {
+    const now = new Date();
+    const current = await db.from('keeper_lockin_sessions').select('ends_at').eq('id', id).maybeSingle();
+    const endsAt = (current.data as { ends_at: string } | null)?.ends_at;
+    const status = endsAt && now >= new Date(endsAt) ? 'completed' : 'aborted';
+    return this.patch(id, {
+      status,
+      ended_at: now.toISOString(),
+      score: input.score ?? null,
+      debrief: input.debrief ?? null,
+    } as Partial<LockInSession>);
+  },
+
+  /** Recent finished sessions — the trend the debrief reads against. */
+  async recent(limit = 5): Promise<LockInSession[]> {
+    const { data, error } = await db
+      .from('keeper_lockin_sessions')
+      .select('*')
+      .neq('status', 'active')
+      .order('started_at', { ascending: false })
+      .limit(limit);
+    if (error) fail('lockIn.recent', error);
+    return data as LockInSession[];
+  },
+
+  /** Any session left running past its end — the scheduler debriefs these. */
+  async overdue(): Promise<ActiveLockIn | null> {
+    const live = await this.active();
+    if (!live) return null;
+    return new Date() >= new Date(live.session.ends_at) ? live : null;
   },
 };

@@ -16,6 +16,9 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import webpush from 'web-push';
+import { generatePdf } from '../src/generate/pdf.js';
+import { generateMarkdown } from '../src/generate/markdown.js';
+import { getFile, putFile, safeFilename } from '../src/web/files.js';
 
 const WEB = fileURLToPath(new URL('../src/web/', import.meta.url));
 const PORT = Number(process.env.UI_PORT ?? 5173);
@@ -140,6 +143,60 @@ async function fakeTurn(text: string): Promise<void> {
       ],
     },
   });
+  await sleep(600);
+
+  // A fenced block — the copy-button case, and the shape a generated prompt
+  // actually arrives in.
+  emit({
+    type: 'message',
+    role: 'agent',
+    content:
+      'and here\'s the prompt you asked for, ready to paste:\n\n' +
+      '```text\n' +
+      'You are a senior editor. Take the draft below and cut it by 30%\n' +
+      'without losing a single concrete detail. Keep the author\'s voice.\n' +
+      'Return only the edited draft.\n' +
+      '```\n\n' +
+      'i also wrote the week up properly — both formats below.',
+    ts: new Date().toISOString(),
+    source: 'inbound:web',
+  });
+
+  // Real generated files through the real file store, so downloads can be
+  // tested here rather than only in production.
+  const docBody = [
+    '# The week',
+    '',
+    'Sleep is the one metric **actually moving**. The gym number is flat.',
+    '',
+    '## What moved',
+    '- average sleep up to 6.4h (+0.8)',
+    '- best stretch since the surgery',
+    '',
+    '## Still open',
+    '1. Welwitch admission-letter fix',
+    '2. invoice follow-up, 21 days out',
+    '',
+    '> Not stuck — batching.',
+  ].join('\n');
+
+  const pdf = await generatePdf('The week', docBody);
+  if (pdf.ok && pdf.buffer) {
+    const id = putFile('the_week.pdf', 'application/pdf', pdf.buffer);
+    emit({
+      type: 'media', kind: 'document', url: `/files/${id}`,
+      filename: 'the_week.pdf', mime: 'application/pdf', bytes: pdf.buffer.length,
+    });
+  }
+  const md = generateMarkdown('The week', docBody);
+  if (md.ok && md.buffer) {
+    const id = putFile('the_week.md', 'text/markdown', md.buffer);
+    emit({
+      type: 'media', kind: 'document', url: `/files/${id}`,
+      filename: 'the_week.md', mime: 'text/markdown', bytes: md.buffer.length,
+    });
+  }
+
   await sleep(400);
   emit({ type: 'turn', phase: 'end', source: 'inbound' });
 }
@@ -233,6 +290,20 @@ const server = createServer(async (req, res) => {
     void fakeTurn(text || '(attachment)');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end('{"ok":true}');
+    return;
+  }
+
+  // Generated files, served exactly as src/web/server.ts serves them.
+  if (path.startsWith('/files/')) {
+    if (!authed) { res.writeHead(401).end(); return; }
+    const hit = getFile(decodeURIComponent(path.slice('/files/'.length)));
+    if (!hit) { res.writeHead(404).end('gone'); return; }
+    res.writeHead(200, {
+      'Content-Type': hit.mime,
+      'Content-Length': String(hit.buffer.length),
+      'Content-Disposition': 'attachment; filename="' + safeFilename(hit.filename) + '"',
+    });
+    res.end(hit.buffer);
     return;
   }
 

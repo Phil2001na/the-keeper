@@ -21,6 +21,22 @@ function requiredToken(name: string): string {
   return required(name).replace(/\s+/g, '');
 }
 
+/**
+ * Like `requiredToken`, but for optional credentials, and it also survives the
+ * classic hosting-dashboard paste slip: putting the whole `KEY=value` pair into
+ * the value box (or into the key box, so the injected line reads `KEY==value`),
+ * or wrapping the value in quotes. Each leaves a stray = or quote glued to the
+ * secret, and GitHub then answers every call with 401 Bad credentials.
+ */
+function cleanToken(name: string): string {
+  let v = (process.env[name] ?? '').replace(/\s+/g, '');
+  if (v.startsWith(name + '=')) v = v.slice(name.length + 1);
+  while (v.startsWith('=')) v = v.slice(1);
+  const q = v.slice(0, 1);
+  if ((q === '"' || q === "'") && v.length > 1 && v.endsWith(q)) v = v.slice(1, -1);
+  return v;
+}
+
 function optional(name: string, fallback: string): string {
   const v = process.env[name];
   return v && v.trim() !== '' ? v.trim() : fallback;
@@ -152,8 +168,8 @@ export const config = {
 
   // Optional: enables website deploy/management tools (GitHub Pages). If unset,
   // those tools stay dormant and the agent says it can't deploy yet.
-  githubToken: (process.env.GITHUB_TOKEN ?? '').replace(/\s+/g, ''),
-  githubUsername: (process.env.GITHUB_USERNAME ?? '').replace(/\s+/g, ''),
+  githubToken: cleanToken('GITHUB_TOKEN'),
+  githubUsername: cleanToken('GITHUB_USERNAME'),
 
   // Enables image generation via Imagen 4 — and, when MODEL_PROVIDER=gemini,
   // it's also the agent's brain key (Google's OpenAI-compatible endpoint).

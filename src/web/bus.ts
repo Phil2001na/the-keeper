@@ -26,7 +26,12 @@ export type KeeperEvent =
    */
   | { type: 'message'; role: 'user' | 'agent'; content: string; ts: string; source: string }
   | { type: 'card'; card: PresentCard }
-  | { type: 'media'; kind: 'photo' | 'document'; dataUrl: string; filename?: string };
+  /**
+   * `url` points at the served copy in src/web/files.ts rather than carrying a
+   * base64 data: URL inline — that is what makes a generated file actually
+   * downloadable in the installed PWA (iOS ignores `download` on data: URLs).
+   */
+  | { type: 'media'; kind: 'photo' | 'document'; url: string; filename?: string; mime?: string; bytes?: number };
 
 class KeeperBus extends EventEmitter {
   publish(event: KeeperEvent): void {
@@ -75,6 +80,7 @@ const STEP_LABELS: Record<string, string> = {
   delete_site: 'removing the site',
   generate_image: 'painting something',
   generate_pdf: 'drafting the document',
+  generate_markdown: 'writing the file',
   web_search: 'searching the web',
   fetch_url: 'opening a web page',
   present: 'arranging a view',

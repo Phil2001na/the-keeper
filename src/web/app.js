@@ -25,13 +25,88 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  /** markdown-lite for agent text: escape first, then bold / code / links */
+  /**
+   * A fenced block, rendered with its own copy button.
+   *
+   * This is the shape prompts arrive in — the thing most worth lifting out of
+   * the transcript whole, and the thing hardest to select by hand on a phone.
+   * The exact text is parked on the button so copying never depends on
+   * re-reading the DOM (which would hand back the highlighted, escaped copy).
+   */
+  function codeBlock(lang, code) {
+    return (
+      '<div class="codeblock">' +
+      '<div class="cb-bar">' +
+      '<span class="cb-lang">' + esc(lang || 'text') + '</span>' +
+      '<button type="button" class="copybtn" data-copy="' + esc(code) + '">' +
+      icon('copy', 13) + '<span class="cb-label">copy</span>' +
+      '</button>' +
+      '</div>' +
+      '<pre class="cb-code">' + esc(code) + '</pre>' +
+      '</div>'
+    );
+  }
+
+  /**
+   * markdown-lite for agent text: fenced blocks come out first (so their
+   * contents survive verbatim and don't get bold/link-mangled), then escape,
+   * then bold / inline code / links, then the blocks go back in.
+   */
   function fmt(s) {
-    let h = esc(s);
+    const blocks = [];
+    const src = String(s ?? '').replace(
+      // The newlines either side of a fence are eaten too: the bubble is
+      // white-space: pre-wrap, so leaving them would open a blank line above
+      // and below every block.
+      /\r?\n?[ \t]*```([A-Za-z0-9+#_-]*)[ \t]*\r?\n?([\s\S]*?)```[ \t]*\r?\n?/g,
+      (_m, lang, code) => {
+        blocks.push([lang, code.replace(/\r?\n$/, '')]);
+        return '\u0000CB' + (blocks.length - 1) + '\u0000';
+      },
+    );
+    let h = esc(src);
     h = h.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
     h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
     h = h.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+    h = h.replace(/\u0000CB(\d+)\u0000/g, (_m, i) => codeBlock(blocks[+i][0], blocks[+i][1]));
     return h;
+  }
+
+  /**
+   * Copy text, with a fallback for the times navigator.clipboard isn't there —
+   * it needs a secure context, and the UI is opened over plain http often
+   * enough (npm run ui, LAN testing) for the silent failure to matter.
+   */
+  function legacyCopy(str) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = str;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, str.length);
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async function copyText(str) {
+    if (!str) return false;
+    try {
+      // Raced, not just awaited: when the document isn't focused the clipboard
+      // promise can sit pending forever rather than rejecting, which would
+      // leave the button stuck with no feedback and the fallback never run.
+      const ok = await Promise.race([
+        navigator.clipboard.writeText(str).then(() => true),
+        new Promise((r) => setTimeout(() => r(null), 1200)),
+      ]);
+      if (ok) return true;
+    } catch { /* falls through */ }
+    return legacyCopy(str);
   }
 
   function el(tag, cls, html) {
@@ -387,7 +462,20 @@
       turn.appendChild(by);
     }
     turn.appendChild(el('div', 'msg ' + role, fmt(content)));
-    turn.appendChild(el('div', 'stamp', esc(timeStr(ts))));
+
+    const stamp = el('div', 'stamp');
+    stamp.appendChild(el('span', null, esc(timeStr(ts))));
+    // Whole-message copy, for the prompts and snippets that come back as prose
+    // rather than inside a fence. Reveals on hover; always there on touch.
+    if (role === 'agent' && String(content ?? '').trim()) {
+      const btn = el('button', 'copybtn msg-copy',
+        icon('copy', 12) + '<span class="cb-label">copy</span>');
+      btn.type = 'button';
+      btn.title = 'copy this message';
+      btn.dataset.copy = content;
+      stamp.appendChild(btn);
+    }
+    turn.appendChild(stamp);
 
     // The turn opens before the inbound message is logged, so a plain append
     // would leave "thinking…" sitting above the message that caused it. Your
@@ -577,20 +665,85 @@
     lastRole = null;
   }
 
+  /** Generated media arrives as a URL into the server's file store. */
+  function mediaSrc(m) {
+    const url = m.url || m.dataUrl || '';
+    // Anchors and <img> can't send an Authorization header, so the token rides
+    // as a query param — the same concession /events already makes.
+    if (url.startsWith('/') && token) return url + '?t=' + encodeURIComponent(token);
+    return url;
+  }
+
+  const humanSize = (n) =>
+    !n ? '' : n < 1024 ? n + ' B'
+      : n < 1024 * 1024 ? (n / 1024).toFixed(0) + ' KB'
+      : (n / (1024 * 1024)).toFixed(1) + ' MB';
+
   function addMedia(m) {
     if (m.kind === 'photo') {
       const img = el('img', 'media-img');
-      img.src = m.dataUrl;
+      img.src = mediaSrc(m);
       img.alt = 'generated image';
       append(img);
-    } else {
-      const a = el('a', 'media-doc', icon('doc', 17) + esc(m.filename || 'document.pdf'));
-      a.href = m.dataUrl;
-      a.download = m.filename || 'document.pdf';
-      append(a);
+      lastRole = null;
+      return;
     }
+
+    const name = m.filename || 'document';
+    const row = el('div', 'media-row');
+
+    const a = el('a', 'media-doc',
+      '<span class="md-icon">' + icon('doc', 17) + '</span>' +
+      '<span class="md-meta"><span class="md-name">' + esc(name) + '</span>' +
+      '<span class="md-sub">' + esc([humanSize(m.bytes), 'download'].filter(Boolean).join(' · ')) + '</span></span>' +
+      '<span class="md-dl">' + icon('download', 16) + '</span>');
+    a.href = mediaSrc(m);
+    a.download = name;
+    row.appendChild(a);
+
+    // Text-ish files are usually wanted in the clipboard, not on disk — a
+    // generated .md is as often pasted somewhere as it is saved. The contents
+    // are pulled in now rather than on click: Safari only honours a clipboard
+    // write in the same task as the gesture, so fetching first and copying
+    // after would work on desktop and silently fail on his phone.
+    if (/\.(md|markdown|txt|json|ya?ml|csv)$/i.test(name)) {
+      const btn = el('button', 'copybtn media-copy',
+        icon('copy', 13) + '<span class="cb-label">copy</span>');
+      btn.type = 'button';
+      btn.disabled = true;
+      row.appendChild(btn);
+      fetch(a.href)
+        .then((r) => (r.ok ? r.text() : Promise.reject(new Error('gone'))))
+        .then((text) => { btn.dataset.copy = text; btn.disabled = false; })
+        .catch(() => btn.remove());
+    }
+
+    append(row);
     lastRole = null;
   }
+
+  /**
+   * One delegated handler for every copy button in the stream — fenced blocks
+   * carry their text inline, generated files fetch theirs back from the store.
+   */
+  stream.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('.copybtn');
+    if (!btn) return;
+    e.preventDefault();
+
+    const flash = (ok) => {
+      const label = btn.querySelector('.cb-label');
+      const was = label ? label.textContent : '';
+      btn.classList.add(ok ? 'copied' : 'failed');
+      if (label) label.textContent = ok ? 'copied' : 'failed';
+      setTimeout(() => {
+        btn.classList.remove('copied', 'failed');
+        if (label) label.textContent = was;
+      }, 1400);
+    };
+
+    copyText(btn.dataset.copy || '').then(flash);
+  });
 
   // ══ events ════════════════════════════════════════════════════════════
   function handleEvent(ev) {

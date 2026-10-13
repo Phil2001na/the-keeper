@@ -2,7 +2,8 @@ import TelegramBot from 'node-telegram-bot-api';
 import { config, type GuestBot } from '../config.js';
 import { runAgent } from '../agent/orchestrator.js';
 import { localMidnightUtc, monthStartUtc } from '../agent/recurrence.js';
-import { digests, goals, observations, touchpoints, journal } from '../db/repositories.js';
+import { digests, goals, observations, touchpoints, journal, lockIn } from '../db/repositories.js';
+import { minutesLeft } from '../agent/lockIn.js';
 import { googleEnabled } from '../integrations/google.js';
 import { imageGenEnabled } from '../generate/image.js';
 import { transcribeFromUrl, transcriptionEnabled } from './transcribe.js';
@@ -97,7 +98,7 @@ export async function flushMediaToOwner(): Promise<void> {
       if (item.kind === 'photo') {
         await keeperBot.sendPhoto(OWNER, item.buffer, { caption: item.caption });
       } else {
-        await keeperBot.sendDocument(OWNER, item.buffer, { caption: item.caption }, { filename: item.filename, contentType: 'application/pdf' });
+        await keeperBot.sendDocument(OWNER, item.buffer, { caption: item.caption }, { filename: item.filename, contentType: item.mime });
       }
     } catch (err) {
       console.error('[telegram] failed to send media:', err);
@@ -208,6 +209,7 @@ async function sendStatus(): Promise<void> {
     observations.latestPerMetric().catch(() => []),
     digests.get('rolling').catch(() => null),
   ]);
+  const live = await lockIn.active().catch(() => null);
   const usd = (rows: { value: number | null }[]) =>
     rows.reduce((a, r) => a + Number(r.value ?? 0), 0);
   const next = pending[0];

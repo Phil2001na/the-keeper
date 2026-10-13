@@ -1,5 +1,5 @@
 import { config, isQuietHours, localHour } from '../config.js';
-import { touchpoints, type Touchpoint } from '../db/repositories.js';
+import { touchpoints, lockIn, interactions, type Touchpoint } from '../db/repositories.js';
 import { runAgent } from '../agent/orchestrator.js';
 import { nextOccurrence } from '../agent/recurrence.js';
 import { runNightlyReflection, reflectionPending } from '../agent/reflect.js';
@@ -23,6 +23,71 @@ async function renewRitual(tp: Touchpoint): Promise<void> {
     recurrence: tp.recurrence,
   });
   console.log(`[scheduler] ritual renewed (${tp.recurrence}) → next ${next.toISOString()}.`);
+}
+
+/**
+ * The lock-in protocol's clock. The model is never asked to remember a
+ * timer — the scheduler owns the rhythm, exactly like touchpoint firing:
+ *
+ *  - past ends_at            → debrief (once), then the session is closed in
+ *                              code whether or not the model called end_lock_in,
+ *                              so a failed turn can never leave him locked in;
+ *  - check-in interval due   → one direct "what landed" ping;
+ *  - half an interval after  → if he still hasn't said anything, ONE harder
+ *    an unanswered ping        ping. Never a third — that's nagging, not pressure.
+ *
+ * Quiet hours deliberately do not apply: he opted into a bounded session with
+ * a known end time, and a check-in that silently skips is worse than useless.
+ */
+async function lockInTick(): Promise<void> {
+  const live = await lockIn.active();
+  if (!live) return;
+  const { session } = live;
+  const now = Date.now();
+
+  const say = async (phase: 'check_in' | 'escalation' | 'debrief'): Promise<void> => {
+    const result = await runAgent({ kind: 'lockin', phase, live });
+    if (result.message) {
+      await sendToOwner(result.message);
+      await flushMediaToOwner();
+    }
+    console.log(`[lock-in] ${phase} fired for session ${session.id.slice(0, 8)}.`);
+  };
+
+  if (now >= new Date(session.ends_at).getTime()) {
+    try {
+      await say('debrief');
+    } finally {
+      // Belt and braces: end_lock_in normally does this from inside the turn,
+      // but a session must never survive its own end time.
+      const stillOpen = await lockIn.active();
+      if (stillOpen && stillOpen.session.id === session.id) {
+        await lockIn.end(session.id, { debrief: stillOpen.session.debrief ?? 'Auto-closed at end of session.' });
+        console.log(`[lock-in] session ${session.id.slice(0, 8)} auto-closed.`);
+      }
+    }
+    return;
+  }
+
+  const anchor = new Date(session.last_check_in_at ?? session.started_at).getTime();
+  const interval = session.check_in_minutes * 60_000;
+
+  if (now - anchor >= interval) {
+    await lockIn.markCheckIn(session.id, false);
+    await lockIn.logEvent(session.id, 'check_in', 'Timed check-in fired.');
+    await say('check_in');
+    return;
+  }
+
+  // One harder ping, half an interval into an unanswered check-in.
+  if (!session.escalated && session.last_check_in_at && now - anchor >= interval / 2) {
+    const answered = await interactions.since(session.last_check_in_at, 'user');
+    if (answered === 0) {
+      await lockIn.markCheckIn(session.id, true);
+      await lockIn.logEvent(session.id, 'escalation', 'No reply to the check-in — escalated.');
+      await say('escalation');
+    }
+  }
 }
 
 let running = false;
@@ -58,6 +123,14 @@ async function tick(): Promise<void> {
           // leave it pending so it retries next tick
         }
       }
+    }
+
+    // The lock-in clock runs before the reflection check and outside the quiet-hours
+    // gate above: a session he opted into owns its own time.
+    try {
+      await lockInTick();
+    } catch (err) {
+      console.error('[scheduler] lock-in tick failed:', err);
     }
 
     // Nightly reflection — private, never messages him, once per local day.

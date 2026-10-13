@@ -4,8 +4,10 @@ import {
   digests,
   interactions,
   touchpoints,
+  lockIn,
   type Interaction,
   type Touchpoint,
+  type ActiveLockIn,
 } from '../db/repositories.js';
 import { bus, stepLabel } from '../web/bus.js';
 import { maybeFold } from './digest.js';
@@ -13,6 +15,7 @@ import { createMessage, type LlmResponse } from './llm.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 import { toolDefinitions, presentToolDefinition, dispatchTool } from './tools.js';
 import { logUsage } from './usage.js';
+import { minutesLeft, renderLockIn } from './lockIn.js';
 
 const MAX_TOOL_ROUNDS = 12;
 
@@ -50,7 +53,13 @@ export type Trigger =
   | { kind: 'inbound'; text: string; images?: InboundImage[]; pdfs?: InboundPdf[]; surface?: Surface }
   | { kind: 'touchpoint'; touchpoint: Touchpoint }
   /** Private nightly reflection — never messages him, never logged as conversation. */
-  | { kind: 'reflection'; brief: string };
+  | { kind: 'reflection'; brief: string }
+  /**
+   * The lock-in protocol waking itself: a timed check-in, the harder second
+   * ping after silence, or the end-of-session debrief. Driven by the scheduler,
+   * not by the model remembering to look at a clock.
+   */
+  | { kind: 'lockin'; phase: 'check_in' | 'escalation' | 'debrief'; live: ActiveLockIn };
 
 /**
  * He just messaged us. If the last thing the agent did was a proactive
@@ -100,7 +109,12 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
  * system prompt — so the system prompt (and the history before this message)
  * stays byte-identical between turns and the prompt cache keeps hitting.
  */
-function contextLine(history: Interaction[], anchored: boolean, surface?: Surface): string {
+function contextLine(
+  history: Interaction[],
+  anchored: boolean,
+  surface: Surface | undefined,
+  live: ActiveLockIn | null
+): string {
   const now = `${localTimeString()} (${config.timezone}) · UTC ${new Date().toISOString().slice(0, 16)}Z`;
   const days = relativeDayContext();
   const oldest = history[0];
@@ -110,14 +124,23 @@ function contextLine(history: Interaction[], anchored: boolean, surface?: Surfac
   const beyond = anchored
     ? 'older: rolling digest (above) → journal → search_history'
     : 'older: search_history';
-  const quiet = isQuietHours()
+  const quiet = live
+    ? 'quiet hours do not apply — he opted into this session'
+    : isQuietHours()
     ? 'QUIET HOURS now — he wrote first, reply, but keep it low-key'
     : `quiet hours ${config.quietStart}:00–${config.quietEnd}:00`;
   const where = surface === 'web' ? ' · he is on the WEB UI (present tool available)' : '';
+  // The stance itself is in the system prompt; this is just the clock, which
+  // moves every turn and so must not sit inside a cached block.
+  const stance = live
+    ? ` · LOCK IN: ${minutesLeft(live.session.ends_at)} min left, open targets ${
+        live.targets.filter((t) => t.status === 'committed' || t.status === 'partial').map((t) => t.position).join('/') || 'none'
+      }`
+    : '';
   // Timestamps in view/archive are UTC; reckon "today/tomorrow" against the
   // local dates above, and never ask about something before its time has
   // actually passed in local time.
-  return `[context: ${now} · ${days} · ${span} · ${beyond} · ${quiet}${where}]`;
+  return `[context: ${now} · ${days} · ${span} · ${beyond} · ${quiet}${where}${stance}]`;
 }
 
 /**
@@ -164,7 +187,9 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
   // The digest (in the system prompt) carries what came before. No anchor yet
   // (first boot) → plain recency window until ensureAnchor lands.
   const dig = await digests.get('rolling').catch(() => null);
-  const system = await buildSystemPrompt(dig);
+  // A running lock-in session rewrites the Keeper's whole posture for this turn.
+  const live = await lockIn.active().catch(() => null);
+  const system = await buildSystemPrompt(dig, live);
   const history = dig?.covered_until
     ? await interactions.sinceAnchor(dig.covered_until, 200)
     : await interactions.recent(config.historyLimit);
@@ -177,7 +202,7 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
 
   // Time, window map, quiet hours, surface — all volatile, so they ride in the
   // trigger message (NOT the system prompt or the log) to keep caches stable.
-  const ctx = contextLine(history, Boolean(dig?.covered_until), surface);
+  const ctx = contextLine(history, Boolean(dig?.covered_until), surface, live);
 
   // The triggering turn.
   if (trigger.kind === 'inbound') {
@@ -220,6 +245,38 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
       `Decide whether reaching out right now genuinely serves him. If yes, write the message you'd text him. ` +
       `If it's not worth interrupting him, use stay_silent. Either way, update memory${tp.recurrence ? '' : ' and tend your next touchpoint'}.`;
     messages.push({ role: 'user', content: wake });
+  } else if (trigger.kind === 'lockin') {
+    const { live: sess, phase } = trigger;
+    const left = minutesLeft(sess.session.ends_at);
+    const head =
+      phase === 'debrief'
+        ? `[INTERNAL WAKE — not from Philip] The lock-in session has reached its end.
+` +
+          `${renderLockIn(sess)}
+
+` +
+          `Debrief it now. Read the session log above and lock_in_status if you need more. Score each target honestly against what he COMMITTED to — ` +
+          `not against how hard it felt, and not against what he did instead. Then call end_lock_in with the score and your read, and write him the debrief: ` +
+          `what landed, where the time actually went, one thing worth carrying into the next session. Blunt, then done — after end_lock_in you are back in CALM. ` +
+          `Never stay_silent on a debrief; he is owed the read.`
+        : phase === 'escalation'
+          ? `[INTERNAL WAKE — not from Philip] You checked in ${sess.session.last_check_in_at ? `at ${sess.session.last_check_in_at.slice(11, 16)} UTC` : 'a while ago'} and he has not answered.
+` +
+            `${renderLockIn(sess)}
+
+` +
+            `This is the HARDER second ping — one message, harder than the first. Name the silence, name the minutes gone out of the ${left > 0 ? `${left} remaining` : 'session'}, ` +
+            `and ask for one sentence on the open target. No new questions, no softening, no apology for pinging. Do not stay_silent — the silence is exactly what you are pushing on.`
+          : `[INTERNAL WAKE — not from Philip] Check-in due. ${left > 0 ? `${left} min left in the session.` : 'The session is at its end.'}
+` +
+            `${renderLockIn(sess)}
+
+` +
+            `Ask him one direct question: what has landed since the last check-in. Not "how's it going". Short and flat. ` +
+            `When he answers, log_lock_in_progress it and move any target that genuinely moved. Do not stay_silent — the check-in IS the protocol he asked for.`;
+    messages.push({ role: 'user', content: `${ctx}
+
+${head}` });
   } else {
     // Nightly reflection: the brief is internal and never logged — the journal
     // entry the agent writes IS the durable record of this run.
@@ -382,7 +439,12 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
   await interactions.log({
     role: 'agent',
     content: message,
-    trigger: trigger.kind === 'touchpoint' ? `touchpoint:${trigger.touchpoint.id}` : 'inbound',
+    trigger:
+      trigger.kind === 'touchpoint'
+        ? `touchpoint:${trigger.touchpoint.id}`
+        : trigger.kind === 'lockin'
+          ? `lockin:${trigger.phase}:${trigger.live.session.id}`
+          : 'inbound',
   });
   bus.publish({ type: 'message', role: 'agent', content: message, ts: new Date().toISOString(), source: eventSource });
   return { message, silent: false };

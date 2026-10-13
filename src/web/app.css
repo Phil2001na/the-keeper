@@ -1907,6 +1907,139 @@ input[type='range']::-moz-range-thumb {
   white-space: nowrap;
 }
 
+/* ── copy buttons ─────────────────────────────────────────────────────── */
+.copybtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface-1) 60%, transparent);
+  color: var(--text-faint);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color var(--d-2) var(--ease), border-color var(--d-2) var(--ease),
+    background var(--d-2) var(--ease), opacity var(--d-2) var(--ease);
+}
+.copybtn:hover {
+  color: var(--accent-hi);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.copybtn.copied {
+  color: var(--accent-hi);
+  border-color: var(--accent-line);
+}
+.copybtn.failed {
+  color: oklch(65% 0.17 25);
+  border-color: oklch(65% 0.17 25 / 0.5);
+}
+/* Held until the file's text is in hand — see addMedia. */
+.copybtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The per-message button is an affordance, not a control: it stays out of the
+   way until you go looking. Touch devices have no hover, so there it's always
+   faintly visible — hiding it entirely would make it undiscoverable. */
+.msg-copy {
+  opacity: 0;
+  padding: 2px 7px;
+}
+.turn:hover .msg-copy,
+.msg-copy:focus-visible,
+.msg-copy.copied,
+.msg-copy.failed {
+  opacity: 1;
+}
+@media (hover: none) {
+  .msg-copy { opacity: 0.55; }
+}
+
+.stamp {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── fenced code blocks ───────────────────────────────────────────────── */
+.codeblock {
+  display: block;
+  margin: 10px 0 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: oklch(22% 0.015 var(--h) / 0.55);
+  overflow: hidden;
+  /* The bubble is pre-wrap; the block manages its own whitespace. */
+  white-space: normal;
+}
+
+.cb-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 8px 5px 12px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in oklab, var(--surface-1) 45%, transparent);
+}
+
+.cb-lang {
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.cb-code {
+  margin: 0;
+  padding: 11px 13px;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  /* Wrap rather than scroll: a prompt is prose, and a horizontal scrollbar
+     inside a chat bubble on a phone is the worst of both. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ── generated file rows ──────────────────────────────────────────────── */
+.media-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 16px;
+}
+.media-row .media-doc { margin: 0; }
+
+.md-meta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+.md-name {
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+.md-sub {
+  font-size: 11px;
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+}
+.md-icon,
+.md-dl {
+  display: inline-flex;
+  flex: none;
+}
+.md-dl { color: var(--text-faint); }
+.media-doc:hover .md-dl { color: var(--accent-hi); }
+
 /* ══ responsive ═════════════════════════════════════════════════════════ */
 @media (max-width: 520px) {
   .msg { max-width: 88%; }

@@ -171,6 +171,54 @@ export async function deleteSiteFor(creds: GithubCreds, repo: string): Promise<D
   }
 }
 
+/**
+ * Commit one text file into an existing repo (create or update in place).
+ * This is the decision_queue's handoff path: the answered brief lands next to
+ * the document that raised the questions, so a coding agent picks it up from
+ * the repo alone and needs none of Keeper's credentials.
+ */
+export async function commitFileFor(
+  creds: GithubCreds,
+  args: { owner: string; repo: string; path: string; content: string; message: string; branch?: string }
+): Promise<DeployResult & { path?: string; commit?: string }> {
+  const octokit = clientFor(creds);
+  try {
+    // An update needs the blob sha of what's already there; a create must omit it.
+    let sha: string | undefined;
+    try {
+      const existing = await octokit.repos.getContent({
+        owner: args.owner,
+        repo: args.repo,
+        path: args.path,
+        ...(args.branch ? { ref: args.branch } : {}),
+      });
+      if (!Array.isArray(existing.data) && 'sha' in existing.data) sha = existing.data.sha;
+    } catch (e) {
+      if ((e as { status?: number }).status !== 404) throw e;
+    }
+
+    const res = await octokit.repos.createOrUpdateFileContents({
+      owner: args.owner,
+      repo: args.repo,
+      path: args.path,
+      message: args.message,
+      content: Buffer.from(args.content, 'utf8').toString('base64'),
+      ...(sha ? { sha } : {}),
+      ...(args.branch ? { branch: args.branch } : {}),
+    });
+
+    return {
+      ok: true,
+      repo: args.repo,
+      path: args.path,
+      commit: res.data.commit.sha ?? undefined,
+      url: res.data.content?.html_url ?? undefined,
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
 // ─── Keeper wrappers (bind Philip's creds; used by the agent tool layer) ─────
 
 /** Deploy the most recently uploaded HTML file (Keeper agent path). */
@@ -185,3 +233,11 @@ export const listSites = () => listSitesFor(keeperCreds);
 export const checkSiteStatus = (repo: string) => checkSiteStatusFor(keeperCreds, repo);
 export const renameSite = (from: string, to: string) => renameSiteFor(keeperCreds, from, to);
 export const deleteSite = (repo: string) => deleteSiteFor(keeperCreds, repo);
+export const commitFile = (args: {
+  owner: string;
+  repo: string;
+  path: string;
+  content: string;
+  message: string;
+  branch?: string;
+}) => commitFileFor(keeperCreds, args);

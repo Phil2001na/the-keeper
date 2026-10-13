@@ -1,15 +1,19 @@
 /**
- * Side-channel between the agent tool layer and the Telegram bot.
+ * Side-channel between the agent tool layer and whichever surface is listening.
  *
- * When the agent calls generate_image or generate_pdf, the tool generates the
- * media and enqueues it here. After runAgent() returns, the bot drains the
- * queue and sends each item as a Telegram photo/document — cleanly separated
- * from the text reply flow.
+ * When the agent calls generate_image / generate_pdf / generate_markdown, the
+ * tool generates the file and enqueues it here. After runAgent() returns, the
+ * Telegram bot or the web server drains the queue and delivers each item —
+ * cleanly separated from the text reply flow.
+ *
+ * Documents carry their own mime type: it decides the Content-Type Telegram
+ * attaches and the one the browser downloads with, and a .md served as
+ * application/pdf opens as garbage.
  */
 
 export type QueuedMedia =
   | { kind: 'photo'; buffer: Buffer; caption?: string }
-  | { kind: 'document'; buffer: Buffer; filename: string; caption?: string };
+  | { kind: 'document'; buffer: Buffer; filename: string; mime: string; caption?: string };
 
 const queue: QueuedMedia[] = [];
 

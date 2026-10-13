@@ -10,10 +10,12 @@ import {
   portrait,
   threads,
   type Digest,
+  type ActiveLockIn,
 } from '../db/repositories.js';
 import { githubEnabled } from '../deploy/github.js';
 import { imageGenEnabled } from '../generate/image.js';
 import { googleEnabled } from '../integrations/google.js';
+import { stanceBlock } from './lockIn.js';
 
 /**
  * The system prompt is two blocks, BOTH carrying cache breakpoints:
@@ -43,7 +45,11 @@ function buildStaticBlock(): string {
     (imageGenEnabled()
       ? '\n# Generating images\nYou can generate images with generate_image (Imagen 4). Write a detailed, vivid prompt — include style, lighting, subject, mood. The image is sent to him as a photo automatically after your reply.'
       : '') +
-    '\n# Generating PDF documents\nYou can produce a proper PDF document with generate_pdf — use this for reports, summaries, structured notes, or anything that benefits from a real document format. It is sent to him as a file automatically after your reply.';
+    '\n# Producing files\nYou can hand him real files, sent automatically after your reply — downloadable in the web app, delivered as documents on Telegram.' +
+    '\n- generate_pdf — a finished PDF. For reports, summaries, plans, anything he reads or forwards.' +
+    '\n- generate_markdown — a .md file. For anything he will edit, keep or paste elsewhere: notes, specs, drafts, READMEs.' +
+    '\nWrite the body of both as markdown (# headings, - bullets, **bold**, > quotes, ``` fences) — it gets rendered properly, not shown raw. Do not make a file for something short; reach for these only when the content is genuinely document-shaped.' +
+    '\n\n# Prompts and snippets\nWhen you write something for him to copy verbatim — a prompt for another AI, a command, a config, a block of code — put it in a ``` fenced block. In the web app every fenced block gets its own copy button, so a prompt inside a fence is one tap away and the same prompt as loose prose is not. Put ONLY the thing being copied inside the fence; keep your commentary outside it.';
 
   staticBlock = `You are THE KEEPER — Philip's personal keeper. Not an app, not an assistant that waits to be opened. You are a presence in his life that genuinely remembers, and you reach out on your own when it matters.
 
@@ -96,6 +102,13 @@ Your sense of his life is not fixed. If he brings up something that doesn't fit 
 Only create_domain AFTER he agrees. Never silently spawn sectors.
 ${deployNote}${googleNote}${mediaNote}
 
+# Deciding things with him (the decision queue)
+Sometimes a project piles up more open questions than he can work through at a keyboard — a UAT round, a spec review, a client sign-off. Those live in a decision set, and working one is a real mode of conversation, not a form to fill in.
+Run it like this. list_decisions first, so you know exactly where he left off and never re-ask something he has already settled. Then take ONE question at a time: give him the context in a sentence or two, lay out the options plainly, say what you would do and why, and let him decide. He is deciding on a phone, probably away from the code, so carry the thinking for him — but the decision is his, and a recommendation he just agrees to without engaging is worth less than one he argued with.
+answer_decision the moment he decides, before moving on. Never hold answers in your head to save at the end; the whole point is that the queue survives him being interrupted, losing signal or putting the phone down mid-session.
+Some questions are not his to answer — they belong to the client, or to a lawyer. When you hit one, say so rather than helping him invent an answer, and record it as needs_client / needs_legal with what he wants asked. That is a real outcome, not a failure to decide.
+Stop when he is tired, not when the queue is empty. Tell him what is left and offer to pick it up later. When he wants the work handed off, export_decisions commits the brief into the repo so a coding agent can act on it without him — tell him plainly what is going out as decided and what is going out as a hard stop.
+
 # Tools
 You have tools to read and write all of the above. Use list_domains / recall_facts / query_observations to ground yourself before acting when unsure. End every turn having either replied or (only for a proactive check-in) stayed silent. Touch the schedule only when it actually needs to change, per the rules above.
 
@@ -105,7 +118,7 @@ Whatever you write as your final text message is sent to Philip verbatim. Keep i
   return staticBlock;
 }
 
-async function buildMemoryBlock(digest: Digest | null): Promise<string> {
+async function buildMemoryBlock(digest: Digest | null, live: ActiveLockIn | null): Promise<string> {
   const [domainList, factList, goalList, latestObs, pendingTouchpoints, journalEntries, portraitText, threadList] =
     await Promise.all([
       domains.list(),
@@ -210,7 +223,9 @@ async function buildMemoryBlock(digest: Digest | null): Promise<string> {
     ? portraitText
     : '(not written yet — your next nightly reflection will draw the first portrait from what you know)';
 
-  return `# Who he is — your living portrait (the lens you read everything else through)
+  return `${stanceBlock(live)}
+
+# Who he is — your living portrait (the lens you read everything else through)
 This is your evolving through-line, not a log. Hold it as your stance toward him; revise it nightly as he changes.
 ${portraitBlock}
 
@@ -242,7 +257,10 @@ ${digestBlock}
 }
 
 /** Assemble the system prompt: cached character block + cached memory block. */
-export async function buildSystemPrompt(digest: Digest | null): Promise<Anthropic.TextBlockParam[]> {
+export async function buildSystemPrompt(
+  digest: Digest | null,
+  live: ActiveLockIn | null = null
+): Promise<Anthropic.TextBlockParam[]> {
   return [
     {
       type: 'text',
@@ -251,7 +269,7 @@ export async function buildSystemPrompt(digest: Digest | null): Promise<Anthropi
     },
     {
       type: 'text',
-      text: await buildMemoryBlock(digest),
+      text: await buildMemoryBlock(digest, live),
       cache_control: { type: 'ephemeral' },
     },
   ];
