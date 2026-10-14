@@ -2086,7 +2086,7 @@ export async function dispatchTool(
       return {
         output:
           `Queued session ${r.job.id} on ${r.job.project}. He'll get a Telegram ping when it starts, Approve/Deny buttons for anything risky, ` +
-          'and the summary when it finishes. Tell him it is on its way — do not claim it has done anything yet.',
+          'and a message however it ends: the summary, a failure, or a note that the PC never picked it up. Tell him it is on its way — do not claim it has done anything yet.',
       };
     }
     case 'claude_sessions': {

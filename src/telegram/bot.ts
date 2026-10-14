@@ -16,6 +16,7 @@ import {
 import { extractPdfText, extractPdfTextFromBuffer } from './parsePdf.js';
 import { drainMedia } from '../generate/queue.js';
 import { pcEvents, decide, type PcEvent } from '../web/pcBridge.js';
+import { sendPush } from '../web/push.js';
 
 /**
  * Telegram transport. Long-polling for local dev — no public URL needed.
@@ -239,6 +240,23 @@ async function sendStatus(): Promise<void> {
 function attachPcToTelegram(): void {
   const approvalMsgs = new Map<string, number>(); // approval id -> Telegram message id
 
+  // How a session ended is the one message that must land: a Telegram blip
+  // here is exactly "it never got back to me". Retry, then fall back to a web
+  // push so the ending still reaches his phone (it is in the chat log either way).
+  const sendEnding = async (text: string): Promise<void> => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await sendToOwner(text);
+        return;
+      } catch (err) {
+        console.error(`[telegram] pc ending not delivered (attempt ${attempt}/4):`, (err as Error).message);
+        if (attempt >= 4) break;
+        await sleep(attempt * 5000);
+      }
+    }
+    await sendPush({ title: 'keeper', body: text, url: '/' }).catch((err) => console.error('[telegram] pc ending push fallback failed:', err));
+  };
+
   pcEvents.on('event', (e: PcEvent) => {
     void (async () => {
       if (e.type === 'approval') {
@@ -278,11 +296,11 @@ ${e.approval.summary}`.slice(0, TG_LIMIT),
             .sendPhoto(OWNER, Buffer.from(job.shot.b64, 'base64'), { caption: (job.shot.caption ?? job.project).slice(0, 1000) }, { filename: 'screen.jpg', contentType: 'image/jpeg' })
             .catch(() => {});
         }
-        await sendToOwner(`✅ Claude finished on ${job.project} (${job.id}).
+        await sendEnding(`✅ Claude finished on ${job.project} (${job.id}).
 
 ${(event.text ?? '(no summary)').slice(0, 3500)}`);
       } else if (event.kind === 'error') {
-        await sendToOwner(`⚠️ Claude on ${job.project} (${job.id}) ${job.status === 'stopped' ? 'stopped' : 'failed'}: ${(event.text ?? '').slice(0, 800)}`);
+        await sendEnding(`⚠️ Claude on ${job.project} (${job.id}) ${job.status === 'stopped' ? 'stopped' : 'failed'}: ${(event.text ?? '').slice(0, 800)}`);
       }
     })().catch((err) => console.error('[telegram] pc notify failed:', err));
   });

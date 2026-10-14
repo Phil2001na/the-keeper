@@ -4,6 +4,8 @@ import { createServer } from 'node:http';
 import { handlePcBridge, pcEvents, decide, startJob, type PcEvent } from '../src/web/pcBridge.js';
 
 let n = 0;
+let endings = 0;
+const WANT = Number(process.env.PC_HARNESS_ENDINGS ?? 1);
 pcEvents.on('event', (e: PcEvent) => {
   if (e.type === 'approval') {
     n++;
@@ -13,7 +15,8 @@ pcEvents.on('event', (e: PcEvent) => {
   } else if (e.type === 'job') {
     const t = e.event.kind === 'screenshot' ? `[${e.job.shot?.b64.length} b64 chars]` : (e.event.text ?? '').replace(/\n/g, ' | ').slice(0, 300);
     console.log(`EVENT ${e.event.kind} [${e.job.status}]:`, t);
-    if (e.event.kind === 'done' || e.event.kind === 'error') setTimeout(() => process.exit(0), 500);
+    // PC_HARNESS_ENDINGS=2 waits for a second ending, e.g. an interrupted session reported at agent start.
+    if ((e.event.kind === 'done' || e.event.kind === 'error') && ++endings >= WANT) setTimeout(() => process.exit(0), 500);
   }
 });
 createServer((req, res) => {

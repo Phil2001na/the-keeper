@@ -9,7 +9,7 @@
 // which are "strict"). Token: REMOTE_BROWSER_TOKEN from the Keeper's .env.
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { readFileSync, readdirSync, statSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, appendFileSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -22,18 +22,28 @@ const BASE = (process.env.KEEPER_URL || ENV.KEEPER_URL || 'https://the-keeper-pr
 const TOKEN = (process.env.REMOTE_BROWSER_TOKEN || ENV.REMOTE_BROWSER_TOKEN || '').replace(/\s+/g, '');
 const CONFIG = JSON.parse(readFileSync(process.env.PC_AGENT_CONFIG || join(HERE, 'projects.json'), 'utf-8'));
 const MAX_PARALLEL = CONFIG.maxParallel ?? 2;
-const LOG_DIR = join(HERE, 'logs');
-mkdirSync(LOG_DIR, { recursive: true });
+/** One session may run this long, then it is stopped and reported as unfinished. */
+const MAX_MINUTES = CONFIG.maxMinutes ?? 120;
+// PC_AGENT_STATE keeps a test run (scripts/pc-harness.ts) out of the live agent's outbox.
+const LOG_DIR = process.env.PC_AGENT_STATE || join(HERE, 'logs');
+/** How each session ended, kept on disk until the relay has taken it. */
+const OUTBOX_DIR = join(LOG_DIR, 'outbox');
+/** What is running right now, so a reboot mid-session is reported instead of forgotten. */
+const RUNNING_FILE = join(LOG_DIR, 'running.json');
+const OUTBOX_MAX_AGE_MS = 24 * 60 * 60_000;
+mkdirSync(OUTBOX_DIR, { recursive: true });
 
 if (!TOKEN) {
   console.error('REMOTE_BROWSER_TOKEN missing (Keeper .env). Exiting.');
   process.exit(1);
 }
 
-/** jobId -> { abort: AbortController, project } */
+/** jobId -> { abort: AbortController, project, task, lastStep, stopReason } */
 const running = new Map();
-/** approvalId -> resolve(decision) */
+/** approvalId -> { resolve(decision), jobId, tool, text } */
 const pendingApprovals = new Map();
+/** Jobs that already ended here: the relay hands a job out again if it never saw it start. */
+const finished = new Set();
 
 function readEnv(path) {
   const out = {};
@@ -77,8 +87,71 @@ async function api(path, body) {
   return res.json();
 }
 
+// Progress events are best effort: a lost step chip costs nothing.
 const event = (jobId, kind, extra = {}) =>
-  api('/pc/agent/event', { jobId, kind, ...extra }).catch((e) => log('event failed', kind, e.message));
+  api('/pc/agent/event', { jobId, kind, eid: randomUUID(), ...extra }).catch((e) => log('event failed', kind, e.message));
+
+// How a session ended is not best effort. It is written to disk first and sent
+// until the relay takes it, so a redeploy, a dropped connection or this agent
+// restarting cannot turn a finished session into silence. `eid` lets the relay
+// drop a repeat; project and task let a relay that restarted still name it.
+function ending(job, kind, extra = {}) {
+  const body = { jobId: job.id, kind, eid: randomUUID(), project: job.project, task: job.task, ...extra };
+  try { writeFileSync(join(OUTBOX_DIR, `${Date.now()}-${body.eid}.json`), JSON.stringify(body)); } catch (e) { log('outbox write failed:', e.message); }
+  return flushOutbox();
+}
+
+let flushing = false;
+let flushAgain = false;
+const complained = new Set();
+async function flushOutbox() {
+  if (flushing) { flushAgain = true; return; }
+  flushing = true;
+  try {
+    flushAgain = false;
+    for (const name of readdirSync(OUTBOX_DIR).filter((n) => n.endsWith('.json')).sort()) {
+      const file = join(OUTBOX_DIR, name);
+      let body;
+      try { body = JSON.parse(readFileSync(file, 'utf-8')); } catch { try { unlinkSync(file); } catch { /* gone */ } continue; }
+      try {
+        await api('/pc/agent/event', body);
+        unlinkSync(file);
+        log('delivered', body.kind, body.jobId);
+      } catch (e) {
+        if (Date.now() - statSync(file).mtimeMs > OUTBOX_MAX_AGE_MS) {
+          log('giving up on', body.kind, body.jobId, 'after 24h:', e.message);
+          try { unlinkSync(file); } catch { /* gone */ }
+        } else if (!complained.has(name)) {
+          complained.add(name);
+          log('ending not delivered yet, will keep trying:', body.kind, body.jobId, e.message);
+        }
+      }
+    }
+  } finally {
+    flushing = false;
+  }
+  if (flushAgain) return flushOutbox();
+}
+
+function saveRunning() {
+  const list = [...running.entries()].map(([id, r]) => ({ id, project: r.project, task: r.task, lastStep: r.lastStep }));
+  try { writeFileSync(RUNNING_FILE, JSON.stringify(list)); } catch { /* best effort */ }
+}
+
+// Sessions that were running when this process last died (reboot, crash, the
+// PC lost power) can no longer finish. Say so instead of leaving him waiting.
+function reportInterrupted() {
+  let list = [];
+  try { list = JSON.parse(readFileSync(RUNNING_FILE, 'utf-8')); } catch { return; }
+  for (const j of Array.isArray(list) ? list : []) {
+    if (!j?.id || !j.project) continue;
+    log('interrupted', j.id, j.project);
+    void ending(j, 'error', {
+      text: `The PC restarted, or the PC agent stopped, while this session was running, so it did not finish.${j.lastStep ? ` Last thing it was doing: ${j.lastStep}.` : ''} Ask again to re-run it.`,
+    });
+  }
+  saveRunning();
+}
 
 // ─── What Philip sees on his phone when Claude asks ─────────────────────────
 
@@ -124,8 +197,8 @@ function screenshotB64() {
       FFMPEG,
       ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'gdigrab', '-i', 'desktop', '-frames:v', '1', '-vf', "scale='min(1280,iw)':-2", '-q:v', '5', out],
       { timeout: 20_000, windowsHide: true },
-      (err) => {
-        if (err) { log('screenshot failed:', String(err.message).split('\n')[0]); return resolve(null); }
+      (err, _stdout, stderr) => {
+        if (err) { log('screenshot failed:', String(stderr || err.message).trim().split('\n').slice(-2).join(' | ').slice(0, 300)); return resolve(null); }
         try { resolve(readFileSync(out).toString('base64')); } catch { resolve(null); }
       }
     );
@@ -142,19 +215,28 @@ const BRIEF = `You were started from Philip's phone through his Keeper. He is NO
 
 async function runJob(job) {
   const proj = projects()[job.project];
-  if (!proj) return event(job.id, 'error', { text: `Project "${job.project}" is not allowed on this PC.` });
+  if (!proj) return ending(job, 'error', { text: `Project "${job.project}" is not allowed on this PC.` });
 
   const abort = new AbortController();
-  running.set(job.id, { abort, project: job.project });
+  const me = { abort, project: job.project, task: job.task, lastStep: '', stopReason: '' };
+  running.set(job.id, me);
+  saveRunning();
   log('start', job.id, job.project, JSON.stringify(job.task.slice(0, 120)));
+  const limit = setTimeout(() => {
+    me.stopReason = 'timeout';
+    abort.abort();
+  }, MAX_MINUTES * 60_000);
 
   const canUseTool = async (toolName, input, { signal }) => {
     const approvalId = randomUUID();
+    const text = describe(toolName, input);
     const decision = new Promise((resolve) => {
-      pendingApprovals.set(approvalId, resolve);
+      // Kept with its wording: every poll lists what is still waiting on him,
+      // so a relay that restarted asks again instead of leaving this hanging.
+      pendingApprovals.set(approvalId, { resolve, jobId: job.id, tool: toolName, text });
       signal.addEventListener('abort', () => resolve({ allow: false, note: 'aborted' }), { once: true });
     });
-    await event(job.id, 'approval', { approvalId, tool: toolName, text: describe(toolName, input) });
+    await event(job.id, 'approval', { approvalId, tool: toolName, text });
     const d = await decision;
     pendingApprovals.delete(approvalId);
     log('approval', job.id, toolName, d.allow ? 'ALLOW' : 'DENY');
@@ -185,23 +267,42 @@ async function runJob(job) {
       } else if (m.type === 'assistant') {
         for (const b of m.message?.content ?? []) {
           if (b.type === 'text' && b.text?.trim()) await event(job.id, 'text', { text: b.text.trim().slice(0, 2000) });
-          if (b.type === 'tool_use') await event(job.id, 'step', { text: stepText(b) });
+          if (b.type === 'tool_use') {
+            me.lastStep = stepText(b);
+            saveRunning();
+            await event(job.id, 'step', { text: me.lastStep });
+          }
         }
       } else if (m.type === 'result') {
         result = m.subtype === 'success' ? (m.result ?? '') : `Ended: ${m.subtype}${m.errors?.length ? ` — ${m.errors.join('; ')}` : ''}`;
         cost = m.total_cost_usd;
       }
     }
-    const shot = CONFIG.screenshotOnFinish === false ? null : await screenshotB64();
-    if (shot) await event(job.id, 'screenshot', { b64: shot, text: `${job.project}: screen when it finished` });
-    await event(job.id, 'done', { text: result || '(finished with no summary)', costUsd: cost });
+    // The SDK can end the stream quietly when aborted; that is a stop, not a finish.
+    if (abort.signal.aborted) throw new Error('aborted');
+    let note = '';
+    if (CONFIG.screenshotOnFinish !== false) {
+      const shot = await screenshotB64();
+      if (shot) await event(job.id, 'screenshot', { b64: shot, text: `${job.project}: screen when it finished` });
+      else note = '\n\n(No screenshot with this one: the screen could not be captured, which usually means the PC is locked or its display is off.)';
+    }
+    await ending(job, 'done', { text: (result || '(finished with no summary)') + note, costUsd: cost });
     log('done', job.id);
   } catch (e) {
     const stopped = abort.signal.aborted;
-    log(stopped ? 'stopped' : 'failed', job.id, e?.message ?? e);
-    await event(job.id, 'error', { text: stopped ? 'Stopped from the phone.' : String(e?.message ?? e).slice(0, 800), stopped });
+    log(stopped ? `stopped${me.stopReason ? ` (${me.stopReason})` : ''}` : 'failed', job.id, e?.message ?? e);
+    const text = !stopped
+      ? String(e?.message ?? e).slice(0, 800)
+      : me.stopReason === 'timeout'
+        ? `It ran past the ${MAX_MINUTES}-minute limit and was stopped unfinished.${me.lastStep ? ` Last thing it was doing: ${me.lastStep}.` : ''}`
+        : 'Stopped from the phone.';
+    await ending(job, 'error', { text, stopped });
   } finally {
+    clearTimeout(limit);
+    for (const [id, p] of pendingApprovals) if (p.jobId === job.id) pendingApprovals.delete(id);
     running.delete(job.id);
+    finished.add(job.id);
+    saveRunning();
   }
 }
 
@@ -209,16 +310,31 @@ async function runJob(job) {
 
 async function loop() {
   log(`PC agent up → ${BASE} | projects: ${Object.keys(projects()).length} | parallel: ${MAX_PARALLEL}`);
+  reportInterrupted();
+  void flushOutbox();
+  setInterval(() => void flushOutbox(), 30_000);
   let backoff = 1000;
   for (;;) {
     try {
-      const r = await api('/pc/agent/poll', { projects: Object.keys(projects()).sort(), running: [...running.keys()] });
+      // Each running session goes up with its project, task and open approvals,
+      // so a relay that lost its memory (Railway restart) takes them back.
+      const r = await api('/pc/agent/poll', {
+        projects: Object.keys(projects()).sort(),
+        running: [...running.entries()].map(([id, j]) => ({
+          id,
+          project: j.project,
+          task: j.task,
+          approvals: [...pendingApprovals.entries()].filter(([, p]) => p.jobId === id).map(([approvalId, p]) => ({ approvalId, tool: p.tool, text: p.text })),
+        })),
+      });
       backoff = 1000;
-      for (const d of r.decisions ?? []) pendingApprovals.get(d.id)?.({ allow: d.allow, note: d.note });
+      for (const d of r.decisions ?? []) pendingApprovals.get(d.id)?.resolve({ allow: d.allow, note: d.note });
       for (const id of r.stops ?? []) running.get(id)?.abort.abort();
       for (const job of r.jobs ?? []) {
+        if (running.has(job.id) || finished.has(job.id)) continue; // handed out twice
         if (running.size >= MAX_PARALLEL) {
-          await event(job.id, 'error', { text: `PC is already running ${running.size} sessions — try again when one finishes.` });
+          finished.add(job.id);
+          await ending(job, 'error', { text: `PC is already running ${running.size} sessions — try again when one finishes.` });
           continue;
         }
         void runJob(job);

@@ -17,7 +17,8 @@
     "icons": "tsx scripts/gen-icons.ts",
     "ui": "tsx scripts/ui-preview.ts",
     "smoke:decisions": "tsx scripts/smoke_decisions.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",

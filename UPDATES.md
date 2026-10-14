@@ -1,3 +1,15 @@
+## 2026-10-14 11:21
+- Committed the 00:10 PC-bridge hardening on branch `pc-bridge-durable-delivery` and pushed that branch (not `main`, because a push to `main` redeploys Railway). `npm test` 11/11, typecheck clean. Still not deployed; the PC agent still runs the old code.
+- `docs/HANDOFF-pc-bridge.md` now has a phase status table: Phase 1 live, hardening committed but not merged, Phase 2 (logins) and Phase 3 (live view) not started.
+
+## 2026-10-14 00:10
+- **"It never got back to me" (13 Oct, 23:30): no PC session was ever started.** The Keeper replied "i'll check whether the PC is unlocked…" without calling `start_claude_session`, so nothing ran and nothing could report back (no start ping in the chat log, no entry in `pc-agent/logs/agent.log`). Same thing at 19:48 and 20:12 that day. Fix: `src/agent/pcPromise.ts` + one correction round in `orchestrator.ts` — a reply that promises a PC session with no start call behind it is sent back once to either make the call or say plainly that nothing has started. System prompt says the same.
+- **Every session now ends in a message, including the ones the PC never reports on** (`src/web/pcBridge.ts`, `sweepPcJobs`): not picked up in 10 min (PC off/asleep), PC silent for 5 min mid-session, past the 120-min cap (stopped), approval unanswered for 30 min (was only expired when something happened to read the list). A job handed to a dead socket is handed out again instead of sitting "queued" forever. Limits: `PC_QUEUE_TIMEOUT_MIN`, `PC_LOST_CONTACT_MIN`, `PC_MAX_RUN_MIN` (optional env, defaults as above).
+- **A Railway restart no longer kills or orphans sessions.** The PC agent sends each running session with its project, task and open approvals in every poll; the relay adopts them back and asks again for anything still waiting on him (never auto-approved). A result for a session the relay forgot is accepted and delivered.
+- **`pc-agent/agent.mjs`: endings are durable.** done/error is written to `logs/outbox/` and retried until the relay takes it (24 h), with an event id so a retry is not posted twice. Sessions cut off by a reboot or agent crash are reported at next start (`logs/running.json`). Own 120-min cap (`maxMinutes` in projects.json). A failed finish screenshot is now said in the summary (locked PC) instead of silently missing.
+- Telegram: the finish/failure message is retried 4 times, then falls back to a web push.
+- Added `npm test` (`tsx --test`, 11 tests, no network) and ran the new agent end to end against `scripts/pc-harness.ts`. **Not committed, not deployed; the running PC agent still has the old code until it restarts.** No schema or env change needed.
+
 ## 2026-10-13 18:13
 - Deployed the merge + PC bridge to Railway (live, /pc/state answers, PC online with 53 projects). PC agent auto-starts at logon (scheduled task "Keeper PC Agent"); fixed a projects.json escaping bug that made it exit on boot.
 - Live test session (a25ee4cf) ran start → steps → summary → screenshot in ~45s; auto mode judged the scratch create/delete safe, so the Approve button is not yet exercised live.

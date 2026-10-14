@@ -29,6 +29,7 @@ npm run mcp            # tsx src/mcp/server.ts — start the MCP server standalo
 npm run ui             # UI preview on :5173 (token 1234) — canned data, no bot
 npm run icons          # regenerate PWA icons + iOS splash screens
 npm run typecheck
+npm test               # tsx --test test/*.test.ts — PC bridge delivery rules, no network
 ```
 
 ## The web surface (`src/web/`)

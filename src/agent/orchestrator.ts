@@ -16,6 +16,7 @@ import { buildSystemPrompt } from './systemPrompt.js';
 import { toolDefinitions, presentToolDefinition, dispatchTool } from './tools.js';
 import { logUsage } from './usage.js';
 import { minutesLeft, renderLockIn } from './lockIn.js';
+import { promisesPcDispatch, PC_PROMISE_NUDGE } from './pcPromise.js';
 
 const MAX_TOOL_ROUNDS = 12;
 
@@ -285,9 +286,10 @@ ${head}` });
 
   // A single attempt at the full tool-use loop. Mutates `messages` in place —
   // callers that want to retry from scratch must snapshot/restore its length.
-  async function attemptTurn(): Promise<{ text: string; silent: boolean; toolsRan: boolean }> {
+  async function attemptTurn(): Promise<{ text: string; silent: boolean; toolsRan: boolean; tools: Set<string> }> {
     let silent = false;
     let toolsRan = false;
+    const tools = new Set<string>();
     // The model often writes its reply in the SAME turn as a tool call (e.g.
     // "got it 👍" alongside schedule_touchpoint). That turn's stop_reason is
     // "tool_use", so we must capture text from every turn, not just the final
@@ -347,6 +349,7 @@ ${head}` });
         for (const block of response.content) {
           if (block.type !== 'tool_use') continue;
           toolsRan = true;
+          tools.add(block.name);
           bus.publish({ type: 'step', label: stepLabel(block.name), tool: block.name });
           // A tool that throws (network blip, expired Google token, etc.) must
           // NEVER take down the whole turn — feed the error back to the model as a
@@ -375,7 +378,7 @@ ${head}` });
     }
 
     logUsage(trigger.kind, config.model, usages);
-    return { text: textParts.join('\n\n').trim(), silent, toolsRan };
+    return { text: textParts.join('\n\n').trim(), silent, toolsRan, tools };
   }
 
   // Philip must never see a "blanked, say that again?" placeholder or any
@@ -396,10 +399,12 @@ ${head}` });
   const MAX_BLANK_RETRIES = 2;
   let text = '';
   let silent = false;
+  const toolsUsed = new Set<string>();
   for (let attempt = 0; attempt <= MAX_BLANK_RETRIES; attempt++) {
     const result = await attemptTurn();
     text = result.text;
     silent = result.silent;
+    for (const t of result.tools) toolsUsed.add(t);
     if (text !== '' || silent || trigger.kind !== 'inbound') break;
     console.error(`[agent] blank response on inbound turn (attempt ${attempt + 1}/${MAX_BLANK_RETRIES + 1}) — retrying silently`);
     if (result.toolsRan) {
@@ -410,6 +415,21 @@ ${head}` });
       });
     } else {
       messages.length = baseMessagesLen; // nothing happened — try fresh
+    }
+  }
+
+  // "Claude is on it" with no start_claude_session behind it is the worst kind
+  // of reply: nothing is running, so nothing ever comes back, and he waits on a
+  // result that cannot arrive. One extra round to make the call or take the
+  // claim back. The earlier text is replaced, never sent alongside.
+  if (trigger.kind === 'inbound' && text !== '' && !toolsUsed.has('start_claude_session') && promisesPcDispatch(text)) {
+    console.error('[agent] reply promised a PC session but never started one — asking it to act or correct itself');
+    messages.push({ role: 'user', content: PC_PROMISE_NUDGE });
+    try {
+      const fixed = await attemptTurn();
+      if (fixed.text !== '') text = fixed.text;
+    } catch (err) {
+      console.error('[agent] PC-promise correction round failed, keeping the original reply:', err);
     }
   }
 
