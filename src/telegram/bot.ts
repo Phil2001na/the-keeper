@@ -290,13 +290,13 @@ ${e.approval.summary}`.slice(0, TG_LIMIT),
       const { job, event } = e;
       if (event.kind === 'started') {
         await sendToOwner(`▶️ Claude started on ${job.project} (${job.id}).`);
-      } else if (event.kind === 'done') {
+      } else if (event.kind === 'done' || event.kind === 'turn_done') {
         if (job.shot) {
           await keeperBot
             .sendPhoto(OWNER, Buffer.from(job.shot.b64, 'base64'), { caption: (job.shot.caption ?? job.project).slice(0, 1000) }, { filename: 'screen.jpg', contentType: 'image/jpeg' })
             .catch(() => {});
         }
-        await sendEnding(`✅ Claude finished on ${job.project} (${job.id}).
+        await sendEnding(`✅ Claude finished${event.kind === 'turn_done' ? ' this task' : ''} on ${job.project} (${job.id}).${event.kind === 'turn_done' ? ' The session stays open for a follow-up.' : ''}
 
 ${(event.text ?? '(no summary)').slice(0, 3500)}`);
       } else if (event.kind === 'error') {

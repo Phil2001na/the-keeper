@@ -24,7 +24,7 @@ import {
   type DecisionSetStatus,
 } from '../db/repositories.js';
 import { parseRecurrence, nextOccurrence, monthStartUtc } from './recurrence.js';
-import { startJob, stopJob, getJob, listJobs, jobSummary, openApprovals, pcOnline, pcProjects } from '../web/pcBridge.js';
+import { startJob, sendToJob, parseMode, SESSION_MODES, MODE_LABELS, stopJob, getJob, listJobs, jobSummary, openApprovals, pcOnline, pcProjects } from '../web/pcBridge.js';
 import { bus, type PresentCard } from '../web/bus.js';
 import {
   githubEnabled,
@@ -719,12 +719,16 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
       'get Claude / a coding session / "the PC" to do something. Write `task` as a complete brief Claude can act on without ' +
       'this conversation: what to do, where, how he wants to hear back. It runs on the PC (which must be on); risky actions ' +
       '(sends, deletes, payments, prod) come to his phone as Approve/Deny buttons, and he is told when it finishes. ' +
-      'If the project name does not match, the error lists the allowed ones — ask him which, do not guess.',
+      'If the project name does not match, the error lists the allowed ones — ask him which, do not guess. ' +
+      'Choose `mode`: "meeseeks" (default) is a disposable one-task session that ends when the task is done; ' +
+      '"persistent" stays open afterwards so he can send follow-ups (continue_claude_session) on the same conversation. ' +
+      'Use persistent only when he asks for a session that keeps going / he wants to keep working with; otherwise leave it as meeseeks.',
     input_schema: {
       type: 'object',
       properties: {
         project: { type: 'string', description: 'Project folder name, e.g. "solarize" or "the-keeper".' },
         task: { type: 'string', description: 'The full brief for Claude.' },
+        mode: { type: 'string', enum: SESSION_MODES, description: 'meeseeks = one task then the session ends (default). persistent = stays open for follow-ups.' },
       },
       required: ['project', 'task'],
     },
@@ -737,8 +741,19 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
     input_schema: { type: 'object', properties: { id: { type: 'string', description: 'Session id (or prefix) for detail.' } } },
   },
   {
+    name: 'continue_claude_session',
+    description:
+      'Send a follow-up task to a PERSISTENT Claude session on the PC that has finished its previous task and is idle (claude_sessions shows status "idle"). ' +
+      'It continues the same conversation, with the same approval rules. A one-task (meeseeks) session cannot be continued; start a new one. Only when he asks to continue.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'Session id (or prefix).' }, message: { type: 'string', description: 'The next task / instruction.' } },
+      required: ['id', 'message'],
+    },
+  },
+  {
     name: 'stop_claude_session',
-    description: 'Stop a running or queued Claude session on the PC. Only when he asks.',
+    description: 'Stop a running or queued Claude session on the PC, or close an idle persistent one. Only when he asks.',
     input_schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
   },
   // ─── Website deployment (GitHub Pages) ───────────────────────────────────
@@ -2081,11 +2096,15 @@ export async function dispatchTool(
       if (!pcOnline()) {
         return { output: "The PC isn't checking in, so it's off, asleep, or the PC agent isn't running. Tell him; nothing was started." };
       }
-      const r = startJob(String(input.project ?? ''), String(input.task ?? ''));
+      const mode = parseMode(input.mode);
+      if (!mode) return { output: `Unknown mode "${String(input.mode)}". Use one of: ${SESSION_MODES.join(', ')}. Nothing was started.` };
+      const r = startJob(String(input.project ?? ''), String(input.task ?? ''), mode);
       if (!r.ok) return { output: r.error };
       return {
         output:
-          `Queued session ${r.job.id} on ${r.job.project}. He'll get a Telegram ping when it starts, Approve/Deny buttons for anything risky, ` +
+          `Queued ${MODE_LABELS[mode]} session ${r.job.id} on ${r.job.project}` +
+          (mode === 'persistent' ? ' (it stays open after the task; continue it with continue_claude_session)' : ' (one task, then it ends)') +
+          `. He'll get a Telegram ping when it starts, Approve/Deny buttons for anything risky, ` +
           'and a message however it ends: the summary, a failure, or a note that the PC never picked it up. Tell him it is on its way — do not claim it has done anything yet.',
       };
     }
@@ -2100,11 +2119,17 @@ export async function dispatchTool(
           projects: pcProjects(),
           sessions: listJobs().slice(0, 8).map((j) => {
             const x = jobSummary(j);
-            return { id: x.id, project: x.project, status: x.status, task: x.task.slice(0, 160), result: x.result?.slice(0, 600) };
+            return { id: x.id, project: x.project, mode: x.mode, status: x.status, task: x.task.slice(0, 160), result: x.result?.slice(0, 600) };
           }),
           waitingOnHim: openApprovals().map((a) => ({ session: a.jobId, wants: a.summary.slice(0, 200) })),
         }),
       };
+    }
+    case 'continue_claude_session': {
+      if (!pcOnline()) return { output: "The PC isn't checking in, so the follow-up was not sent. Tell him." };
+      const r = sendToJob(String(input.id ?? ''), String(input.message ?? ''));
+      if (!r.ok) return { output: r.error };
+      return { output: `Sent the follow-up to session ${r.job.id} on ${r.job.project}. It continues the same conversation; he'll get its summary when it finishes. Do not claim it has done anything yet.` };
     }
     case 'stop_claude_session': {
       const j = getJob(String(input.id ?? ''));

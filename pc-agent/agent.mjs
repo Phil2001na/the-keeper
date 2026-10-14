@@ -30,6 +30,8 @@ const LOG_DIR = process.env.PC_AGENT_STATE || join(HERE, 'logs');
 const OUTBOX_DIR = join(LOG_DIR, 'outbox');
 /** What is running right now, so a reboot mid-session is reported instead of forgotten. */
 const RUNNING_FILE = join(LOG_DIR, 'running.json');
+/** Persistent sessions waiting for their next task, so an agent restart does not forget them. */
+const IDLE_FILE = join(LOG_DIR, 'idle.json');
 const OUTBOX_MAX_AGE_MS = 24 * 60 * 60_000;
 mkdirSync(OUTBOX_DIR, { recursive: true });
 
@@ -40,6 +42,8 @@ if (!TOKEN) {
 
 /** jobId -> { abort: AbortController, project, task, lastStep, stopReason } */
 const running = new Map();
+/** Persistent sessions between tasks: jobId -> { project, task, sessionId, mode }. Not counted against MAX_PARALLEL. */
+const idle = new Map();
 /** approvalId -> { resolve(decision), jobId, tool, text } */
 const pendingApprovals = new Map();
 /** Jobs that already ended here: the relay hands a job out again if it never saw it start. */
@@ -96,7 +100,7 @@ const event = (jobId, kind, extra = {}) =>
 // restarting cannot turn a finished session into silence. `eid` lets the relay
 // drop a repeat; project and task let a relay that restarted still name it.
 function ending(job, kind, extra = {}) {
-  const body = { jobId: job.id, kind, eid: randomUUID(), project: job.project, task: job.task, ...extra };
+  const body = { jobId: job.id, kind, eid: randomUUID(), project: job.project, task: job.task, mode: job.mode ?? 'meeseeks', ...extra };
   try { writeFileSync(join(OUTBOX_DIR, `${Date.now()}-${body.eid}.json`), JSON.stringify(body)); } catch (e) { log('outbox write failed:', e.message); }
   return flushOutbox();
 }
@@ -134,8 +138,21 @@ async function flushOutbox() {
 }
 
 function saveRunning() {
-  const list = [...running.entries()].map(([id, r]) => ({ id, project: r.project, task: r.task, lastStep: r.lastStep }));
+  const list = [...running.entries()].map(([id, r]) => ({ id, project: r.project, task: r.task, mode: r.mode, lastStep: r.lastStep }));
   try { writeFileSync(RUNNING_FILE, JSON.stringify(list)); } catch { /* best effort */ }
+}
+
+function saveIdle() {
+  const list = [...idle.entries()].map(([id, r]) => ({ id, ...r }));
+  try { writeFileSync(IDLE_FILE, JSON.stringify(list)); } catch { /* best effort */ }
+}
+
+function restoreIdle() {
+  let list = [];
+  try { list = JSON.parse(readFileSync(IDLE_FILE, 'utf-8')); } catch { return; }
+  for (const j of Array.isArray(list) ? list : []) {
+    if (j?.id && j.project && j.sessionId) idle.set(j.id, { project: j.project, task: j.task, sessionId: j.sessionId, mode: 'persistent' });
+  }
 }
 
 // Sessions that were running when this process last died (reboot, crash, the
@@ -213,12 +230,19 @@ const BRIEF = `You were started from Philip's phone through his Keeper. He is NO
 - If a website wants a login you don't have, stop and say so clearly in your final message (he can log in through the Keeper's remote browser and re-run you).
 - Finish with a short plain-language summary for his phone: what you did, what's left, anything he must do. No jargon, lead with the point.`;
 
+// Only added in the persistent mode. A one-task session never sees it.
+const BRIEF_PERSISTENT = `
+- This session stays open after you finish a task: he may send a follow-up on the same conversation, so you keep your context. End each task with the summary; do not say the session is over.`;
+
 async function runJob(job) {
   const proj = projects()[job.project];
   if (!proj) return ending(job, 'error', { text: `Project "${job.project}" is not allowed on this PC.` });
 
   const abort = new AbortController();
-  const me = { abort, project: job.project, task: job.task, lastStep: '', stopReason: '' };
+  const persistent = job.mode === 'persistent';
+  const me = { abort, project: job.project, task: job.task, mode: job.mode ?? 'meeseeks', lastStep: '', stopReason: '' };
+  idle.delete(job.id); // a follow-up: it is running again
+  saveIdle();
   running.set(job.id, me);
   saveRunning();
   log('start', job.id, job.project, JSON.stringify(job.task.slice(0, 120)));
@@ -252,18 +276,21 @@ async function runJob(job) {
       prompt: job.task,
       options: {
         cwd: proj.path,
+        ...(job.resume ? { resume: job.resume } : {}),
         abortController: abort,
         // strict projects (EDU prod) ask for everything that isn't already allowed;
         // everything else uses auto mode, where only genuinely risky actions ask.
         permissionMode: proj.strict ? 'default' : 'auto',
         canUseTool,
         settingSources: ['user', 'project', 'local'],
-        systemPrompt: { type: 'preset', preset: 'claude_code', append: BRIEF },
+        systemPrompt: { type: 'preset', preset: 'claude_code', append: BRIEF + (persistent ? BRIEF_PERSISTENT : '') },
       },
     });
     for await (const m of q) {
       if (m.type === 'system' && m.subtype === 'init') {
-        await event(job.id, 'started', { sessionId: m.session_id });
+        me.sessionId = m.session_id;
+        // A resumed turn is the same session: do not announce "started" again.
+        if (!job.resume) await event(job.id, 'started', { sessionId: m.session_id });
       } else if (m.type === 'assistant') {
         for (const b of m.message?.content ?? []) {
           if (b.type === 'text' && b.text?.trim()) await event(job.id, 'text', { text: b.text.trim().slice(0, 2000) });
@@ -286,8 +313,17 @@ async function runJob(job) {
       if (shot) await event(job.id, 'screenshot', { b64: shot, text: `${job.project}: screen when it finished` });
       else note = '\n\n(No screenshot with this one: the screen could not be captured, which usually means the PC is locked or its display is off.)';
     }
-    await ending(job, 'done', { text: (result || '(finished with no summary)') + note, costUsd: cost });
-    log('done', job.id);
+    const text = (result || '(finished with no summary)') + note;
+    if (persistent && me.sessionId) {
+      // Task finished, session stays: remember it before reporting so a follow-up can never find it missing.
+      idle.set(job.id, { project: job.project, task: job.task, sessionId: me.sessionId, mode: 'persistent' });
+      saveIdle();
+      await ending(job, 'turn_done', { text, costUsd: cost, sessionId: me.sessionId });
+      log('turn done, session kept open', job.id);
+    } else {
+      await ending(job, 'done', { text, costUsd: cost });
+      log('done', job.id);
+    }
   } catch (e) {
     const stopped = abort.signal.aborted;
     log(stopped ? `stopped${me.stopReason ? ` (${me.stopReason})` : ''}` : 'failed', job.id, e?.message ?? e);
@@ -296,6 +332,8 @@ async function runJob(job) {
       : me.stopReason === 'timeout'
         ? `It ran past the ${MAX_MINUTES}-minute limit and was stopped unfinished.${me.lastStep ? ` Last thing it was doing: ${me.lastStep}.` : ''}`
         : 'Stopped from the phone.';
+    idle.delete(job.id); // a failed or stopped turn ends a persistent session too: say so, do not leave it half-alive
+    saveIdle();
     await ending(job, 'error', { text, stopped });
   } finally {
     clearTimeout(limit);
@@ -311,6 +349,7 @@ async function runJob(job) {
 async function loop() {
   log(`PC agent up → ${BASE} | projects: ${Object.keys(projects()).length} | parallel: ${MAX_PARALLEL}`);
   reportInterrupted();
+  restoreIdle();
   void flushOutbox();
   setInterval(() => void flushOutbox(), 30_000);
   let backoff = 1000;
@@ -320,16 +359,35 @@ async function loop() {
       // so a relay that lost its memory (Railway restart) takes them back.
       const r = await api('/pc/agent/poll', {
         projects: Object.keys(projects()).sort(),
+        idle: [...idle.entries()].map(([id, j]) => ({ id, project: j.project, task: j.task })),
         running: [...running.entries()].map(([id, j]) => ({
           id,
           project: j.project,
           task: j.task,
+          mode: j.mode,
           approvals: [...pendingApprovals.entries()].filter(([, p]) => p.jobId === id).map(([approvalId, p]) => ({ approvalId, tool: p.tool, text: p.text })),
         })),
       });
       backoff = 1000;
       for (const d of r.decisions ?? []) pendingApprovals.get(d.id)?.resolve({ allow: d.allow, note: d.note });
-      for (const id of r.stops ?? []) running.get(id)?.abort.abort();
+      for (const id of r.stops ?? []) {
+        running.get(id)?.abort.abort();
+        if (idle.delete(id)) { saveIdle(); log('closed idle session', id); }
+      }
+      for (const f of r.followups ?? []) {
+        if (running.has(f.id)) continue; // handed out twice
+        const s = idle.get(f.id);
+        if (!s) {
+          await ending({ id: f.id, project: 'unknown', task: f.message, mode: 'persistent' }, 'error', { text: 'This persistent session is no longer open on the PC (the agent restarted or it was closed), so the follow-up was not run. Start a new session.' });
+          continue;
+        }
+        if (running.size >= MAX_PARALLEL) {
+          await ending({ id: f.id, project: s.project, task: f.message, mode: 'persistent' }, 'error', { text: `PC is already running ${running.size} sessions, so the follow-up was not run. The session was closed; start a new one.` });
+          idle.delete(f.id); saveIdle();
+          continue;
+        }
+        void runJob({ id: f.id, project: s.project, task: f.message, mode: 'persistent', resume: s.sessionId });
+      }
       for (const job of r.jobs ?? []) {
         if (running.has(job.id) || finished.has(job.id)) continue; // handed out twice
         if (running.size >= MAX_PARALLEL) {

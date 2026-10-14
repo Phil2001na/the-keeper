@@ -28,9 +28,16 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
  *  POST /pc/agent/poll    long-poll: {projects} in → {jobs, decisions, stops} out   (agent)
  *  POST /pc/agent/event   one event from a running session                          (agent)
  *  GET  /pc/state         online?, projects, recent jobs, open approvals           (viewer)
- *  POST /pc/start         {project, task}                                           (viewer)
+ *  POST /pc/start         {project, task, mode?}  mode: 'meeseeks' (default) | 'persistent'  (viewer)
+ *  POST /pc/send          {jobId, message}        follow-up to an idle persistent session   (viewer)
  *  POST /pc/approve       {id, allow}                                               (viewer)
- *  POST /pc/stop          {jobId}                                                   (viewer)
+ *  POST /pc/stop          {jobId}                 ends the session (idle or running)        (viewer)
+ *
+ * Two session modes (see SessionMode):
+ *   meeseeks    one task, then the session is gone. The original behaviour.
+ *   persistent  after each task it goes `idle` and stays resumable on the PC until
+ *               he sends a follow-up, ends it, or it sits idle past PC_IDLE_MAX_MIN.
+ *               Same approvals, same time cap per task, same outbox delivery.
  */
 
 const AGENT_TOKEN = (process.env.REMOTE_BROWSER_TOKEN ?? '').replace(/\s+/g, '');
@@ -49,16 +56,37 @@ function minutes(name: string, fallback: number): number {
 }
 /** Queued this long with no PC taking it: the PC is off or asleep. */
 const QUEUE_TIMEOUT_MIN = minutes('PC_QUEUE_TIMEOUT_MIN', 10);
+/** A persistent session nobody has spoken to in this long is closed (and he is told). */
+const IDLE_MAX_MIN = minutes('PC_IDLE_MAX_MIN', 480);
 /** A running session the PC has not vouched for in this long is reported as lost. */
 const LOST_CONTACT_MIN = minutes('PC_LOST_CONTACT_MIN', 5);
 /** Hard cap on one session; past it the relay asks the PC to stop it. */
 const MAX_RUN_MIN = minutes('PC_MAX_RUN_MIN', 120);
 
-export type JobStatus = 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'stopped';
+export type JobStatus = 'queued' | 'running' | 'waiting' | 'idle' | 'done' | 'failed' | 'stopped';
+
+/**
+ * How long a session lives. The ids are the wire/API values and stay put; only
+ * the label below is product wording.
+ */
+export type SessionMode = 'meeseeks' | 'persistent';
+export const SESSION_MODES: SessionMode[] = ['meeseeks', 'persistent'];
+
+// PROVISIONAL-NAME: Philip wants a Meeseeks-related name for the persistent mode
+// but has not chosen one. Change the label here only; nothing else depends on it.
+export const MODE_LABELS: Record<SessionMode, string> = {
+  meeseeks: 'Meeseeks',
+  persistent: 'Persistent Meeseeks (provisional name)',
+};
+
+export function parseMode(v: unknown): SessionMode | null {
+  if (v === undefined || v === null || v === '') return 'meeseeks';
+  return SESSION_MODES.includes(v as SessionMode) ? (v as SessionMode) : null;
+}
 
 export interface JobEvent {
   at: number;
-  kind: 'started' | 'text' | 'step' | 'approval' | 'decided' | 'screenshot' | 'done' | 'error';
+  kind: 'started' | 'text' | 'step' | 'approval' | 'decided' | 'screenshot' | 'done' | 'turn_done' | 'error';
   text?: string;
   /** Screenshot JPEG as base64 — kept only on the job's latest-shot slot, not in the event log. */
   b64?: string;
@@ -68,6 +96,7 @@ export interface Job {
   id: string;
   project: string;
   task: string;
+  mode: SessionMode;
   status: JobStatus;
   createdAt: number;
   updatedAt: number;
@@ -84,6 +113,12 @@ export interface Job {
   stopReason?: 'timeout';
   /** What it was doing when the relay asked for that stop. */
   stopContext?: string;
+  /** Persistent: when the current task began (the first one = createdAt). The per-task time cap counts from here. */
+  turnStartedAt?: number;
+  /** Persistent: tasks finished so far. */
+  turns?: number;
+  /** Persistent: a follow-up waiting to be handed to the PC. */
+  followup?: { text: string; handedAt?: number };
   /** Reported as failed because the PC went quiet; it may still come back. */
   lost?: boolean;
 }
@@ -109,6 +144,7 @@ const approvals = new Map<string, Approval>();
 let startQueue: string[] = [];
 let decisionQueue: { id: string; allow: boolean; note?: string }[] = [];
 let stopQueue: string[] = [];
+let followQueue: string[] = [];
 let waiter: ServerResponse | null = null;
 let agentSeen = 0;
 let projects: string[] = [];
@@ -150,15 +186,18 @@ async function readJson<T>(req: IncomingMessage, max: number): Promise<T> {
 
 function flush(): void {
   if (!waiter) return;
-  if (startQueue.length === 0 && decisionQueue.length === 0 && stopQueue.length === 0) return;
+  if (startQueue.length === 0 && decisionQueue.length === 0 && stopQueue.length === 0 && followQueue.length === 0) return;
   const res = waiter;
   waiter = null;
   const start = startQueue.splice(0).map((id) => jobs.get(id)).filter((j): j is Job => Boolean(j));
   // Not forgotten once written: the socket may be dead (PC asleep). notePoll
   // hands a job out again until the agent starts it or lists it as running.
   for (const j of start) j.handedAt = Date.now();
+  const follow = followQueue.splice(0).map((id) => jobs.get(id)).filter((j): j is Job => Boolean(j?.followup));
+  for (const j of follow) j.followup!.handedAt = Date.now();
   json(res, 200, {
-    jobs: start.map((j) => ({ id: j.id, project: j.project, task: j.task })),
+    jobs: start.map((j) => ({ id: j.id, project: j.project, task: j.task, mode: j.mode })),
+    followups: follow.map((j) => ({ id: j.id, message: j.followup!.text })),
     decisions: decisionQueue.splice(0),
     stops: stopQueue.splice(0),
   });
@@ -199,7 +238,8 @@ export function matchProject(name: string): string | null {
   return partial.length === 1 ? partial[0]! : null;
 }
 
-export function startJob(project: string, task: string): { ok: true; job: Job } | { ok: false; error: string } {
+export function startJob(project: string, task: string, mode: SessionMode = 'meeseeks'): { ok: true; job: Job } | { ok: false; error: string } {
+  if (!SESSION_MODES.includes(mode)) return { ok: false, error: `Unknown session mode "${String(mode)}". Use one of: ${SESSION_MODES.join(', ')}.` };
   if (!AGENT_TOKEN) return { ok: false, error: 'PC bridge is not configured (REMOTE_BROWSER_TOKEN unset).' };
   const p = matchProject(project);
   if (!p) {
@@ -213,7 +253,7 @@ export function startJob(project: string, task: string): { ok: true; job: Job } 
   const clean = task.trim().slice(0, 8000);
   if (!clean) return { ok: false, error: 'Empty task.' };
   const now = Date.now();
-  const job: Job = { id: randomUUID().slice(0, 8), project: p, task: clean, status: 'queued', createdAt: now, updatedAt: now, seenAt: now, events: [] };
+  const job: Job = { id: randomUUID().slice(0, 8), project: p, task: clean, mode, status: 'queued', createdAt: now, updatedAt: now, seenAt: now, events: [] };
   jobs.set(job.id, job);
   startQueue.push(job.id);
   prune();
@@ -223,16 +263,60 @@ export function startJob(project: string, task: string): { ok: true; job: Job } 
 
 export function stopJob(jobId: string): boolean {
   const job = jobs.get(jobId);
-  if (!job || !['queued', 'running', 'waiting'].includes(job.status)) return false;
+  if (!job || !['queued', 'running', 'waiting', 'idle'].includes(job.status)) return false;
   if (job.status === 'queued') {
     startQueue = startQueue.filter((id) => id !== jobId);
     job.status = 'stopped';
     push(job, { at: Date.now(), kind: 'error', text: 'Stopped before it started.' });
     return true;
   }
+  if (job.status === 'idle') {
+    // Nothing is running: close it here so he hears it ended, and tell the PC to forget it.
+    closeIdle(job, 'stopped', 'Session closed. Nothing was running; the persistent session is over.');
+    return true;
+  }
   stopQueue.push(jobId);
   flush();
   return true;
+}
+
+function closeIdle(job: Job, status: 'stopped' | 'failed', text: string, now = Date.now()): void {
+  job.status = status;
+  job.followup = undefined;
+  followQueue = followQueue.filter((id) => id !== job.id);
+  if (!stopQueue.includes(job.id)) stopQueue.push(job.id);
+  push(job, { at: now, kind: 'error', text });
+  flush();
+}
+
+/**
+ * Give an idle persistent session its next task. Only an `idle` one accepts it:
+ * a running session is busy, and a Meeseeks is gone after its one task.
+ */
+export function sendToJob(jobId: string, message: string): { ok: true; job: Job } | { ok: false; error: string } {
+  const job = getJob(jobId);
+  if (!job) return { ok: false, error: `No single session matches "${jobId}".` };
+  if (job.mode !== 'persistent') return { ok: false, error: `Session ${job.id} is a ${MODE_LABELS[job.mode]}: it ends after its one task. Start a new session instead.` };
+  if (job.status !== 'idle') {
+    const busy = job.status === 'running' || job.status === 'waiting' || job.status === 'queued';
+    return { ok: false, error: busy ? `Session ${job.id} is still working (${job.status}); wait for it to finish its current task.` : `Session ${job.id} has already ended (${job.status}).` };
+  }
+  const clean = message.trim().slice(0, 8000);
+  if (!clean) return { ok: false, error: 'Empty message.' };
+  const now = Date.now();
+  job.status = 'running';
+  job.task = clean;
+  job.turnStartedAt = now;
+  job.seenAt = now;
+  job.result = undefined;
+  job.shot = undefined;
+  job.stopReason = undefined;
+  job.stopContext = undefined;
+  job.followup = { text: clean };
+  followQueue.push(job.id);
+  push(job, { at: now, kind: 'step', text: `follow-up sent: ${clean.slice(0, 200)}` });
+  flush();
+  return { ok: true, job };
 }
 
 /** Answer a pending permission request. Returns false if it's unknown or already answered. */
@@ -298,6 +382,16 @@ export function sweepPcJobs(now = Date.now()): void {
       });
       continue;
     }
+    if (job.status === 'idle') {
+      if (now - job.seenAt > LOST_CONTACT_MIN * 60_000) {
+        job.status = 'failed';
+        job.lost = true;
+        push(job, { at: now, kind: 'error', text: `Lost contact with the PC ${LOST_CONTACT_MIN} minutes ago, so this persistent session may be gone. If the PC comes back with it, it will reopen here.` });
+      } else if (now - job.updatedAt > IDLE_MAX_MIN * 60_000) {
+        closeIdle(job, 'stopped', `Session closed after ${IDLE_MAX_MIN} minutes with no new task. Start a new one to continue.`, now);
+      }
+      continue;
+    }
     if (job.status !== 'running' && job.status !== 'waiting') continue;
 
     if (now - job.seenAt > LOST_CONTACT_MIN * 60_000) {
@@ -311,7 +405,7 @@ export function sweepPcJobs(now = Date.now()): void {
       });
       continue;
     }
-    if (!job.stopReason && now - job.createdAt > MAX_RUN_MIN * 60_000) {
+    if (!job.stopReason && now - (job.turnStartedAt ?? job.createdAt) > MAX_RUN_MIN * 60_000) {
       job.stopReason = 'timeout';
       job.stopContext = lastStep(job);
       if (!stopQueue.includes(job.id)) stopQueue.push(job.id);
@@ -324,7 +418,7 @@ export function sweepPcJobs(now = Date.now()): void {
 setInterval(() => sweepPcJobs(), SWEEP_MS).unref();
 
 /** What the phone shows for a job. Finer than `status`: it tells apart the endings that all read "failed". */
-export type JobPhase = 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'timed_out' | 'not_picked_up' | 'lost' | 'stopped';
+export type JobPhase = 'queued' | 'running' | 'waiting' | 'idle' | 'done' | 'failed' | 'timed_out' | 'not_picked_up' | 'lost' | 'stopped';
 
 /** The note pc-agent appends to a summary when the finish screenshot could not be taken. */
 const NO_SHOT_NOTE = /\s*\(No screenshot with this one:[^)]*\)\s*$/;
@@ -341,11 +435,14 @@ export function jobPhase(j: Job): JobPhase {
 
 /** Compact, screenshot-free view for the web UI and the model. */
 export function jobSummary(j: Job) {
-  const shotMissing = j.status === 'done' && !j.shot && NO_SHOT_NOTE.test(j.result ?? '');
+  const shotMissing = (j.status === 'done' || j.status === 'idle') && !j.shot && NO_SHOT_NOTE.test(j.result ?? '');
   return {
     id: j.id,
     project: j.project,
     task: j.task.slice(0, 300),
+    mode: j.mode,
+    modeLabel: MODE_LABELS[j.mode],
+    turns: j.turns ?? 0,
     status: j.status,
     phase: jobPhase(j),
     createdAt: j.createdAt,
@@ -363,7 +460,7 @@ export function jobSummary(j: Job) {
 
 // ─── HTTP ───────────────────────────────────────────────────────────────────
 
-const EVENT_KINDS = new Set(['started', 'text', 'step', 'approval', 'screenshot', 'done', 'error', 'orphaned']);
+const EVENT_KINDS = new Set(['started', 'text', 'step', 'approval', 'screenshot', 'done', 'turn_done', 'error', 'orphaned']);
 
 const JOB_ID = /^[a-z0-9-]{4,40}$/i;
 
@@ -378,6 +475,7 @@ function adopt(r: Record<string, unknown>, id: string, now: number): Job | undef
     id,
     project: r.project,
     task: typeof r.task === 'string' ? r.task.slice(0, 8000) : '(task not known: the Keeper restarted while this was running)',
+    mode: r.mode === 'persistent' ? 'persistent' : 'meeseeks',
     status: 'running',
     createdAt: now,
     updatedAt: now,
@@ -404,7 +502,7 @@ function registerApproval(job: Job, id: string, tool: unknown, summary: string |
 }
 
 /** One poll from the agent: who it is, what it allows, what it is running. */
-export function notePoll(b: { projects?: unknown; running?: unknown }, now = Date.now()): void {
+export function notePoll(b: { projects?: unknown; running?: unknown; idle?: unknown }, now = Date.now()): void {
   agentSeen = now;
   if (Array.isArray(b.projects)) {
     projects = b.projects.filter((p): p is string => typeof p === 'string' && p.length < 100).slice(0, 100);
@@ -426,6 +524,7 @@ export function notePoll(b: { projects?: unknown; running?: unknown }, now = Dat
       continue;
     }
     job.seenAt = now;
+    job.followup = undefined; // the PC has it: it is running
     if (job.status === 'queued') job.status = 'running';
     if (job.lost) {
       job.lost = false;
@@ -438,6 +537,39 @@ export function notePoll(b: { projects?: unknown; running?: unknown }, now = Dat
       if (!aid || approvals.has(aid) || decidedIds.has(aid)) continue;
       registerApproval(job, aid, x?.tool, typeof x?.text === 'string' ? x.text : undefined, now);
     }
+  }
+  // Persistent sessions the PC is holding open between tasks.
+  for (const r of Array.isArray(b.idle) ? b.idle : []) {
+    const o = r && typeof r === 'object' ? (r as Record<string, unknown>) : null;
+    const id = typeof o?.id === 'string' ? o.id : '';
+    if (!o || !id || listed.has(id)) continue;
+    let job = jobs.get(id);
+    if (!job) {
+      job = adopt({ ...o, mode: 'persistent' }, id, now);
+      if (!job) continue;
+      job.status = 'idle';
+      push(job, { at: now, kind: 'step', text: 'reconnected to a persistent session that was waiting for its next task (the Keeper restarted)' });
+      continue;
+    }
+    if (job.status === 'done' || job.status === 'stopped' || (job.status === 'failed' && !job.lost)) {
+      // Ended on this side (closed, or reported failed): do not leave it open on the PC.
+      if (!stopQueue.includes(id)) stopQueue.push(id);
+      continue;
+    }
+    job.seenAt = now;
+    if (job.lost) {
+      job.lost = false;
+      job.status = 'idle';
+      push(job, { at: now, kind: 'text', text: 'The PC is back and this persistent session is waiting for its next task.' });
+    }
+  }
+  // A follow-up handed out that the PC neither started nor listed as running: the reply went to a dead socket.
+  for (const job of jobs.values()) {
+    const f = job.followup;
+    if (!f?.handedAt || listed.has(job.id) || job.status !== 'running') continue;
+    if (now - f.handedAt < REHAND_MS) continue;
+    f.handedAt = undefined;
+    if (!followQueue.includes(job.id)) followQueue.push(job.id);
   }
   // Handed out but never started and not listed: the reply went to a dead socket.
   for (const job of jobs.values()) {
@@ -456,12 +588,13 @@ export function onAgentEvent(b: Record<string, unknown>): string | null {
   const at = Date.now();
   let job = typeof b.jobId === 'string' ? jobs.get(b.jobId) : undefined;
   // A result for a session this relay forgot (it restarted) is still his result.
-  if (!job && typeof b.jobId === 'string' && (kind === 'done' || kind === 'error')) job = adopt(b, b.jobId, at);
+  if (!job && typeof b.jobId === 'string' && (kind === 'done' || kind === 'turn_done' || kind === 'error')) job = adopt(b, b.jobId, at);
   if (!job) return kind === 'orphaned' ? null : 'unknown job';
   const text = typeof b.text === 'string' ? b.text.slice(0, 6000) : undefined;
   if (eid) remember(seenEids, eid, 500);
   job.seenAt = at;
   job.lost = false;
+  job.followup = undefined;
 
   switch (kind) {
     case 'started':
@@ -489,6 +622,18 @@ export function onAgentEvent(b: Record<string, unknown>): string | null {
       registerApproval(job, id, b.tool, text, at);
       return null;
     }
+    case 'turn_done':
+      // A persistent session finished one task and stays open for the next. Its
+      // result is delivered exactly like a Meeseeks' ending (same outbox, same dedupe).
+      if (job.status !== 'stopped' && job.status !== 'done') job.status = 'idle';
+      job.mode = 'persistent';
+      job.turns = (job.turns ?? 0) + 1;
+      job.result = text;
+      if (typeof b.sessionId === 'string') job.sessionId = b.sessionId.slice(0, 80);
+      if (typeof b.costUsd === 'number') job.costUsd = (job.costUsd ?? 0) + b.costUsd;
+      dropApprovals(job.id);
+      push(job, { at, kind: 'turn_done', text });
+      return null;
     case 'done':
       job.status = 'done';
       job.result = text;
@@ -526,12 +671,12 @@ export function handlePcBridge(req: IncomingMessage, res: ServerResponse, path: 
       void readJson<{ projects?: unknown; running?: unknown }>(req, 64 * 1024)
         .then((b) => {
           notePoll(b);
-          if (waiter) json(waiter, 200, { jobs: [], decisions: [], stops: [] }); // one agent at a time
+          if (waiter) json(waiter, 200, { jobs: [], followups: [], decisions: [], stops: [] }); // one agent at a time
           waiter = res;
           const t = setTimeout(() => {
             if (waiter === res) {
               waiter = null;
-              json(res, 200, { jobs: [], decisions: [], stops: [] });
+              json(res, 200, { jobs: [], followups: [], decisions: [], stops: [] });
             }
           }, POLL_MS);
           res.on('close', () => {
@@ -566,6 +711,7 @@ export function handlePcBridge(req: IncomingMessage, res: ServerResponse, path: 
       online: pcOnline(),
       lastSeenAt: agentSeen || null,
       limits: { queueMin: QUEUE_TIMEOUT_MIN, lostContactMin: LOST_CONTACT_MIN, maxRunMin: MAX_RUN_MIN },
+      modes: SESSION_MODES.map((id) => ({ id, label: MODE_LABELS[id] })),
       projects,
       jobs: listJobs().map(jobSummary),
       approvals: openApprovals(),
@@ -583,9 +729,20 @@ export function handlePcBridge(req: IncomingMessage, res: ServerResponse, path: 
     return true;
   }
   if (req.method === 'POST' && path === '/pc/start') {
-    void readJson<{ project?: unknown; task?: unknown }>(req, 32 * 1024)
+    void readJson<{ project?: unknown; task?: unknown; mode?: unknown }>(req, 32 * 1024)
       .then((b) => {
-        const r = startJob(String(b.project ?? ''), String(b.task ?? ''));
+        const mode = parseMode(b.mode);
+        if (!mode) return json(res, 400, { ok: false, error: `Unknown mode. Use one of: ${SESSION_MODES.join(', ')}.` });
+        const r = startJob(String(b.project ?? ''), String(b.task ?? ''), mode);
+        json(res, r.ok ? 200 : 400, r.ok ? { ok: true, job: jobSummary(r.job) } : r);
+      })
+      .catch(() => json(res, 400, { ok: false }));
+    return true;
+  }
+  if (req.method === 'POST' && path === '/pc/send') {
+    void readJson<{ jobId?: unknown; message?: unknown }>(req, 32 * 1024)
+      .then((b) => {
+        const r = sendToJob(String(b.jobId ?? ''), String(b.message ?? ''));
         json(res, r.ok ? 200 : 400, r.ok ? { ok: true, job: jobSummary(r.job) } : r);
       })
       .catch(() => json(res, 400, { ok: false }));

@@ -40,6 +40,9 @@ export function attachPcToKeeper(): void {
       case 'screenshot':
         bus.publish({ type: 'media', kind: 'photo', url: `/pc/shot/${job.id}-${event.at}`, filename: `${job.project}.jpg`, mime: 'image/jpeg' });
         break;
+      case 'turn_done':
+        say(`[PC] Claude finished this task on ${job.project} (session ${job.id}, stays open for a follow-up).\n\n${(event.text ?? '(no summary)').slice(0, 3500)}`);
+        break;
       case 'done':
         say(`[PC] Claude finished on ${job.project} (session ${job.id}).\n\n${(event.text ?? '(no summary)').slice(0, 3500)}`);
         break;

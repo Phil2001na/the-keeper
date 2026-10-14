@@ -422,7 +422,7 @@ ${head}` });
   // of reply: nothing is running, so nothing ever comes back, and he waits on a
   // result that cannot arrive. One extra round to make the call or take the
   // claim back. The earlier text is replaced, never sent alongside.
-  if (trigger.kind === 'inbound' && text !== '' && !toolsUsed.has('start_claude_session') && promisesPcDispatch(text)) {
+  if (trigger.kind === 'inbound' && text !== '' && !toolsUsed.has('start_claude_session') && !toolsUsed.has('continue_claude_session') && promisesPcDispatch(text)) {
     console.error('[agent] reply promised a PC session but never started one — asking it to act or correct itself');
     messages.push({ role: 'user', content: PC_PROMISE_NUDGE });
     try {

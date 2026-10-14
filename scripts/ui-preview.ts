@@ -242,6 +242,7 @@ const server = createServer(async (req, res) => {
         jobs: [
           job('w1', 'solarize', 'waiting', 'waiting', { recent: [{ at: now, kind: 'step', text: 'installing a package' }] }),
           job('q1', 'the-keeper', 'queued', 'queued'),
+          job('p1', 'solarize', 'idle', 'idle', { mode: 'persistent', modeLabel: 'Persistent Meeseeks (provisional name)', result: 'Fixed the rounding; waiting for what is next.' }),
           job('r1', 'solarize', 'running', 'running', { recent: [{ at: now, kind: 'step', text: 'editing cart.ts' }] }),
           job('d1', 'solarize', 'done', 'done', { result: 'Rounded totals to cents; tests pass.', costUsd: 0.42, hasShot: true, shotUrl: '/icons/galaxy-backdrop.png', shotCaption: 'screen when it finished' }),
           job('d2', 'the-keeper', 'done', 'done', { result: 'Renamed the helper; typecheck clean.', shotMissing: true }),

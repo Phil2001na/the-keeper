@@ -1072,7 +1072,7 @@
   // Renders what src/web/pcBridge.ts reports. `phase` is decided server-side;
   // this only words it. Approve/Deny buttons act on a tap and nothing else.
   const PC_STATE = {
-    queued: ['queued', ''], running: ['running', 'run'], waiting: ['needs your OK', 'bad'],
+    queued: ['queued', ''], idle: ['ready for next task', 'ok'], running: ['running', 'run'], waiting: ['needs your OK', 'bad'],
     done: ['done', 'ok'], failed: ['failed', 'bad'], timed_out: ['timed out', 'bad'],
     not_picked_up: ['PC didn’t answer', 'bad'], lost: ['lost contact', 'bad'], stopped: ['stopped', ''],
   };
@@ -1107,7 +1107,7 @@
     } else if (phase === 'waiting') {
       body = '<div class="why">Paused until you answer. Nothing continues on its own' +
         (mine.length ? '.' : ' — the question will appear here once the PC repeats it.') + '</div>';
-    } else if (phase === 'done') {
+    } else if (phase === 'done' || phase === 'idle') {
       body = '<div class="result">' + esc(j.result || 'Finished, but it sent no summary.') + '</div>';
       if (j.shotUrl) {
         body += '<img class="shot" loading="lazy" alt="' + esc(j.shotCaption || 'screen when it finished') + '" src="' +
@@ -1131,16 +1131,22 @@
     if ((phase === 'timed_out' || phase === 'lost') && pcLast(j)) {
       body += '<div class="meta">Last thing it reported: ' + esc(pcLast(j)) + '</div>';
     }
+    // A persistent session waits here for its next task; a one-task session never shows this.
+    if (phase === 'idle') {
+      body += '<div class="pc-follow"><input type="text" maxlength="2000" placeholder="Next task for this session…" aria-label="Follow-up for session ' +
+        esc(j.id) + '" data-pc-draft="' + esc(j.id) + '"><button class="btn primary" data-pc-send="' + esc(j.id) + '">Send</button></div>';
+    }
     const asks = mine.map((a) =>
       '<div class="pc-approve"><strong>Wants your OK:</strong> ' + esc(a.summary) +
       '<div class="row"><button class="btn primary" data-pc-allow="' + esc(a.id) + '">Approve</button>' +
       '<button class="btn" data-pc-deny="' + esc(a.id) + '">Deny</button></div></div>').join('');
-    const cost = typeof j.costUsd === 'number' && phase === 'done' ? ' · $' + j.costUsd.toFixed(2) : '';
-    return '<div class="pc-job' + (mine.length ? ' attn' : '') + '"><div class="top"><span class="proj">' + esc(j.project) +
+    const cost = typeof j.costUsd === 'number' && (phase === 'done' || phase === 'idle') ? ' · $' + j.costUsd.toFixed(2) : '';
+    return '<div class="pc-job' + (mine.length ? ' attn' : '') + '"><div class="top"><span class="proj">' + esc(j.project) + (j.mode === 'persistent' ? ' · ' + esc(j.modeLabel || 'persistent') : '') +
       '</span><span class="pc-state ' + tone + '">' + esc(label) + '</span></div>' +
       '<div class="task">' + esc(j.task) + '</div>' + body + asks +
       '<div class="meta" style="margin-top:8px">' + esc(pcAgo(j.updatedAt)) + cost + ' · ' + esc(j.id) + '</div>' +
-      (live ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">Stop this session</button>' : '') + '</div>';
+      (live ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">Stop this session</button>' : '') +
+      (phase === 'idle' ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">End this session</button>' : '') + '</div>';
   }
 
   function renderPc(s) {
@@ -1161,9 +1167,20 @@
       ? '<div class="pc-note">The PC is off, asleep, or its agent isn’t running. New sessions wait ' +
         esc(String((s.limits && s.limits.queueMin) || 10)) + ' minutes for it, then are reported as not done.</div>'
       : '';
+    // The 4 s refresh rebuilds the sheet: keep half-typed follow-ups and the focused field.
+    const drafts = {};
+    let focused = null;
+    $('pcbody').querySelectorAll('[data-pc-draft]').forEach((el) => {
+      if (el.value) drafts[el.dataset.pcDraft] = el.value;
+      if (el === document.activeElement) focused = el.dataset.pcDraft;
+    });
     $('pcbody').innerHTML = link + offNote + (jobs.length
       ? jobs.map((j) => pcJobCard(j, approvals, s.limits)).join('')
       : '<div class="pc-empty">No sessions yet. Ask the Keeper to start Claude on one of your projects.</div>');
+    $('pcbody').querySelectorAll('[data-pc-draft]').forEach((el) => {
+      if (drafts[el.dataset.pcDraft]) el.value = drafts[el.dataset.pcDraft];
+      if (el.dataset.pcDraft === focused) el.focus();
+    });
   }
 
   async function pcCall(path, body) {
@@ -1199,7 +1216,20 @@
     const stop = t.dataset.pcStop;
     const allow = t.dataset.pcAllow;
     const deny = t.dataset.pcDeny;
-    if (!stop && !allow && !deny) return;
+    const send = t.dataset.pcSend;
+    if (!stop && !allow && !deny && !send) return;
+    if (send) {
+      const field = [...$('pcbody').querySelectorAll('[data-pc-draft]')].find((el) => el.dataset.pcDraft === send);
+      const message = field ? field.value.trim() : '';
+      if (!message) { toast('type the next task first'); return; }
+      t.disabled = true;
+      try {
+        const r = await pcCall('/pc/send', { jobId: send, message });
+        if (!r.ok) toast(r.error || 'that session can’t take a follow-up right now');
+      } catch { toast('couldn’t reach it — nothing was sent'); }
+      void loadPc();
+      return;
+    }
     t.disabled = true;
     try {
       const r = stop ? await pcCall('/pc/stop', { jobId: stop }) : await pcCall('/pc/approve', { id: allow || deny, allow: Boolean(allow) });

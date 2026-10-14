@@ -2181,4 +2181,6 @@ input[type='range']::-moz-range-thumb {
 .pc-approve .row { display: flex; gap: 8px; margin-top: 9px; }
 .pc-approve .btn { flex: 1; justify-content: center; }
 .pc-job .stop { margin-top: 10px; }
+.pc-follow { display: flex; gap: 8px; margin-top: 10px; }
+.pc-follow input { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--accent-line); background: transparent; color: var(--text); }
 .pc-empty { font-size: 13px; color: var(--text-faint); line-height: 1.5; }
