@@ -764,6 +764,18 @@
     es.onerror = () => {
       if (!root.classList.contains('busy')) setStatus('reconnecting…');
       markUnreachable();
+      // EventSource can't see status codes, so a rotated token looks exactly
+      // like an outage and the app sits "offline" forever. Ask the server.
+      fetch('/api/snapshot', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' })
+        .then((res) => {
+          if (res.status !== 401) return;
+          es.close();
+          clearTimeout(unreachableTimer);
+          localStorage.removeItem('keeper_token');
+          token = '';
+          showGate('that token didn’t open it');
+        })
+        .catch(() => {});
     };
     es.onopen = () => {
       clearTimeout(unreachableTimer);

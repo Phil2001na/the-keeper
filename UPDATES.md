@@ -1,3 +1,7 @@
+## 2026-10-15 01:11
+- Web UI: a rejected token on the live stream no longer shows as "offline" forever. On an SSE error the app checks `/api/snapshot`; a 401 clears the stored token and shows the token gate.
+- Local token file (`~/keeper-web-token.txt`) was stale vs Railway's `KEEPER_WEB_TOKEN`; synced to the live value. Token not rotated.
+
 ## 2026-10-14 23:20
 - Persistent mode renamed **Meeseeks Prime** (`MODE_LABELS`); wire value `persistent` unchanged. PC sheet now has a Start form (project, Meeseeks / Meeseeks Prime, task) that posts to `/pc/start`; default stays Meeseeks. Approvals, result delivery, per-task cap and 8 h idle limit untouched. No PC-agent change, so no agent restart needed.
 - `npm test` 18/18, typecheck clean, form checked in `npm run ui` preview. Merged to `main` and pushed (Railway deploy).
