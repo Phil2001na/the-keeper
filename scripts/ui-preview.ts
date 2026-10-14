@@ -224,6 +224,39 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // ── PC sessions: one canned job per state, so every card can be looked at ──
+  if (path.startsWith('/pc/')) {
+    if (!authed) { res.writeHead(401, { 'Content-Type': 'application/json' }).end('{"ok":false}'); return; }
+    const now = Date.now();
+    const m = 60_000;
+    const job = (id: string, project: string, phase: string, status: string, extra: Record<string, unknown> = {}) => ({
+      id, project, task: 'Fix the checkout total rounding', phase, status, createdAt: now - 20 * m, updatedAt: now - 2 * m,
+      recent: [], hasShot: false, shotMissing: false, ...extra,
+    });
+    if (path === '/pc/state') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        online: true, lastSeenAt: now, projects: ['solarize', 'the-keeper'],
+        limits: { queueMin: 10, lostContactMin: 5, maxRunMin: 120 },
+        approvals: [{ id: 'ap1', jobId: 'w1', tool: 'Bash', summary: 'Run: npm install left-pad', at: now - m }],
+        jobs: [
+          job('w1', 'solarize', 'waiting', 'waiting', { recent: [{ at: now, kind: 'step', text: 'installing a package' }] }),
+          job('q1', 'the-keeper', 'queued', 'queued'),
+          job('r1', 'solarize', 'running', 'running', { recent: [{ at: now, kind: 'step', text: 'editing cart.ts' }] }),
+          job('d1', 'solarize', 'done', 'done', { result: 'Rounded totals to cents; tests pass.', costUsd: 0.42, hasShot: true, shotUrl: '/icons/galaxy-backdrop.png', shotCaption: 'screen when it finished' }),
+          job('d2', 'the-keeper', 'done', 'done', { result: 'Renamed the helper; typecheck clean.', shotMissing: true }),
+          job('t1', 'solarize', 'timed_out', 'stopped', { recent: [{ at: now, kind: 'step', text: 'running the full test suite' }] }),
+          job('l1', 'the-keeper', 'lost', 'failed', { recent: [{ at: now, kind: 'step', text: 'opening antares.com' }] }),
+          job('n1', 'solarize', 'not_picked_up', 'failed'),
+          job('f1', 'the-keeper', 'failed', 'failed', { recent: [{ at: now, kind: 'error', text: 'Claude exited: out of credits' }] }),
+        ],
+      }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}');
+    return;
+  }
+
   // ── notifications (mirrors src/web/server.ts) ────────────────────────────
   if (path.startsWith('/api/push/')) {
     if (!authed) { res.writeHead(401, { 'Content-Type': 'application/json' }).end('{"ok":false}'); return; }

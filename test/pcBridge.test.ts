@@ -126,3 +126,44 @@ test('an approval nobody answers expires as a denial', () => {
   assert.ok(seen.some((e) => e.type === 'approval_closed' && e.approvalId === 'ap-exp' && e.allow === false));
   pc.onAgentEvent({ jobId: job.id, kind: 'done', text: 'ok' });
 });
+
+test('the phone sees which kind of ending a job had, and why a screenshot is missing', () => {
+  // never picked up
+  const idle = queue();
+  pc.sweepPcJobs(Date.now() + 11 * MIN);
+  assert.equal(pc.jobSummary(idle).phase, 'not_picked_up');
+
+  // lost contact, then it comes back
+  const lost = queue();
+  pc.onAgentEvent({ jobId: lost.id, kind: 'started' });
+  pc.sweepPcJobs(Date.now() + 6 * MIN);
+  assert.equal(pc.jobSummary(lost).phase, 'lost');
+  pc.onAgentEvent({ jobId: lost.id, kind: 'done', text: 'back' });
+  assert.equal(pc.jobSummary(lost).phase, 'done');
+
+  // timed out: the relay asked for the stop, the PC confirmed it
+  const slow = queue();
+  pc.onAgentEvent({ jobId: slow.id, kind: 'started' });
+  const later = Date.now() + 121 * MIN;
+  pc.notePoll({ projects: ['sandbox'], running: [slow.id] }, later); // the PC still vouches for it
+  pc.sweepPcJobs(later);
+  pc.onAgentEvent({ jobId: slow.id, kind: 'error', stopped: true, text: 'stopped' });
+  assert.equal(pc.jobSummary(slow).phase, 'timed_out');
+
+  // done with the locked-PC note: the note moves out of the summary into shotMissing
+  const locked = queue();
+  pc.onAgentEvent({ jobId: locked.id, kind: 'started' });
+  pc.onAgentEvent({ jobId: locked.id, kind: 'done', text: 'fixed it\n\n(No screenshot with this one: the screen could not be captured, which usually means the PC is locked or its display is off.)' });
+  const s = pc.jobSummary(locked);
+  assert.equal(s.shotMissing, true);
+  assert.equal(s.result, 'fixed it');
+
+  // done with a screenshot: a URL, no missing flag
+  const shot = queue();
+  pc.onAgentEvent({ jobId: shot.id, kind: 'started' });
+  pc.onAgentEvent({ jobId: shot.id, kind: 'screenshot', b64: Buffer.from('x').toString('base64'), text: 'screen' });
+  pc.onAgentEvent({ jobId: shot.id, kind: 'done', text: 'ok' });
+  const t = pc.jobSummary(shot);
+  assert.match(t.shotUrl ?? '', /^\/pc\/shot\/[a-z0-9-]+-[0-9]+$/);
+  assert.equal(t.shotMissing, false);
+});

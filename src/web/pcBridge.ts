@@ -323,19 +323,41 @@ export function sweepPcJobs(now = Date.now()): void {
 
 setInterval(() => sweepPcJobs(), SWEEP_MS).unref();
 
+/** What the phone shows for a job. Finer than `status`: it tells apart the endings that all read "failed". */
+export type JobPhase = 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'timed_out' | 'not_picked_up' | 'lost' | 'stopped';
+
+/** The note pc-agent appends to a summary when the finish screenshot could not be taken. */
+const NO_SHOT_NOTE = /\s*\(No screenshot with this one:[^)]*\)\s*$/;
+
+export function jobPhase(j: Job): JobPhase {
+  if (j.status === 'stopped') return j.stopReason === 'timeout' ? 'timed_out' : 'stopped';
+  if (j.status === 'failed') {
+    if (j.lost) return 'lost';
+    // Failed without ever starting: the sweep gave up waiting for the PC.
+    if (!j.sessionId && !j.events.some((e) => e.kind === 'started')) return 'not_picked_up';
+  }
+  return j.status;
+}
+
 /** Compact, screenshot-free view for the web UI and the model. */
 export function jobSummary(j: Job) {
+  const shotMissing = j.status === 'done' && !j.shot && NO_SHOT_NOTE.test(j.result ?? '');
   return {
     id: j.id,
     project: j.project,
     task: j.task.slice(0, 300),
     status: j.status,
+    phase: jobPhase(j),
     createdAt: j.createdAt,
     updatedAt: j.updatedAt,
-    result: j.result?.slice(0, 4000),
+    result: (shotMissing ? j.result!.replace(NO_SHOT_NOTE, '') : j.result)?.slice(0, 4000),
     costUsd: j.costUsd,
     recent: j.events.slice(-12).map((e) => ({ at: e.at, kind: e.kind, text: e.text?.slice(0, 500) })),
     hasShot: Boolean(j.shot),
+    shotUrl: j.shot ? `/pc/shot/${j.id}-${j.shot.at}` : undefined,
+    shotCaption: j.shot?.caption,
+    /** The PC could not capture its screen at the end (usually locked or display off). */
+    shotMissing,
   };
 }
 
@@ -540,7 +562,14 @@ export function handlePcBridge(req: IncomingMessage, res: ServerResponse, path: 
     return true;
   }
   if (req.method === 'GET' && path === '/pc/state') {
-    json(res, 200, { online: pcOnline(), projects, jobs: listJobs().map(jobSummary), approvals: openApprovals() });
+    json(res, 200, {
+      online: pcOnline(),
+      lastSeenAt: agentSeen || null,
+      limits: { queueMin: QUEUE_TIMEOUT_MIN, lostContactMin: LOST_CONTACT_MIN, maxRunMin: MAX_RUN_MIN },
+      projects,
+      jobs: listJobs().map(jobSummary),
+      approvals: openApprovals(),
+    });
     return true;
   }
   if (req.method === 'GET' && path.startsWith('/pc/shot/')) {

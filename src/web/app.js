@@ -874,7 +874,9 @@
       connect();
       void syncPush();
     }
-    if (new URLSearchParams(location.search).get('view') === 'mind') openSheet('mind');
+    pcTick();
+    const view = new URLSearchParams(location.search).get('view');
+    if (view === 'mind' || view === 'pc') openSheet(view);
   }
 
   $('gateform').addEventListener('submit', (e) => {
@@ -994,6 +996,7 @@
     $(which).setAttribute('aria-hidden', 'false');
     $('scrim').classList.add('show');
     if (which === 'mind') loadMind();
+    if (which === 'pc') pcTick();
     if (which === 'settings') {
       void refreshNotif();
       if (navigator.serviceWorker) {
@@ -1003,13 +1006,14 @@
   }
 
   function closeSheets() {
-    for (const id of ['mind', 'settings']) {
+    for (const id of ['pc', 'mind', 'settings']) {
       $(id).classList.remove('open');
       $(id).setAttribute('aria-hidden', 'true');
     }
     $('scrim').classList.remove('show');
   }
 
+  $('pcbtn').addEventListener('click', () => openSheet('pc'));
   $('mindbtn').addEventListener('click', () => openSheet('mind'));
   $('settingsbtn').addEventListener('click', () => openSheet('settings'));
   $('scrim').addEventListener('click', closeSheets);
@@ -1062,6 +1066,153 @@
   async function loadMind() {
     try { renderMind(await snapshot()); }
     catch { $('mindbody').textContent = 'couldn’t read its mind just now'; }
+  }
+
+  // ══ PC sessions ═══════════════════════════════════════════════════════
+  // Renders what src/web/pcBridge.ts reports. `phase` is decided server-side;
+  // this only words it. Approve/Deny buttons act on a tap and nothing else.
+  const PC_STATE = {
+    queued: ['queued', ''], running: ['running', 'run'], waiting: ['needs your OK', 'bad'],
+    done: ['done', 'ok'], failed: ['failed', 'bad'], timed_out: ['timed out', 'bad'],
+    not_picked_up: ['PC didn’t answer', 'bad'], lost: ['lost contact', 'bad'], stopped: ['stopped', ''],
+  };
+  let pcData = null;
+  let pcTimer = null;
+
+  const pcAgo = (ts) => {
+    const m = Math.max(0, Math.round((Date.now() - ts) / 60000));
+    return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago';
+  };
+  const pcLast = (j) => {
+    const e = [...(j.recent || [])].reverse().find((x) => (x.kind === 'step' || x.kind === 'text') && x.text);
+    return e ? e.text : '';
+  };
+  const pcEnd = (j) => {
+    const e = [...(j.recent || [])].reverse().find((x) => x.kind === 'error' && x.text);
+    return e ? e.text : '';
+  };
+
+  function pcJobCard(j, approvals, limits) {
+    const phase = j.phase || j.status;
+    const [label, tone] = PC_STATE[phase] || [phase, ''];
+    const mine = approvals.filter((a) => a.jobId === j.id);
+    const live = phase === 'queued' || phase === 'running' || phase === 'waiting';
+    let body = '';
+    if (phase === 'queued') {
+      body = '<div class="why">Waiting for the PC to pick this up. If it is off or asleep, this gives up after ' +
+        esc(String((limits && limits.queueMin) || 10)) + ' minutes and tells you nothing was done.</div>';
+    } else if (phase === 'running') {
+      const s = pcLast(j);
+      body = s ? '<div class="why">' + esc(s) + '</div>' : '<div class="why">Started — no update yet.</div>';
+    } else if (phase === 'waiting') {
+      body = '<div class="why">Paused until you answer. Nothing continues on its own' +
+        (mine.length ? '.' : ' — the question will appear here once the PC repeats it.') + '</div>';
+    } else if (phase === 'done') {
+      body = '<div class="result">' + esc(j.result || 'Finished, but it sent no summary.') + '</div>';
+      if (j.shotUrl) {
+        body += '<img class="shot" loading="lazy" alt="' + esc(j.shotCaption || 'screen when it finished') + '" src="' +
+          esc(mediaSrc({ url: j.shotUrl })) + '" data-pc-shot>';
+      } else if (j.shotMissing) {
+        body += '<div class="noshot">No screenshot: the PC couldn’t capture its screen, which usually means it is locked or the display is off. The summary above is still the real result.</div>';
+      } else {
+        body += '<div class="noshot">No screenshot was taken for this one.</div>';
+      }
+    } else if (phase === 'timed_out') {
+      body = '<div class="why bad">Ran past the ' + esc(String((limits && limits.maxRunMin) || 120)) + '-minute limit and was stopped before it finished.</div>';
+    } else if (phase === 'not_picked_up') {
+      body = '<div class="why bad">The PC never took this. It is off, asleep, or the PC agent isn’t running. Nothing was done — ask again once it is on.</div>';
+    } else if (phase === 'lost') {
+      body = '<div class="why bad">The PC stopped reporting, so this may not have finished. If it comes back with a result, it appears here.</div>';
+    } else if (phase === 'stopped') {
+      body = '<div class="why">Stopped before it finished.</div>';
+    } else {
+      body = '<div class="why bad">' + esc(pcEnd(j) || 'It failed without saying why.') + '</div>';
+    }
+    if ((phase === 'timed_out' || phase === 'lost') && pcLast(j)) {
+      body += '<div class="meta">Last thing it reported: ' + esc(pcLast(j)) + '</div>';
+    }
+    const asks = mine.map((a) =>
+      '<div class="pc-approve"><strong>Wants your OK:</strong> ' + esc(a.summary) +
+      '<div class="row"><button class="btn primary" data-pc-allow="' + esc(a.id) + '">Approve</button>' +
+      '<button class="btn" data-pc-deny="' + esc(a.id) + '">Deny</button></div></div>').join('');
+    const cost = typeof j.costUsd === 'number' && phase === 'done' ? ' · $' + j.costUsd.toFixed(2) : '';
+    return '<div class="pc-job' + (mine.length ? ' attn' : '') + '"><div class="top"><span class="proj">' + esc(j.project) +
+      '</span><span class="pc-state ' + tone + '">' + esc(label) + '</span></div>' +
+      '<div class="task">' + esc(j.task) + '</div>' + body + asks +
+      '<div class="meta" style="margin-top:8px">' + esc(pcAgo(j.updatedAt)) + cost + ' · ' + esc(j.id) + '</div>' +
+      (live ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">Stop this session</button>' : '') + '</div>';
+  }
+
+  function renderPc(s) {
+    pcData = s;
+    const jobs = s.jobs || [];
+    const approvals = s.approvals || [];
+    const active = jobs.filter((j) => ['queued', 'running', 'waiting'].includes(j.phase || j.status)).length;
+    const badge = $('pcbadge');
+    badge.textContent = approvals.length || active || '';
+    badge.classList.toggle('hidden', !(approvals.length || active));
+    badge.classList.toggle('attn', approvals.length > 0);
+
+    const link = '<div class="pc-link' + (s.online ? '' : ' off') + '"><span class="dot"></span><span>' +
+      (s.online ? 'PC online' + ((s.projects || []).length ? ' · ' + s.projects.length + ' projects' : '')
+        : 'PC offline' + (s.lastSeenAt ? ' — last heard ' + esc(pcAgo(s.lastSeenAt)) : ' — not heard from since the Keeper last restarted')) +
+      '</span></div>';
+    const offNote = !s.online
+      ? '<div class="pc-note">The PC is off, asleep, or its agent isn’t running. New sessions wait ' +
+        esc(String((s.limits && s.limits.queueMin) || 10)) + ' minutes for it, then are reported as not done.</div>'
+      : '';
+    $('pcbody').innerHTML = link + offNote + (jobs.length
+      ? jobs.map((j) => pcJobCard(j, approvals, s.limits)).join('')
+      : '<div class="pc-empty">No sessions yet. Ask the Keeper to start Claude on one of your projects.</div>');
+  }
+
+  async function pcCall(path, body) {
+    const res = await fetch(path, {
+      method: body ? 'POST' : 'GET',
+      headers: Object.assign({ Authorization: 'Bearer ' + token }, body ? { 'Content-Type': 'application/json' } : {}),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok && !body) throw new Error(String(res.status));
+    return res.json();
+  }
+
+  async function loadPc() {
+    try { renderPc(await pcCall('/pc/state')); }
+    catch {
+      if (!pcData) $('pcbody').textContent = 'couldn’t reach the PC bridge just now';
+      else if (!$('pcbody').querySelector('.pc-stale')) {
+        $('pcbody').insertAdjacentHTML('afterbegin', '<div class="pc-note pc-stale">Couldn’t refresh — this is the last thing it knew.</div>');
+      }
+    }
+  }
+
+  // An <img> that 404s: the relay keeps only its most recent screenshots.
+  $('pcbody').addEventListener('error', (e) => {
+    if (e.target && e.target.hasAttribute && e.target.hasAttribute('data-pc-shot')) {
+      e.target.outerHTML = '<div class="noshot">The screenshot is no longer on the server (it keeps only the most recent ones).</div>';
+    }
+  }, true);
+
+  $('pcbody').addEventListener('click', async (e) => {
+    const t = e.target.closest('button');
+    if (!t) return;
+    const stop = t.dataset.pcStop;
+    const allow = t.dataset.pcAllow;
+    const deny = t.dataset.pcDeny;
+    if (!stop && !allow && !deny) return;
+    t.disabled = true;
+    try {
+      const r = stop ? await pcCall('/pc/stop', { jobId: stop }) : await pcCall('/pc/approve', { id: allow || deny, allow: Boolean(allow) });
+      if (!r.ok) toast(stop ? 'that session already ended' : 'that request was already answered');
+    } catch { toast('couldn’t reach it — nothing was sent'); }
+    void loadPc();
+  });
+
+  // Badge while the sheet is shut; faster refresh while it is open.
+  function pcTick() {
+    clearTimeout(pcTimer);
+    if (token && !document.hidden && !$('app').classList.contains('hidden')) void loadPc();
+    pcTimer = setTimeout(pcTick, $('pc').classList.contains('open') ? 4000 : 30000);
   }
 
   // ══ install ═══════════════════════════════════════════════════════════

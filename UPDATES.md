@@ -1,3 +1,7 @@
+## 2026-10-14 12:00
+- New **PC sheet** in the web UI (header monitor button, badge for active/awaiting-approval): every session shows queued / running / needs your OK / done / failed / timed out / PC didn’t answer / lost contact / stopped, with the summary, finish screenshot, and plain explanations for a locked PC (no screenshot), an offline PC, and expired screenshots. Approve/Deny/Stop are buttons only; nothing auto-approves.
+- `pcBridge.ts`: `jobSummary` gains `phase`, `shotUrl`, `shotCaption`, `shotMissing`; `/pc/state` gains `lastSeenAt` and `limits` (additive; relay behaviour unchanged). Preview server has canned PC data. `npm test` 12/12, typecheck clean. On branch `ui-pc-session-lifecycle`, not merged or deployed.
+
 ## 2026-10-14 11:21
 - Committed the 00:10 PC-bridge hardening on branch `pc-bridge-durable-delivery` and pushed that branch (not `main`, because a push to `main` redeploys Railway). `npm test` 11/11, typecheck clean. Still not deployed; the PC agent still runs the old code.
 - `docs/HANDOFF-pc-bridge.md` now has a phase status table: Phase 1 live, hardening committed but not merged, Phase 2 (logins) and Phase 3 (live view) not started.
