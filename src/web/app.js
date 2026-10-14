@@ -1149,6 +1149,19 @@
       (phase === 'idle' ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">End this session</button>' : '') + '</div>';
   }
 
+  // Start a session from here. Meeseeks (one task, then gone) is the default; Meeseeks Prime stays open for follow-ups.
+  function pcStartForm(s) {
+    const projs = s.projects || [];
+    if (!projs.length) return '';
+    const modes = (s.modes && s.modes.length) ? s.modes : [{ id: 'meeseeks', label: 'Meeseeks' }, { id: 'persistent', label: 'Meeseeks Prime' }];
+    return '<div class="pc-start" data-pc-start><select data-pc-project aria-label="Project">' +
+      projs.map((p) => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join('') + '</select>' +
+      '<select data-pc-mode aria-label="Session type">' +
+      modes.map((m) => '<option value="' + esc(m.id) + '">' + esc(m.label) + (m.id === 'persistent' ? ' — stays open for follow-ups' : ' — one task, then done') + '</option>').join('') +
+      '</select><input type="text" maxlength="2000" data-pc-task placeholder="What should Claude do?" aria-label="Task">' +
+      '<button class="btn primary" data-pc-begin>Start</button></div>';
+  }
+
   function renderPc(s) {
     pcData = s;
     const jobs = s.jobs || [];
@@ -1174,9 +1187,20 @@
       if (el.value) drafts[el.dataset.pcDraft] = el.value;
       if (el === document.activeElement) focused = el.dataset.pcDraft;
     });
-    $('pcbody').innerHTML = link + offNote + (jobs.length
+    const startSel = $('pcbody').querySelector('[data-pc-project]');
+    const startKeep = { project: startSel ? startSel.value : '', mode: ($('pcbody').querySelector('[data-pc-mode]') || {}).value || 'meeseeks',
+      task: ($('pcbody').querySelector('[data-pc-task]') || {}).value || '' };
+    const startFocus = document.activeElement && document.activeElement.hasAttribute && document.activeElement.hasAttribute('data-pc-task');
+    $('pcbody').innerHTML = link + offNote + pcStartForm(s) + (jobs.length
       ? jobs.map((j) => pcJobCard(j, approvals, s.limits)).join('')
       : '<div class="pc-empty">No sessions yet. Ask the Keeper to start Claude on one of your projects.</div>');
+    const f = $('pcbody').querySelector('[data-pc-start]');
+    if (f) {
+      if (startKeep.project) f.querySelector('[data-pc-project]').value = startKeep.project;
+      f.querySelector('[data-pc-mode]').value = startKeep.mode;
+      f.querySelector('[data-pc-task]').value = startKeep.task;
+      if (startFocus) f.querySelector('[data-pc-task]').focus();
+    }
     $('pcbody').querySelectorAll('[data-pc-draft]').forEach((el) => {
       if (drafts[el.dataset.pcDraft]) el.value = drafts[el.dataset.pcDraft];
       if (el.dataset.pcDraft === focused) el.focus();
@@ -1217,6 +1241,22 @@
     const allow = t.dataset.pcAllow;
     const deny = t.dataset.pcDeny;
     const send = t.dataset.pcSend;
+    if (t.hasAttribute('data-pc-begin')) {
+      const box = t.closest('[data-pc-start]');
+      const project = box.querySelector('[data-pc-project]').value;
+      const mode = box.querySelector('[data-pc-mode]').value;
+      const taskEl = box.querySelector('[data-pc-task]');
+      const task = taskEl.value.trim();
+      if (!task) { toast('type the task first'); return; }
+      t.disabled = true;
+      try {
+        const r = await pcCall('/pc/start', { project, task, mode });
+        if (!r.ok) toast(r.error || 'couldn’t start that session');
+        else taskEl.value = '';
+      } catch { toast('couldn’t reach it — nothing was started'); }
+      void loadPc();
+      return;
+    }
     if (!stop && !allow && !deny && !send) return;
     if (send) {
       const field = [...$('pcbody').querySelectorAll('[data-pc-draft]')].find((el) => el.dataset.pcDraft === send);

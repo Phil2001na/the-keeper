@@ -2183,4 +2183,8 @@ input[type='range']::-moz-range-thumb {
 .pc-job .stop { margin-top: 10px; }
 .pc-follow { display: flex; gap: 8px; margin-top: 10px; }
 .pc-follow input { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--accent-line); background: transparent; color: var(--text); }
+.pc-start { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.pc-start select, .pc-start input { font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--accent-line); background: transparent; color: var(--text); min-width: 0; }
+.pc-start select option { color: #111; }
+.pc-start .btn { justify-content: center; }
 .pc-empty { font-size: 13px; color: var(--text-faint); line-height: 1.5; }

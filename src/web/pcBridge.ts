@@ -76,7 +76,7 @@ export const SESSION_MODES: SessionMode[] = ['meeseeks', 'persistent'];
 // but has not chosen one. Change the label here only; nothing else depends on it.
 export const MODE_LABELS: Record<SessionMode, string> = {
   meeseeks: 'Meeseeks',
-  persistent: 'Persistent Meeseeks (provisional name)',
+  persistent: 'Meeseeks Prime',
 };
 
 export function parseMode(v: unknown): SessionMode | null {

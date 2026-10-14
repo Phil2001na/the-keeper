@@ -236,13 +236,13 @@ const server = createServer(async (req, res) => {
     if (path === '/pc/state') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({
-        online: true, lastSeenAt: now, projects: ['solarize', 'the-keeper'],
+        online: true, lastSeenAt: now, modes: [{ id: 'meeseeks', label: 'Meeseeks' }, { id: 'persistent', label: 'Meeseeks Prime' }], projects: ['solarize', 'the-keeper'],
         limits: { queueMin: 10, lostContactMin: 5, maxRunMin: 120 },
         approvals: [{ id: 'ap1', jobId: 'w1', tool: 'Bash', summary: 'Run: npm install left-pad', at: now - m }],
         jobs: [
           job('w1', 'solarize', 'waiting', 'waiting', { recent: [{ at: now, kind: 'step', text: 'installing a package' }] }),
           job('q1', 'the-keeper', 'queued', 'queued'),
-          job('p1', 'solarize', 'idle', 'idle', { mode: 'persistent', modeLabel: 'Persistent Meeseeks (provisional name)', result: 'Fixed the rounding; waiting for what is next.' }),
+          job('p1', 'solarize', 'idle', 'idle', { mode: 'persistent', modeLabel: 'Meeseeks Prime', result: 'Fixed the rounding; waiting for what is next.' }),
           job('r1', 'solarize', 'running', 'running', { recent: [{ at: now, kind: 'step', text: 'editing cart.ts' }] }),
           job('d1', 'solarize', 'done', 'done', { result: 'Rounded totals to cents; tests pass.', costUsd: 0.42, hasShot: true, shotUrl: '/icons/galaxy-backdrop.png', shotCaption: 'screen when it finished' }),
           job('d2', 'the-keeper', 'done', 'done', { result: 'Renamed the helper; typecheck clean.', shotMissing: true }),
