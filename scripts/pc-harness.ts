@@ -33,6 +33,6 @@ createServer((req, res) => {
 }).listen(8787, () => console.log('harness on :8787'));
 const task = process.argv[2] ?? 'say hi';
 const iv = setInterval(() => {
-  const r = startJob('sandbox', task, MODE);
+  const r = startJob('sandbox', task, MODE, { engine: process.env.PC_HARNESS_ENGINE === 'codex' ? 'codex' : 'claude' });
   if (r.ok) { console.log('queued', r.job.id); clearInterval(iv); }
 }, 1000);

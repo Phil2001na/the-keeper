@@ -62,6 +62,10 @@ const OPENAI_COMPAT: Record<string, { url: string; apiKey: () => string }> = {
 };
 
 export async function createMessage(req: LlmRequest): Promise<LlmResponse> {
+  // OpenAI direct goes through the Responses API: Chat Completions refuses any
+  // reasoning effort when tools are present, which left a tool-first agent
+  // thinking at 'none' on every turn. Set OPENAI_API_STYLE=chat to go back.
+  if (config.modelProvider === 'openai' && process.env.OPENAI_API_STYLE !== 'chat') return viaOpenAiResponses(req);
   const compat = OPENAI_COMPAT[config.modelProvider];
   if (compat) return viaOpenAiCompat(req, compat.url, compat.apiKey());
   return viaAnthropic(req);
@@ -338,5 +342,147 @@ async function viaOpenAiCompat(req: LlmRequest, url: string, apiKey: string): Pr
   } as unknown as Anthropic.Usage;
 
   const stop_reason = choice?.finish_reason === 'tool_calls' ? 'tool_use' : 'end_turn';
+  return { content, usage, stop_reason };
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI Responses API (MODEL_PROVIDER=openai)
+// ---------------------------------------------------------------------------
+//
+// Stateless (store: false), so the model's reasoning for a tool call has to
+// travel with the conversation: we ask for it encrypted, stash it on the
+// assistant's first block (`_reasoning`), and hand it back before that turn's
+// function calls on the next round. Same trick as Gemini's thought_signature.
+
+type ReasoningItem = { type: 'reasoning'; [k: string]: unknown };
+type WithReasoning = { _reasoning?: ReasoningItem[] };
+
+function toolsToResponses(tools: Anthropic.Messages.ToolUnion[]): unknown[] {
+  const out: unknown[] = [];
+  for (const t of tools) {
+    if ('type' in t && t.type !== 'custom') continue;
+    const tool = t as Anthropic.Messages.Tool;
+    out.push({ type: 'function', name: tool.name, description: tool.description ?? '', parameters: tool.input_schema, strict: false });
+  }
+  return out;
+}
+
+function messagesToResponses(messages: Anthropic.MessageParam[]): unknown[] {
+  const out: unknown[] = [];
+  for (const m of messages) {
+    if (typeof m.content === 'string') {
+      out.push({ role: m.role, content: m.content });
+      continue;
+    }
+    if (m.role === 'user') {
+      const parts: unknown[] = [];
+      for (const b of m.content) {
+        if (b.type === 'tool_result') {
+          const r = b as Anthropic.ToolResultBlockParam;
+          out.push({ type: 'function_call_output', call_id: r.tool_use_id, output: blockContentToText(r.content) });
+        } else if (b.type === 'text') parts.push({ type: 'input_text', text: b.text });
+        else if (b.type === 'image' && b.source.type === 'base64') {
+          parts.push({ type: 'input_image', image_url: `data:${b.source.media_type};base64,${b.source.data}` });
+        } else if (b.type === 'document') {
+          const src = (b as Anthropic.DocumentBlockParam).source;
+          if (src.type === 'base64') parts.push({ type: 'input_file', filename: 'document.pdf', file_data: `data:${src.media_type};base64,${src.data}` });
+        }
+      }
+      if (parts.length) out.push({ role: 'user', content: parts });
+      continue;
+    }
+    // assistant: its reasoning first, then what it said, then the calls it made.
+    const reasoning = (m.content[0] as WithReasoning | undefined)?._reasoning;
+    if (reasoning?.length) out.push(...reasoning);
+    const text = m.content.filter((b) => b.type === 'text').map((b) => (b as Anthropic.TextBlockParam).text).join('\n');
+    if (text) out.push({ role: 'assistant', content: text });
+    for (const b of m.content) {
+      if (b.type !== 'tool_use') continue;
+      const u = b as Anthropic.ToolUseBlockParam;
+      out.push({ type: 'function_call', call_id: u.id, name: u.name, arguments: JSON.stringify(u.input ?? {}) });
+    }
+  }
+  return out;
+}
+
+interface ResponsesOutput {
+  status?: string;
+  output?: Array<{ type: string; content?: Array<{ type: string; text?: string }>; call_id?: string; name?: string; arguments?: string }>;
+  usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } };
+  error?: { message?: string } | null;
+}
+
+async function viaOpenAiResponses(req: LlmRequest): Promise<LlmResponse> {
+  const tools = toolsToResponses(req.tools);
+  const body = {
+    model: req.model,
+    instructions: systemToString(req.system),
+    input: messagesToResponses(req.messages),
+    tools: tools.length ? tools : undefined,
+    reasoning: { effort: req.reasoningEffort ?? config.reasoningEffort },
+    max_output_tokens: req.max_tokens,
+    store: false,
+    include: ['reasoning.encrypted_content'],
+  };
+
+  let r: Response;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      r = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.openaiApiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (netErr) {
+      if (attempt >= MAX_ATTEMPTS) throw netErr;
+      await sleep(backoffMs(attempt));
+      continue;
+    }
+    if (r.ok) break;
+    if (RETRYABLE_STATUS.has(r.status) && attempt < MAX_ATTEMPTS) {
+      const wait = retryAfterMs(r) ?? backoffMs(attempt);
+      console.error(`[llm] openai ${r.status} (attempt ${attempt}/${MAX_ATTEMPTS}) — retrying in ${wait}ms`);
+      await sleep(wait);
+      continue;
+    }
+    const detail = await r.text().catch(() => '');
+    throw new Error(`openai ${r.status}: ${detail.slice(0, 500)}`);
+  }
+
+  const data = (await r.json()) as ResponsesOutput;
+  if (data.error) throw new Error(`openai error: ${data.error.message ?? 'unknown'}`);
+
+  const content: Anthropic.ContentBlock[] = [];
+  const reasoning: ReasoningItem[] = [];
+  for (const item of data.output ?? []) {
+    if (item.type === 'reasoning') reasoning.push(item as unknown as ReasoningItem);
+    else if (item.type === 'message') {
+      const text = (item.content ?? []).filter((c) => c.type === 'output_text').map((c) => c.text ?? '').join('');
+      if (text) content.push({ type: 'text', text, citations: null } as unknown as Anthropic.ContentBlock);
+    } else if (item.type === 'function_call' && item.call_id && item.name) {
+      let input: unknown = {};
+      try {
+        input = JSON.parse(item.arguments || '{}');
+      } catch {
+        input = {};
+      }
+      content.push({ type: 'tool_use', id: item.call_id, name: item.name, input } as unknown as Anthropic.ContentBlock);
+    }
+  }
+  // Reasoning only matters if the turn continues (a tool call); keep it on the first block.
+  if (reasoning.length && content.length && content.some((b) => b.type === 'tool_use')) {
+    (content[0] as unknown as WithReasoning)._reasoning = reasoning;
+  }
+
+  const u = data.usage ?? {};
+  const cached = u.input_tokens_details?.cached_tokens ?? 0;
+  const usage = {
+    input_tokens: Math.max(0, (u.input_tokens ?? 0) - cached),
+    output_tokens: u.output_tokens ?? 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: cached,
+  } as unknown as Anthropic.Usage;
+
+  const stop_reason = content.some((b) => b.type === 'tool_use') ? 'tool_use' : data.status === 'incomplete' ? 'max_tokens' : 'end_turn';
   return { content, usage, stop_reason };
 }

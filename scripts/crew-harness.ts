@@ -23,7 +23,7 @@ pcEvents.on('event', (e: PcEvent) => {
   if (job.role === 'prime' && event.kind === 'turn_done' && ++primeTurns >= WANT) {
     setTimeout(() => { stopJob(job.id); setTimeout(() => process.exit(0), 1500); }, 500);
   }
-  if (job.role === 'prime' && event.kind === 'error') setTimeout(() => process.exit(1), 500);
+  if (job.role === 'prime' && event.kind === 'error') setTimeout(() => process.exit(job.status === 'stopped' ? 0 : 1), 500);
 });
 createServer((req, res) => {
   const path = new URL(req.url ?? '/', 'http://x').pathname;

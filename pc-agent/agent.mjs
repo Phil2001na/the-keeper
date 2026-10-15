@@ -242,7 +242,7 @@ const GATE = {
   claude: `
 - Anything risky (sending messages or emails, deleting real data, payments, production deploys, anything on EDU prod) goes to his phone for Approve/Deny automatically. Just do it the normal way.`,
   codex: `
-- There is no Approve/Deny on his phone for this session. Do not do anything irreversible or outward-facing (sending messages or emails, deleting real data, payments, production deploys): stop there and say exactly what you would do.`,
+- You work in a sandbox: your project folder is writable and the network is open. Anything beyond it goes to his phone for Approve/Deny automatically, so just do it the normal way. For irreversible or outward-facing actions (sending messages or emails, deleting real data, payments, production deploys), request the escalation rather than finding a way around the sandbox.`,
 };
 
 // Only added in the persistent mode. A one-task session never sees it.
@@ -338,32 +338,64 @@ async function runClaude(job, proj, me, hooks) {
   return { result, cost };
 }
 
-// Codex runs as `codex exec --json` (one task per process; a follow-up is
-// `codex exec resume <thread>`). It is started through node + codex.js, not the
-// .cmd shim, so no shell ever parses the prompt; the prompt goes in on stdin.
-// It runs on his ChatGPT plan with his ~/.codex/config.toml (sandbox, plugins).
+// Codex runs through `codex app-server` (JSON-RPC over stdio, one JSON message
+// per line). That is what lets its approvals reach his phone: the project
+// folder is a write sandbox with network on, and anything Codex wants beyond
+// it (writing elsewhere, escalated commands, extra permissions, an MCP server
+// asking) arrives here as a request and goes to Approve/Deny like Claude's.
+// It is started through node + codex.js, never a shell, and runs on his
+// ChatGPT plan. A follow-up resumes the same thread by id.
 const CODEX_JS = CONFIG.codexJs || join(process.env.APPDATA || '', 'npm', 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
 const toml = (v) => JSON.stringify(v); // a JSON string is a valid TOML basic string
 
 function codexStep(item) {
   const short = (v) => String(v ?? '').replace(/\s+/g, ' ').slice(0, 140);
   switch (item.type) {
-    case 'command_execution': return `running: ${short(String(item.command ?? '').replace(/^"[^"]*powershell\.exe"\s+-Command\s+/i, ''))}`;
-    case 'file_change': return `editing ${short((item.changes ?? []).map((c) => c.path).join(', ') || 'files')}`;
-    case 'mcp_tool_call': return `using ${short(`${item.server ?? ''} ${item.tool ?? ''}`.trim())}`;
-    case 'web_search': return `web search: ${short(item.query)}`;
+    case 'commandExecution': return `running: ${short(String(item.command ?? '').replace(/^"[^"]*powershell\.exe"\s+-Command\s+/i, ''))}`;
+    case 'fileChange': return `editing ${short((item.changes ?? []).map((c) => c.path).join(', ') || 'files')}`;
+    case 'mcpToolCall': return `using ${short(`${item.server ?? ''} ${item.tool ?? ''}`.trim())}`;
+    case 'webSearch': return `web search: ${short(item.query)}`;
     default: return null;
+  }
+}
+
+const RISKY_TOOL = /send|delete|remove|trash|pay|purchase|buy|transfer|deploy|publish|post|submit|email|message|drop/i;
+
+/** What his phone shows for a Codex request, and how to answer it either way. */
+function codexAsk(method, p) {
+  const s = (v, n = 600) => String(v ?? '').slice(0, n);
+  const why = p.reason ? `\n(${s(p.reason, 300)})` : '';
+  switch (method) {
+    case 'item/commandExecution/requestApproval':
+      return { tool: 'Bash', text: `Run a command:\n${s(p.command ?? (p.commandActions ?? []).map((a) => a.command).join(' && '))}${why}`, yes: { decision: 'accept' }, no: { decision: 'decline' } };
+    case 'item/fileChange/requestApproval':
+      return { tool: 'Edit', text: `Change files${p.grantRoot ? ` under ${s(p.grantRoot, 300)}` : ''}${why || ' outside its project folder'}`, yes: { decision: 'accept' }, no: { decision: 'decline' } };
+    case 'item/permissions/requestApproval':
+      return { tool: 'Permissions', text: `Get extra permissions: ${s(JSON.stringify(p.permissions), 400)}${why}`, yes: { permissions: p.permissions ?? {}, scope: 'turn' }, no: { permissions: {}, scope: 'turn' } };
+    case 'mcpServer/elicitation/request': {
+      const yes = { action: 'accept', content: {}, _meta: null };
+      const no = { action: 'decline', content: null, _meta: null };
+      // Codex asks before every MCP tool call in this mode. Like Claude's auto mode, ordinary
+      // tool use (the crew, browser and desktop tools) just runs; only a tool whose name says
+      // it sends, deletes, pays or publishes something goes to his phone.
+      const tool = String(p.message ?? '').match(/run tool "([^"]+)"/)?.[1] ?? '';
+      if (p._meta?.codex_approval_kind === 'mcp_tool_call' && !RISKY_TOOL.test(tool)) return { auto: true, yes };
+      return { tool: `mcp ${s(p.serverName, 60)}`, text: `${s(p.serverName, 60)}${tool ? ` → ${tool}` : ''}: ${s(p.message, 400)}${p._meta?.tool_params ? `
+${s(JSON.stringify(p._meta.tool_params), 400)}` : ''}`, yes, no };
+    }
+    case 'execCommandApproval':
+      return { tool: 'Bash', text: `Run a command:\n${s((p.command ?? []).join(' '))}${why}`, yes: { decision: 'approved' }, no: { decision: { denied: { rejection: 'Philip denied this from his phone.' } } } };
+    case 'applyPatchApproval':
+      return { tool: 'Edit', text: `Change files: ${s(Object.keys(p.fileChanges ?? {}).join(', '), 400)}${why}`, yes: { decision: 'approved' }, no: { decision: { denied: { rejection: 'Philip denied this from his phone.' } } } };
+    default:
+      return null;
   }
 }
 
 function runCodex(job, proj, me, hooks) {
   if (!existsSync(CODEX_JS)) return Promise.reject(new Error(`Codex is not installed where the agent looks (${CODEX_JS}). Set codexJs in projects.json.`));
-  const args = [CODEX_JS, 'exec'];
-  if (job.resume) args.push('resume');
   // Codex's own sub-agents would be invisible to him: the crew is keeper_crew only.
-  args.push('--json', '--skip-git-repo-check', '--disable', 'multi_agent');
-  if (job.model) args.push('-m', job.model);
-  args.push('-c', `developer_instructions=${toml(systemBrief(job, 'codex'))}`);
+  const args = [CODEX_JS, 'app-server', '--disable', 'multi_agent'];
   if (job.role === 'prime') {
     args.push(
       '-c', `mcp_servers.keeper_crew.command=${toml(process.execPath)}`,
@@ -372,49 +404,112 @@ function runCodex(job, proj, me, hooks) {
       '-c', 'mcp_servers.keeper_crew.tool_timeout_sec=900',
     );
   }
-  if (job.resume) args.push(job.resume);
-  args.push('-');
 
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { cwd: proj.path, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    // Abort kills the whole tree: codex.js starts the native binary as its child.
-    const kill = () => execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, (err) => { if (err) child.kill(); });
-    me.abort.signal.addEventListener('abort', kill, { once: true });
-    child.stdin.end(job.task);
+    let settled = false;
+    const finish = (fn, v) => { if (settled) return; settled = true; try { child.stdin.end(); } catch {} kill(); fn(v); };
+    // The whole tree: codex.js starts the native binary as its child.
+    const kill = () => execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, (err) => { if (err) try { child.kill(); } catch {} });
 
+    let nextId = 0;
+    const calls = new Map();
+    const send = (m) => child.stdin.write(JSON.stringify(m) + '\n');
+    const call = (method, params) => new Promise((res, rej) => { const id = ++nextId; calls.set(id, { res, rej }); send({ id, method, params }); });
+
+    let threadId = '';
+    let turnId = '';
     let result = '';
-    let failure = '';
     let errTail = '';
+    me.abort.signal.addEventListener('abort', () => {
+      // Ask nicely first so the thread is saved cleanly, then make sure.
+      if (threadId && turnId) call('turn/interrupt', { threadId, turnId }).catch(() => {});
+      setTimeout(() => finish(reject, new Error('aborted')), 1500);
+    }, { once: true });
+
+    const approve = async (m) => {
+      const ask = codexAsk(m.method, m.params ?? {});
+      if (ask?.auto) {
+        send({ id: m.id, result: ask.yes });
+        return;
+      }
+      if (!ask) {
+        // A question we cannot put to him as a yes/no (free-text input): answer empty, never hang.
+        send({ id: m.id, result: m.method === 'item/tool/requestUserInput' ? { answers: {} } : {} });
+        return;
+      }
+      const approvalId = randomUUID();
+      const decision = new Promise((res) => {
+        pendingApprovals.set(approvalId, { resolve: res, jobId: job.id, tool: ask.tool, text: ask.text });
+        me.abort.signal.addEventListener('abort', () => res({ allow: false, note: 'aborted' }), { once: true });
+      });
+      await event(job.id, 'approval', { approvalId, tool: ask.tool, text: ask.text });
+      const d = await decision;
+      pendingApprovals.delete(approvalId);
+      log('approval', job.id, ask.tool, d.allow ? 'ALLOW' : 'DENY');
+      send({ id: m.id, result: d.allow ? ask.yes : ask.no });
+    };
+
     let chain = Promise.resolve();
     createInterface({ input: child.stdout }).on('line', (line) => {
-      let e;
-      try { e = JSON.parse(line); } catch { return; }
+      let m;
+      try { m = JSON.parse(line); } catch { return; }
+      if (m.id !== undefined && !m.method) {
+        const c = calls.get(m.id);
+        calls.delete(m.id);
+        if (c) m.error ? c.rej(new Error(m.error.message ?? JSON.stringify(m.error))) : c.res(m.result);
+        return;
+      }
+      if (m.method && m.id !== undefined) { void approve(m).catch((e) => log('codex approval failed:', e.message)); return; }
       chain = chain.then(async () => {
-        if (e.type === 'thread.started' && e.thread_id) await hooks.onStarted(e.thread_id);
-        else if (e.type === 'item.completed' && e.item?.type === 'agent_message' && e.item.text?.trim()) {
-          result = e.item.text.trim();
-          await hooks.onText(result);
-        } else if (e.type === 'item.started' && e.item) {
-          const step = codexStep(e.item);
+        const p = m.params ?? {};
+        if (m.method === 'turn/started') turnId = p.turn?.id ?? turnId;
+        else if (m.method === 'item/started' && p.item) {
+          const step = codexStep(p.item);
           if (step) await hooks.onStep(step);
-        } else if (e.type === 'turn.failed' || e.type === 'error') {
-          failure = String(e.error?.message ?? e.message ?? 'Codex reported an error').slice(0, 800);
+        } else if (m.method === 'item/completed' && p.item?.type === 'agentMessage' && p.item.text?.trim()) {
+          result = p.item.text.trim();
+          await hooks.onText(result);
+        } else if (m.method === 'turn/completed') {
+          const t = p.turn ?? {};
+          if (t.status === 'failed') finish(reject, new Error(t.error?.message ?? 'Codex reported the turn failed'));
+          else if (t.status === 'interrupted') finish(reject, new Error('aborted'));
+          else finish(resolve, { result, cost: undefined });
+        } else if (m.method === 'error' && p.willRetry === false && !result) {
+          finish(reject, new Error(p.error?.message ?? 'Codex reported an error'));
         }
       }).catch(() => {});
     });
     child.stderr.on('data', (d) => { errTail = (errTail + d.toString()).slice(-2000); });
-    child.on('error', (err) => reject(err));
-    child.on('close', async (code) => {
-      await chain;
-      if (me.abort.signal.aborted) return reject(new Error('aborted'));
-      if (failure && !result) return reject(new Error(failure));
-      if (code !== 0 && !result) {
-        // His other MCP servers (Lovable etc.) log auth noise on stderr; that is not why it failed.
-        const why = errTail.split(/\r?\n/).filter((l) => l.trim() && !/rmcp::transport|AuthRequired|Reading additional input/.test(l)).slice(-3).join(' | ');
-        return reject(new Error(`Codex exited with code ${code}${why ? `: ${why.slice(0, 600)}` : ''}`));
-      }
-      resolve({ result: failure && result ? `${result}\n\n(Codex also reported: ${failure})` : result, cost: undefined });
+    child.on('error', (err) => finish(reject, err));
+    child.on('close', (code) => {
+      // His other MCP servers (Lovable etc.) log auth noise on stderr; that is not why it stopped.
+      const why = errTail.split(/\r?\n/).filter((l) => l.trim() && !/rmcp::transport|AuthRequired/.test(l)).slice(-3).join(' | ');
+      finish(reject, new Error(`Codex stopped unexpectedly (exit ${code})${why ? `: ${why.slice(0, 600)}` : ''}`));
     });
+
+    (async () => {
+      await call('initialize', { clientInfo: { name: 'keeper-pc-agent', version: '1.0' } });
+      send({ method: 'initialized' });
+      const common = {
+        cwd: proj.path,
+        approvalPolicy: proj.strict ? 'untrusted' : 'on-request',
+        approvalsReviewer: 'user',
+        sandbox: 'workspace-write',
+        developerInstructions: systemBrief(job, 'codex'),
+        ...(job.model ? { model: job.model } : {}),
+      };
+      const t = job.resume ? await call('thread/resume', { threadId: job.resume, ...common, excludeTurns: true }) : await call('thread/start', common);
+      threadId = t.thread.id;
+      await hooks.onStarted(threadId);
+      const turn = await call('turn/start', {
+        threadId,
+        input: [{ type: 'text', text: job.task, text_elements: [] }],
+        // Network on inside the project sandbox: web work should not need his OK, writes elsewhere should.
+        sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+      });
+      turnId = turn?.turn?.id ?? turnId;
+    })().catch((e) => finish(reject, e));
   });
 }
 
@@ -435,7 +530,7 @@ async function runJob(job) {
     abort.abort();
   }, MAX_MINUTES * 60_000);
 
-  // Codex has no Approve/Deny channel, so strict projects (EDU prod) always run on Claude.
+  // Strict projects (EDU prod) stay on Claude: its ask-for-everything flow is the one proven on prod.
   const engine = job.engine === 'codex' && !proj.strict ? 'codex' : 'claude';
   me.engine = engine;
   if (job.engine === 'codex' && engine === 'claude') log('codex refused on strict project, using claude', job.id, job.project);
