@@ -83,6 +83,15 @@ const PRIME_MODEL = (process.env.PRIME_MODEL ?? 'gpt-6.1-sol').trim() || undefin
 const PRIME_PROJECT = process.env.PRIME_PROJECT ?? 'the-keeper';
 export const PRIME_NAME = 'Meeseeks Prime';
 
+// Crew lessons (src/agent/crewLessons.ts owns the store; this module stays
+// database-free). Every job and follow-up carries the current list.
+let crewLessons: string[] = [];
+let recordLesson: (text: string) => void = () => {};
+export function setCrewLessons(list: string[], onPrimeLesson?: (text: string) => void): void {
+  crewLessons = list.slice(-30);
+  if (onPrimeLesson) recordLesson = onPrimeLesson;
+}
+
 export type JobStatus = 'queued' | 'running' | 'waiting' | 'idle' | 'done' | 'failed' | 'stopped';
 
 /**
@@ -276,8 +285,8 @@ function flush(): void {
   const follow = followQueue.splice(0).map((id) => jobs.get(id)).filter((j): j is Job => Boolean(j?.followup));
   for (const j of follow) j.followup!.handedAt = Date.now();
   json(res, 200, {
-    jobs: start.map((j) => ({ id: j.id, project: j.project, task: j.task, mode: j.mode, name: j.name, role: j.role, parentId: j.parentId, engine: j.engine, model: j.model })),
-    followups: follow.map((j) => ({ id: j.id, message: j.followup!.text })),
+    jobs: start.map((j) => ({ id: j.id, project: j.project, task: j.task, mode: j.mode, name: j.name, role: j.role, parentId: j.parentId, engine: j.engine, model: j.model, lessons: crewLessons })),
+    followups: follow.map((j) => ({ id: j.id, message: j.followup!.text, lessons: crewLessons })),
     decisions: decisionQueue.splice(0),
     stops: stopQueue.splice(0),
   });
@@ -937,8 +946,14 @@ export function crewOp(b: Record<string, unknown>): Record<string, unknown> {
       return { ok: true, ...crewStatus(parentId) };
     case 'stop':
       return { ok: crewStop(parentId, String(b.workerId ?? '')) };
+    case 'lesson': {
+      const text = String(b.lesson ?? '').trim();
+      if (!text) return { ok: false, error: 'empty lesson' };
+      recordLesson(text.slice(0, 300));
+      return { ok: true, note: 'Saved. Every agent started from now on will read it.' };
+    }
     default:
-      return { ok: false, error: 'op must be spawn, status or stop' };
+      return { ok: false, error: 'op must be spawn, status, stop or lesson' };
   }
 }
 

@@ -24,6 +24,8 @@ import {
   type DecisionSetStatus,
 } from '../db/repositories.js';
 import { parseRecurrence, nextOccurrence, monthStartUtc } from './recurrence.js';
+import { listLessons, addLesson, forgetLesson } from './crewLessons.js';
+import { briefProblem, withContext } from './brief.js';
 import { startJob, sendToJob, parseMode, parseEngine, ENGINES, SESSION_MODES, MODE_LABELS, stopJob, getJob, listJobs, jobSummary, openApprovals, pcOnline, pcProjects, delegateToPrime, livePrime, PRIME_NAME } from '../web/pcBridge.js';
 import { bus, type PresentCard } from '../web/bus.js';
 import {
@@ -723,7 +725,10 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
       "If Prime is busy, the error says on what: tell him, don't stack another goal.",
     input_schema: {
       type: 'object',
-      properties: { goal: { type: 'string', description: 'What he wants achieved and how to tell it is done. Intent, not instructions.' } },
+      properties: {
+        goal: { type: 'string', description: 'What he wants achieved and how to tell it is done, in a few sentences. Intent, not instructions.' },
+        context: { type: 'string', description: 'Optional: material HE gave you, passed on verbatim (a pasted doc, test logins, URLs). Never your own instructions.' },
+      },
       required: ['goal'],
     },
   },
@@ -742,12 +747,25 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
       type: 'object',
       properties: {
         project: { type: 'string', description: 'Project folder name, e.g. "solarize" or "the-keeper".' },
-        task: { type: 'string', description: 'The goal and what done looks like. Intent, not instructions.' },
+        task: { type: 'string', description: 'The goal and what done looks like, in a few sentences. Intent, not instructions.' },
+        context: { type: 'string', description: 'Optional: material HE gave you, passed on verbatim (a pasted doc, test logins, URLs). Never your own instructions.' },
         engine: { type: 'string', enum: ENGINES, description: 'claude (default) or codex (desktop control).' },
         mode: { type: 'string', enum: SESSION_MODES, description: 'meeseeks = one task then the session ends (default). persistent = stays open for follow-ups.' },
       },
       required: ['project', 'task'],
     },
+  },
+  {
+    name: 'add_crew_lesson',
+    description:
+      'Write down a lesson every future agent on his PC (Prime, workers, Meeseeks) will start with. Use it when he corrects how an agent worked ' +
+      '("don\'t do X", "always Y", "it should have signed in with Google") so the mistake is fixed once, not every time. One short sentence phrased as what to do.',
+    input_schema: { type: 'object', properties: { lesson: { type: 'string' } }, required: ['lesson'] },
+  },
+  {
+    name: 'crew_lessons',
+    description: 'List the lessons every PC agent starts with (id, text, who added it). Pass forget=<id> to drop one he no longer wants.',
+    input_schema: { type: 'object', properties: { forget: { type: 'string', description: 'Lesson id (or prefix) to remove.' } } },
   },
   {
     name: 'claude_sessions',
@@ -2110,7 +2128,10 @@ export async function dispatchTool(
     // ─── Claude Code on the PC ─────────────────────────────────────────────
     case 'delegate_to_prime': {
       if (!pcOnline()) return { output: "The PC isn't checking in, so Prime can't be reached. Tell him; nothing was started." };
-      const r = delegateToPrime(String(input.goal ?? ''));
+      const goal = String(input.goal ?? '');
+      const tooMuch = briefProblem(goal);
+      if (tooMuch) return { output: tooMuch };
+      const r = delegateToPrime(withContext(goal, input.context));
       if (!r.ok) return { output: r.error };
       return {
         output: r.started
@@ -2126,7 +2147,10 @@ export async function dispatchTool(
       if (!mode) return { output: `Unknown mode "${String(input.mode)}". Use one of: ${SESSION_MODES.join(', ')}. Nothing was started.` };
       const engine = parseEngine(input.engine);
       if (!engine) return { output: `Unknown engine "${String(input.engine)}". Use one of: ${ENGINES.join(', ')}. Nothing was started.` };
-      const r = startJob(String(input.project ?? ''), String(input.task ?? ''), mode, { engine });
+      const goal = String(input.task ?? '');
+      const tooMuch = briefProblem(goal);
+      if (tooMuch) return { output: tooMuch };
+      const r = startJob(String(input.project ?? ''), withContext(goal, input.context), mode, { engine, brief: goal });
       if (!r.ok) return { output: r.error };
       return {
         output:
@@ -2135,6 +2159,17 @@ export async function dispatchTool(
           `. He'll get a Telegram ping when it starts, Approve/Deny buttons for anything risky, ` +
           'and a message however it ends. Tell him it is on its way, by name if you like; do not claim it has done anything yet.',
       };
+    }
+    case 'add_crew_lesson': {
+      const l = await addLesson(String(input.lesson ?? ''), 'philip');
+      return { output: l ? `Saved lesson ${l.id}. Every PC agent started from now on reads it.` : 'Not saved: empty, or that lesson is already there.' };
+    }
+    case 'crew_lessons': {
+      if (typeof input.forget === 'string' && input.forget.trim()) {
+        const gone = await forgetLesson(input.forget);
+        return { output: gone ? `Removed: "${gone.text}"` : `No single lesson matches "${input.forget}".` };
+      }
+      return { output: JSON.stringify(listLessons().map((l) => ({ id: l.id, text: l.text, from: l.from }))) };
     }
     case 'claude_sessions': {
       if (typeof input.id === 'string' && input.id.trim()) {

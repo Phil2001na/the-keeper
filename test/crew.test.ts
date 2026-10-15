@@ -2,6 +2,7 @@
 // Run with `npm test`. No network, no Telegram, no database.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { Readable } from 'node:stream';
 
 process.env.REMOTE_BROWSER_TOKEN = 'test-token';
 const pc = await import('../src/web/pcBridge.js');
@@ -128,4 +129,25 @@ test('a relay restart takes the crew back with names and roles from the PC', () 
   assert.equal(p.role, 'prime');
   assert.equal(p.status, 'idle');
   assert.equal(p.name, 'Meeseeks Prime');
+});
+
+test('lessons ride along with every job handed to the PC, and Prime can add one', async () => {
+  pc.notePoll({ projects: ['the-keeper', 'sitepms'], running: [] });
+  for (const j of pc.listJobs()) if (j.role === 'prime') endPrime(j);
+  const added: string[] = [];
+  pc.setCrewLessons(['Sign in with his Google session before calling a site locked.'], (t) => added.push(t));
+  const prime = upPrime('check lessons');
+  assert.equal(pc.crewOp({ op: 'lesson', parentId: prime.id, lesson: 'Never test on the live tenant.' }).ok, true);
+  assert.deepEqual(added, ['Never test on the live tenant.']);
+  // The poll reply that hands out a queued job carries the lessons.
+  const job = pc.startJob('sitepms', 'quick check');
+  assert.ok(job.ok);
+  const body = await new Promise<Record<string, unknown>>((resolve) => {
+    const res = { writeHead() { return res; }, end(b: string) { resolve(JSON.parse(b)); }, on() {} };
+    const req = Object.assign(Readable.from([Buffer.from('{"projects":["the-keeper","sitepms"],"running":[]}')]), { method: 'POST', headers: { 'x-agent-token': 'test-token' } });
+    pc.handlePcBridge(req as never, res as never, '/pc/agent/poll', false);
+  });
+  const handed = (body.jobs as Array<{ id: string; lessons: string[] }>).find((j) => j.id === job.job.id);
+  assert.deepEqual(handed?.lessons, ['Sign in with his Google session before calling a site locked.']);
+  endPrime(prime);
 });

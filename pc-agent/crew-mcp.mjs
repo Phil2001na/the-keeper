@@ -63,6 +63,13 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { minutes: { type: 'number', description: 'Longest to wait, 1-12. Default 10.' } } },
   },
   {
+    name: 'record_lesson',
+    description:
+      'Write down a lesson every future agent on this PC will start with: a mistake a worker made that should never happen again, ' +
+      'or a fact about how Philip wants things done. One short sentence, phrased as what to do. Only for lessons that will matter again.',
+    inputSchema: { type: 'object', properties: { lesson: { type: 'string' } }, required: ['lesson'] },
+  },
+  {
     name: 'stop_worker',
     description: 'Stop one of your workers (it is told and reported as stopped).',
     inputSchema: { type: 'object', properties: { workerId: { type: 'string' } }, required: ['workerId'] },
@@ -91,6 +98,8 @@ async function call(name, args = {}) {
       return crew('status');
     case 'stop_worker':
       return crew('stop', { workerId: args.workerId });
+    case 'record_lesson':
+      return crew('lesson', { lesson: args.lesson });
     case 'wait_for_crew': {
       const mins = Math.min(12, Math.max(1, Number(args.minutes) || 10));
       const until = Date.now() + mins * 60_000;

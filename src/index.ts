@@ -1,5 +1,6 @@
 import { config } from './config.js';
 import { ensureAnchor } from './agent/digest.js';
+import { loadLessons } from './agent/crewLessons.js';
 import { startTelegram } from './telegram/bot.js';
 import { startScheduler } from './scheduler/dueCheck.js';
 import { startWebServer } from './web/server.js';
@@ -24,6 +25,8 @@ function main() {
   startScheduler();
   startWebServer();
   attachPcToKeeper();
+  // Corrections written down for the crew ride along with every PC job.
+  void loadLessons();
 
   console.log('THE KEEPER — up. Reactive (Telegram + web) + proactive (scheduler) live.');
 }

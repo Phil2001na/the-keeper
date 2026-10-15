@@ -1,7 +1,8 @@
 // Local test relay for the PC bridge: no Telegram, no DB. Auto-approves the first
 // permission request and denies the second, printing everything.
 import { createServer } from 'node:http';
-import { handlePcBridge, pcEvents, decide, startJob, sendToJob, stopJob, parseMode, type PcEvent } from '../src/web/pcBridge.js';
+import { handlePcBridge, pcEvents, decide, startJob, sendToJob, stopJob, parseMode, setCrewLessons, type PcEvent } from '../src/web/pcBridge.js';
+if (process.env.PC_HARNESS_LESSON) setCrewLessons([process.env.PC_HARNESS_LESSON]);
 
 let n = 0;
 let endings = 0;

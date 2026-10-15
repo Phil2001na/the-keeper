@@ -265,6 +265,9 @@ You are ${name}, a worker in Meeseeks Prime's crew. You exist to do this one job
 
 function systemBrief(job, engine) {
   let b = BRIEF + GATE[engine];
+  // Mistakes corrected once, so no agent repeats them (src/agent/crewLessons.ts).
+  const lessons = (Array.isArray(job.lessons) ? job.lessons : []).filter((l) => typeof l === 'string' && l.trim()).slice(-30);
+  if (lessons.length) b += `\n\nLessons from earlier corrections. Follow them:\n${lessons.map((l) => `- ${l.slice(0, 300)}`).join('\n')}`;
   if (job.mode === 'persistent') b += BRIEF_PERSISTENT;
   if (job.role === 'prime') b += BRIEF_PRIME;
   if (job.role === 'worker') b += briefWorker(job.name || 'a Meeseeks');
@@ -634,7 +637,7 @@ async function loop() {
           idle.delete(f.id); saveIdle();
           continue;
         }
-        void runJob({ id: f.id, project: s.project, task: f.message, mode: 'persistent', resume: s.sessionId, ...crewId(s) });
+        void runJob({ id: f.id, project: s.project, task: f.message, mode: 'persistent', resume: s.sessionId, lessons: f.lessons, ...crewId(s) });
       }
       for (const job of r.jobs ?? []) {
         if (running.has(job.id) || finished.has(job.id)) continue; // handed out twice
