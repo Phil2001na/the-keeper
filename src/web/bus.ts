@@ -50,6 +50,7 @@ const STEP_LABELS: Record<string, string> = {
   list_domains: 'consulting my memory',
   start_claude_session: 'starting Claude on the PC',
   claude_sessions: 'checking the PC',
+  delegate_to_prime: 'handing it to Meeseeks Prime',
   stop_claude_session: 'stopping a PC session',
   continue_claude_session: 'sending a follow-up to a PC session',
   pc_session: 'PC',

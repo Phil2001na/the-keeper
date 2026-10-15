@@ -240,7 +240,16 @@ const server = createServer(async (req, res) => {
         limits: { queueMin: 10, lostContactMin: 5, maxRunMin: 120 },
         approvals: [{ id: 'ap1', jobId: 'w1', tool: 'Bash', summary: 'Run: npm install left-pad', at: now - m }],
         jobs: [
-          job('w1', 'solarize', 'waiting', 'waiting', { recent: [{ at: now, kind: 'step', text: 'installing a package' }] }),
+          // The crew: Prime up and running, two workers it named, one that died.
+          job('pr1', 'the-keeper', 'running', 'running', { name: 'Meeseeks Prime', role: 'prime', engine: 'codex', model: 'gpt-6.1-sol', mode: 'persistent', modeLabel: 'Meeseeks Prime',
+            brief: 'Test SitePMS end to end through the frontend and report every bug', task: 'Test SitePMS end to end through the frontend and report every bug',
+            recent: [{ at: now, kind: 'step', text: 'using keeper_crew wait_for_crew' }] }),
+          job('cw1', 'sitepms', 'running', 'running', { name: 'Supervisor Rick', role: 'worker', parentId: 'pr1', engine: 'claude', brief: 'Fill in agreements and approve them as the supervisor',
+            recent: [{ at: now, kind: 'step', text: 'opening sitepms.vercel.app/agreements' }] }),
+          job('cw2', 'sitepms', 'running', 'running', { name: 'Rule-Breaker Meeseeks', role: 'worker', parentId: 'pr1', engine: 'claude', brief: 'Try to break the check-in and assessment rules as Selma (HR)' }),
+          job('cw3', 'sitepms', 'failed', 'failed', { name: 'Doofus Rick', role: 'worker', parentId: 'pr1', engine: 'codex', brief: 'Check the mobile layout on the desktop browser',
+            recent: [{ at: now, kind: 'error', text: 'Codex exited with code 1' }] }),
+          job('w1', 'solarize', 'waiting', 'waiting', { name: 'Can-Do Meeseeks', role: 'solo', engine: 'claude', recent: [{ at: now, kind: 'step', text: 'installing a package' }] }),
           job('q1', 'the-keeper', 'queued', 'queued'),
           job('p1', 'solarize', 'idle', 'idle', { mode: 'persistent', modeLabel: 'Meeseeks Prime', result: 'Fixed the rounding; waiting for what is next.' }),
           job('r1', 'solarize', 'running', 'running', { recent: [{ at: now, kind: 'step', text: 'editing cart.ts' }] }),

@@ -13,6 +13,6 @@
   "strict": [
     "EDU REFACTOR"
   ],
-  "maxParallel": 2,
+  "maxParallel": 4,
   "screenshotOnFinish": true
 }

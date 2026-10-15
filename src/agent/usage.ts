@@ -42,10 +42,14 @@ const PRICES: Record<string, [number, number, number, number]> = {
   // default below, i.e. /status was quoting Gemini Flash prices for a GPT bill.
   // Cache reads are the 4th column: prefix caching is automatic and discounted,
   // and there is no separate cache-write charge, hence 0 in the 3rd.
-  // NOTE: these are gpt-5-tier list prices carried over to the 5.6 ids. Check
-  // them against the current OpenAI pricing page — they drive /status, and a
-  // wrong number here is the exact problem this block exists to fix.
-  'gpt-5.6-luna': [1.25, 10, 0, 0.125],
+  // From OpenAI's pricing page, 2026-10-15. The 5.6-luna row used to carry
+  // gpt-5 prices ($1.25 / $10), which made /status read 6-8x too high.
+  // Prompts past ~272k tokens bill higher; Keeper's never get near that.
+  'gpt-6.1-sol': [2, 10, 0, 0.1],
+  'gpt-6-astra': [10, 50, 0, 1],
+  'gpt-6-luna': [0.1, 0.5, 0, 0.01],
+  'gpt-6-sol': [2, 10, 0, 0.1],
+  'gpt-5.6-luna': [0.2, 1.2, 0, 0.02],
   'gpt-5.6-mini': [0.25, 2, 0, 0.025],
   'gpt-5.6': [1.25, 10, 0, 0.125],
   'gpt-5-mini': [0.25, 2, 0, 0.025],

@@ -10,7 +10,7 @@
  */
 
 /** What the work would be done by or on. */
-const TARGET = /\b(claude|pc|computer|laptop|desktop|session|screenshot)\b/i;
+const TARGET = /\b(claude|codex|pc|computer|laptop|desktop|session|screenshot|prime|meeseeks|crew)\b/i;
 
 /** First-person commitments to go and do it, or claims that it is already under way. */
 const COMMITMENT = [
@@ -28,9 +28,9 @@ export function promisesPcDispatch(text: string): boolean {
 }
 
 export const PC_PROMISE_NUDGE =
-  '[system] Your reply says a Claude session on his PC is being started or is under way, but you did not call ' +
-  'start_claude_session in this turn, so nothing is running and nothing will ever report back to him. Fix that now, one of two ways. ' +
-  'If he asked for this to happen now and you have what you need: call start_claude_session, then reply. ' +
+  '[system] Your reply says a session on his PC (a Meeseeks, Prime or its crew) is being started or is under way, but you did not call ' +
+  'start_claude_session or delegate_to_prime in this turn, so nothing is running and nothing will ever report back to him. Fix that now, one of two ways. ' +
+  'If he asked for this to happen now and you have what you need: call start_claude_session (one bounded job) or delegate_to_prime (anything bigger), then reply. ' +
   'If you are deliberately not starting one (you need his answer first, it is planned for later, the PC is offline): ' +
   'rewrite your reply so it says plainly that nothing has been started yet and what you are waiting for. ' +
   'Do not start a session he did not ask for. Reply to him in your own voice, as if this note were not here.';

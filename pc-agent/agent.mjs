@@ -13,7 +13,8 @@ import { readFileSync, readdirSync, statSync, existsSync, appendFileSync, mkdirS
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -48,6 +49,9 @@ const idle = new Map();
 const pendingApprovals = new Map();
 /** Jobs that already ended here: the relay hands a job out again if it never saw it start. */
 const finished = new Set();
+
+/** Who a session is in the crew. Travels with every ending, poll and saved state, so a relay that restarted still knows it. */
+const crewId = (j) => ({ name: j.name, role: j.role ?? 'solo', parentId: j.parentId, engine: j.engine ?? 'claude', model: j.model });
 
 function readEnv(path) {
   const out = {};
@@ -100,7 +104,7 @@ const event = (jobId, kind, extra = {}) =>
 // restarting cannot turn a finished session into silence. `eid` lets the relay
 // drop a repeat; project and task let a relay that restarted still name it.
 function ending(job, kind, extra = {}) {
-  const body = { jobId: job.id, kind, eid: randomUUID(), project: job.project, task: job.task, mode: job.mode ?? 'meeseeks', ...extra };
+  const body = { jobId: job.id, kind, eid: randomUUID(), project: job.project, task: job.task, mode: job.mode ?? 'meeseeks', ...crewId(job), ...extra };
   try { writeFileSync(join(OUTBOX_DIR, `${Date.now()}-${body.eid}.json`), JSON.stringify(body)); } catch (e) { log('outbox write failed:', e.message); }
   return flushOutbox();
 }
@@ -138,7 +142,7 @@ async function flushOutbox() {
 }
 
 function saveRunning() {
-  const list = [...running.entries()].map(([id, r]) => ({ id, project: r.project, task: r.task, mode: r.mode, lastStep: r.lastStep }));
+  const list = [...running.entries()].map(([id, r]) => ({ id, project: r.project, task: r.task, mode: r.mode, lastStep: r.lastStep, ...crewId(r) }));
   try { writeFileSync(RUNNING_FILE, JSON.stringify(list)); } catch { /* best effort */ }
 }
 
@@ -151,7 +155,7 @@ function restoreIdle() {
   let list = [];
   try { list = JSON.parse(readFileSync(IDLE_FILE, 'utf-8')); } catch { return; }
   for (const j of Array.isArray(list) ? list : []) {
-    if (j?.id && j.project && j.sessionId) idle.set(j.id, { project: j.project, task: j.task, sessionId: j.sessionId, mode: 'persistent' });
+    if (j?.id && j.project && j.sessionId) idle.set(j.id, { project: j.project, task: j.task, sessionId: j.sessionId, mode: 'persistent', ...crewId(j) });
   }
 }
 
@@ -224,34 +228,60 @@ function screenshotB64() {
 
 // ─── One session ────────────────────────────────────────────────────────────
 
-const BRIEF = `You were started from Philip's phone through his Keeper. He is NOT at the PC.
-- Work autonomously; don't stop to ask questions you can answer with sensible defaults.
-- Anything risky (sending messages/emails, deleting data, payments, deploys to production, anything on EDU prod) will be sent to his phone for Approve/Deny — that's fine, just do it the normal way and the approval happens automatically.
-- If a website wants a login you don't have, stop and say so clearly in your final message (he can log in through the Keeper's remote browser and re-run you).
-- Finish with a short plain-language summary for his phone: what you did, what's left, anything he must do. No jargon, lead with the point.`;
+// The standing rules every session carries in its system prompt, so the task
+// itself can stay a goal. Whoever starts a session (the Keeper, Prime) states
+// what is wanted; how to get there is the session's own call.
+const BRIEF = `You were started by Philip's Keeper (his personal AI). He is NOT at the PC.
+- You are given a goal, not a procedure. Work out the how yourself and use sensible defaults instead of stopping to ask.
+- Logins: his Chrome and Google account are signed in. Use an existing session, or "Sign in with Google" / the saved login, before calling a site locked. Stop and report only when it truly needs him: a password nobody saved, a 2FA code, a security prompt. Never invent, guess or print credentials.
+- Browser work: find your way by reading the page (text, accessibility tree) rather than screenshots. Take a screenshot only as evidence of something wrong, save it to a file, and cite the path; do not pile images into your context.
+- Finish with a short plain-language report: what happened, what is left, anything he must do. Lead with the point, no jargon.`;
+
+// How risky actions are gated depends on the engine.
+const GATE = {
+  claude: `
+- Anything risky (sending messages or emails, deleting real data, payments, production deploys, anything on EDU prod) goes to his phone for Approve/Deny automatically. Just do it the normal way.`,
+  codex: `
+- There is no Approve/Deny on his phone for this session. Do not do anything irreversible or outward-facing (sending messages or emails, deleting real data, payments, production deploys): stop there and say exactly what you would do.`,
+};
 
 // Only added in the persistent mode. A one-task session never sees it.
 const BRIEF_PERSISTENT = `
-- This session stays open after you finish a task: he may send a follow-up on the same conversation, so you keep your context. End each task with the summary; do not say the session is over.`;
+- This session stays open after you finish a task: he may send a follow-up on the same conversation, so you keep your context. End each task with the report; do not say the session is over.`;
 
-async function runJob(job) {
-  const proj = projects()[job.project];
-  if (!proj) return ending(job, 'error', { text: `Project "${job.project}" is not allowed on this PC.` });
+const BRIEF_PRIME = `
 
-  const abort = new AbortController();
-  const persistent = job.mode === 'persistent';
-  const me = { abort, project: job.project, task: job.task, mode: job.mode ?? 'meeseeks', lastStep: '', stopReason: '' };
-  idle.delete(job.id); // a follow-up: it is running again
-  saveIdle();
-  running.set(job.id, me);
-  saveRunning();
-  log('start', job.id, job.project, JSON.stringify(job.task.slice(0, 120)));
-  const limit = setTimeout(() => {
-    me.stopReason = 'timeout';
-    abort.abort();
-  }, MAX_MINUTES * 60_000);
+You are Meeseeks Prime, Philip's chief of staff. The Keeper is his personal assistant and the voice he talks to; you are the one who gets big things done.
+- You take goals of any kind (build, test, research, sort out) and own them until they are done. You decide how to split the work.
+- You have a crew: the keeper_crew tools, and only those (no other sub-agent mechanism), because they are what shows on his phone. Spawn workers for parallel or specialist jobs, and do small things yourself. Name every worker in the Rick and Morty spirit (Meeseeks variants, Ricks and Mortys of the Citadel, Council members, whatever fits the job). Each name is new, and naming them is your job, not his.
+- Brief workers the way you would want to be briefed: the goal, what done looks like, and context they cannot find. Never a step-by-step script; they are as capable as you. engine "claude" for the browser, "codex" for driving the desktop (mouse, keyboard, native apps).
+- Check what they bring back before you rely on it. You can end your turn while they work: you are woken with their reports when the last one finishes.
+- Your report goes to the Keeper, which passes the essentials to him in plain words. So report the substance: findings, decisions he must make, what is still open. Short beats complete.
+- You stay open between asks until he says the job is done.`;
 
+const briefWorker = (name) => `
+
+You are ${name}, a worker in Meeseeks Prime's crew. You exist to do this one job: do it, report, and you are done. Your report goes to Prime, so make it complete enough to act on (exact steps to reproduce, what you expected, what happened, evidence paths).`;
+
+function systemBrief(job, engine) {
+  let b = BRIEF + GATE[engine];
+  if (job.mode === 'persistent') b += BRIEF_PERSISTENT;
+  if (job.role === 'prime') b += BRIEF_PRIME;
+  if (job.role === 'worker') b += briefWorker(job.name || 'a Meeseeks');
+  return b;
+}
+
+const CREW_MCP = join(HERE, 'crew-mcp.mjs');
+const CREW_TOOLS = ['spawn_worker', 'crew_status', 'wait_for_crew', 'stop_worker'].map((t) => `mcp__keeper_crew__${t}`);
+
+// ─── Engines ────────────────────────────────────────────────────────────────
+// Each engine runs one task of a session and reports through the same hooks:
+// onStarted(sessionId), onText(text), onStep(text). It resolves with the final
+// report and the cost if the engine knows it.
+
+async function runClaude(job, proj, me, hooks) {
   const canUseTool = async (toolName, input, { signal }) => {
+    if (CREW_TOOLS.includes(toolName)) return { behavior: 'allow', updatedInput: input };
     const approvalId = randomUUID();
     const text = describe(toolName, input);
     const decision = new Promise((resolve) => {
@@ -271,44 +301,166 @@ async function runJob(job) {
 
   let result = '';
   let cost;
-  try {
-    const q = query({
-      prompt: job.task,
-      options: {
-        cwd: proj.path,
-        ...(job.resume ? { resume: job.resume } : {}),
-        abortController: abort,
-        // strict projects (EDU prod) ask for everything that isn't already allowed;
-        // everything else uses auto mode, where only genuinely risky actions ask.
-        permissionMode: proj.strict ? 'default' : 'auto',
-        canUseTool,
-        settingSources: ['user', 'project', 'local'],
-        systemPrompt: { type: 'preset', preset: 'claude_code', append: BRIEF + (persistent ? BRIEF_PERSISTENT : '') },
-      },
-    });
-    for await (const m of q) {
-      if (m.type === 'system' && m.subtype === 'init') {
-        me.sessionId = m.session_id;
-        // A resumed turn is the same session: do not announce "started" again.
-        if (!job.resume) await event(job.id, 'started', { sessionId: m.session_id });
-      } else if (m.type === 'assistant') {
-        for (const b of m.message?.content ?? []) {
-          if (b.type === 'text' && b.text?.trim()) await event(job.id, 'text', { text: b.text.trim().slice(0, 2000) });
-          if (b.type === 'tool_use') {
-            me.lastStep = stepText(b);
-            saveRunning();
-            await event(job.id, 'step', { text: me.lastStep });
+  const q = query({
+    prompt: job.task,
+    options: {
+      cwd: proj.path,
+      ...(job.resume ? { resume: job.resume } : {}),
+      ...(job.model ? { model: job.model } : {}),
+      abortController: me.abort,
+      // strict projects (EDU prod) ask for everything that isn't already allowed;
+      // everything else uses auto mode, where only genuinely risky actions ask.
+      permissionMode: proj.strict ? 'default' : 'auto',
+      canUseTool,
+      settingSources: ['user', 'project', 'local'],
+      ...(job.role === 'prime'
+        ? {
+            mcpServers: { keeper_crew: { type: 'stdio', command: process.execPath, args: [CREW_MCP], env: { KEEPER_PARENT_ID: job.id, KEEPER_URL: BASE } } },
+            allowedTools: CREW_TOOLS,
           }
-        }
-      } else if (m.type === 'result') {
-        result = m.subtype === 'success' ? (m.result ?? '') : `Ended: ${m.subtype}${m.errors?.length ? ` — ${m.errors.join('; ')}` : ''}`;
-        cost = m.total_cost_usd;
+        : {}),
+      systemPrompt: { type: 'preset', preset: 'claude_code', append: systemBrief(job, 'claude') },
+    },
+  });
+  for await (const m of q) {
+    if (m.type === 'system' && m.subtype === 'init') {
+      await hooks.onStarted(m.session_id);
+    } else if (m.type === 'assistant') {
+      for (const b of m.message?.content ?? []) {
+        if (b.type === 'text' && b.text?.trim()) await hooks.onText(b.text.trim());
+        if (b.type === 'tool_use') await hooks.onStep(stepText(b));
       }
+    } else if (m.type === 'result') {
+      result = m.subtype === 'success' ? (m.result ?? '') : `Ended: ${m.subtype}${m.errors?.length ? ` — ${m.errors.join('; ')}` : ''}`;
+      cost = m.total_cost_usd;
     }
+  }
+  return { result, cost };
+}
+
+// Codex runs as `codex exec --json` (one task per process; a follow-up is
+// `codex exec resume <thread>`). It is started through node + codex.js, not the
+// .cmd shim, so no shell ever parses the prompt; the prompt goes in on stdin.
+// It runs on his ChatGPT plan with his ~/.codex/config.toml (sandbox, plugins).
+const CODEX_JS = CONFIG.codexJs || join(process.env.APPDATA || '', 'npm', 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+const toml = (v) => JSON.stringify(v); // a JSON string is a valid TOML basic string
+
+function codexStep(item) {
+  const short = (v) => String(v ?? '').replace(/\s+/g, ' ').slice(0, 140);
+  switch (item.type) {
+    case 'command_execution': return `running: ${short(String(item.command ?? '').replace(/^"[^"]*powershell\.exe"\s+-Command\s+/i, ''))}`;
+    case 'file_change': return `editing ${short((item.changes ?? []).map((c) => c.path).join(', ') || 'files')}`;
+    case 'mcp_tool_call': return `using ${short(`${item.server ?? ''} ${item.tool ?? ''}`.trim())}`;
+    case 'web_search': return `web search: ${short(item.query)}`;
+    default: return null;
+  }
+}
+
+function runCodex(job, proj, me, hooks) {
+  if (!existsSync(CODEX_JS)) return Promise.reject(new Error(`Codex is not installed where the agent looks (${CODEX_JS}). Set codexJs in projects.json.`));
+  const args = [CODEX_JS, 'exec'];
+  if (job.resume) args.push('resume');
+  // Codex's own sub-agents would be invisible to him: the crew is keeper_crew only.
+  args.push('--json', '--skip-git-repo-check', '--disable', 'multi_agent');
+  if (job.model) args.push('-m', job.model);
+  args.push('-c', `developer_instructions=${toml(systemBrief(job, 'codex'))}`);
+  if (job.role === 'prime') {
+    args.push(
+      '-c', `mcp_servers.keeper_crew.command=${toml(process.execPath)}`,
+      '-c', `mcp_servers.keeper_crew.args=[${toml(CREW_MCP)}]`,
+      '-c', `mcp_servers.keeper_crew.env={ KEEPER_PARENT_ID = ${toml(job.id)}, KEEPER_URL = ${toml(BASE)} }`,
+      '-c', 'mcp_servers.keeper_crew.tool_timeout_sec=900',
+    );
+  }
+  if (job.resume) args.push(job.resume);
+  args.push('-');
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { cwd: proj.path, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Abort kills the whole tree: codex.js starts the native binary as its child.
+    const kill = () => execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, (err) => { if (err) child.kill(); });
+    me.abort.signal.addEventListener('abort', kill, { once: true });
+    child.stdin.end(job.task);
+
+    let result = '';
+    let failure = '';
+    let errTail = '';
+    let chain = Promise.resolve();
+    createInterface({ input: child.stdout }).on('line', (line) => {
+      let e;
+      try { e = JSON.parse(line); } catch { return; }
+      chain = chain.then(async () => {
+        if (e.type === 'thread.started' && e.thread_id) await hooks.onStarted(e.thread_id);
+        else if (e.type === 'item.completed' && e.item?.type === 'agent_message' && e.item.text?.trim()) {
+          result = e.item.text.trim();
+          await hooks.onText(result);
+        } else if (e.type === 'item.started' && e.item) {
+          const step = codexStep(e.item);
+          if (step) await hooks.onStep(step);
+        } else if (e.type === 'turn.failed' || e.type === 'error') {
+          failure = String(e.error?.message ?? e.message ?? 'Codex reported an error').slice(0, 800);
+        }
+      }).catch(() => {});
+    });
+    child.stderr.on('data', (d) => { errTail = (errTail + d.toString()).slice(-2000); });
+    child.on('error', (err) => reject(err));
+    child.on('close', async (code) => {
+      await chain;
+      if (me.abort.signal.aborted) return reject(new Error('aborted'));
+      if (failure && !result) return reject(new Error(failure));
+      if (code !== 0 && !result) {
+        // His other MCP servers (Lovable etc.) log auth noise on stderr; that is not why it failed.
+        const why = errTail.split(/\r?\n/).filter((l) => l.trim() && !/rmcp::transport|AuthRequired|Reading additional input/.test(l)).slice(-3).join(' | ');
+        return reject(new Error(`Codex exited with code ${code}${why ? `: ${why.slice(0, 600)}` : ''}`));
+      }
+      resolve({ result: failure && result ? `${result}\n\n(Codex also reported: ${failure})` : result, cost: undefined });
+    });
+  });
+}
+
+async function runJob(job) {
+  const proj = projects()[job.project];
+  if (!proj) return ending(job, 'error', { text: `Project "${job.project}" is not allowed on this PC.` });
+
+  const abort = new AbortController();
+  const persistent = job.mode === 'persistent';
+  const me = { abort, project: job.project, task: job.task, mode: job.mode ?? 'meeseeks', lastStep: '', stopReason: '', ...crewId(job) };
+  idle.delete(job.id); // a follow-up: it is running again
+  saveIdle();
+  running.set(job.id, me);
+  saveRunning();
+  log('start', job.id, job.project, JSON.stringify(job.task.slice(0, 120)));
+  const limit = setTimeout(() => {
+    me.stopReason = 'timeout';
+    abort.abort();
+  }, MAX_MINUTES * 60_000);
+
+  // Codex has no Approve/Deny channel, so strict projects (EDU prod) always run on Claude.
+  const engine = job.engine === 'codex' && !proj.strict ? 'codex' : 'claude';
+  me.engine = engine;
+  if (job.engine === 'codex' && engine === 'claude') log('codex refused on strict project, using claude', job.id, job.project);
+  const hooks = {
+    onStarted: async (sessionId) => {
+      me.sessionId = sessionId;
+      // A resumed turn is the same session: do not announce "started" again.
+      if (!job.resume) await event(job.id, 'started', { sessionId });
+    },
+    onText: (text) => event(job.id, 'text', { text: text.slice(0, 2000) }),
+    onStep: async (text) => {
+      me.lastStep = text;
+      saveRunning();
+      await event(job.id, 'step', { text });
+    },
+  };
+
+  try {
+    const { result, cost } = engine === 'codex' ? await runCodex(job, proj, me, hooks) : await runClaude(job, proj, me, hooks);
     // The SDK can end the stream quietly when aborted; that is a stop, not a finish.
     if (abort.signal.aborted) throw new Error('aborted');
     let note = '';
-    if (CONFIG.screenshotOnFinish !== false) {
+    // Only a session he started directly gets a finish screenshot: Prime and its
+    // workers report in words, and a desktop picture per worker is just noise.
+    if (CONFIG.screenshotOnFinish !== false && (job.role ?? 'solo') === 'solo') {
       const shot = await screenshotB64();
       if (shot) await event(job.id, 'screenshot', { b64: shot, text: `${job.project}: screen when it finished` });
       else note = '\n\n(No screenshot with this one: the screen could not be captured, which usually means the PC is locked or its display is off.)';
@@ -316,7 +468,7 @@ async function runJob(job) {
     const text = (result || '(finished with no summary)') + note;
     if (persistent && me.sessionId) {
       // Task finished, session stays: remember it before reporting so a follow-up can never find it missing.
-      idle.set(job.id, { project: job.project, task: job.task, sessionId: me.sessionId, mode: 'persistent' });
+      idle.set(job.id, { project: job.project, task: job.task, sessionId: me.sessionId, mode: 'persistent', ...crewId(me) });
       saveIdle();
       await ending(job, 'turn_done', { text, costUsd: cost, sessionId: me.sessionId });
       log('turn done, session kept open', job.id);
@@ -359,12 +511,13 @@ async function loop() {
       // so a relay that lost its memory (Railway restart) takes them back.
       const r = await api('/pc/agent/poll', {
         projects: Object.keys(projects()).sort(),
-        idle: [...idle.entries()].map(([id, j]) => ({ id, project: j.project, task: j.task })),
+        idle: [...idle.entries()].map(([id, j]) => ({ id, project: j.project, task: j.task, ...crewId(j) })),
         running: [...running.entries()].map(([id, j]) => ({
           id,
           project: j.project,
           task: j.task,
           mode: j.mode,
+          ...crewId(j),
           approvals: [...pendingApprovals.entries()].filter(([, p]) => p.jobId === id).map(([approvalId, p]) => ({ approvalId, tool: p.tool, text: p.text })),
         })),
       });
@@ -382,11 +535,11 @@ async function loop() {
           continue;
         }
         if (running.size >= MAX_PARALLEL) {
-          await ending({ id: f.id, project: s.project, task: f.message, mode: 'persistent' }, 'error', { text: `PC is already running ${running.size} sessions, so the follow-up was not run. The session was closed; start a new one.` });
+          await ending({ id: f.id, project: s.project, task: f.message, mode: 'persistent', ...crewId(s) }, 'error', { text: `PC is already running ${running.size} sessions, so the follow-up was not run. The session was closed; start a new one.` });
           idle.delete(f.id); saveIdle();
           continue;
         }
-        void runJob({ id: f.id, project: s.project, task: f.message, mode: 'persistent', resume: s.sessionId });
+        void runJob({ id: f.id, project: s.project, task: f.message, mode: 'persistent', resume: s.sessionId, ...crewId(s) });
       }
       for (const job of r.jobs ?? []) {
         if (running.has(job.id) || finished.has(job.id)) continue; // handed out twice

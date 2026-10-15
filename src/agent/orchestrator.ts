@@ -60,7 +60,14 @@ export type Trigger =
    * ping after silence, or the end-of-session debrief. Driven by the scheduler,
    * not by the model remembering to look at a clock.
    */
-  | { kind: 'lockin'; phase: 'check_in' | 'escalation' | 'debrief'; live: ActiveLockIn };
+  | { kind: 'lockin'; phase: 'check_in' | 'escalation' | 'debrief'; live: ActiveLockIn }
+  /**
+   * An agent on his PC (Meeseeks Prime, or a solo Meeseeks with a long report)
+   * reported back. The Keeper passes on what matters in plain words; the full
+   * report stays in the PC sheet. Never silent: the caller falls back to a short
+   * verbatim message if this turn produces nothing.
+   */
+  | { kind: 'crew'; from: string; jobId: string; report: string };
 
 /**
  * He just messaged us. If the last thing the agent did was a proactive
@@ -93,7 +100,7 @@ export interface AgentResult {
  */
 export async function runAgent(trigger: Trigger): Promise<AgentResult> {
   // Narrate the turn to the web UI (no-op when no browser is connected).
-  const source = trigger.kind === 'inbound' ? `inbound:${trigger.surface ?? 'telegram'}` : trigger.kind;
+  const source = trigger.kind === 'inbound' ? `inbound:${trigger.surface ?? 'telegram'}` : trigger.kind === 'crew' ? 'inbound:crew' : trigger.kind;
   bus.publish({ type: 'turn', phase: 'start', source });
   try {
     return await runTurn(trigger);
@@ -181,7 +188,8 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
   const surface = trigger.kind === 'inbound' ? trigger.surface ?? 'telegram' : undefined;
   // Rides on every message event: the web push hook uses it to tell a proactive
   // reach-out (worth a notification) from a reply he asked for (not).
-  const eventSource = trigger.kind === 'inbound' ? `inbound:${surface}` : trigger.kind;
+  // A crew report is delivered on Telegram by the caller, so its web echo must not buzz the phone again.
+  const eventSource = trigger.kind === 'inbound' ? `inbound:${surface}` : trigger.kind === 'crew' ? 'inbound:crew' : trigger.kind;
 
   // Anchored window: everything since the digest anchor rides in context
   // verbatim — hours or days of real conversation, append-only between folds.
@@ -278,6 +286,19 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
     messages.push({ role: 'user', content: `${ctx}
 
 ${head}` });
+  } else if (trigger.kind === 'crew') {
+    messages.push({
+      role: 'user',
+      content:
+        `${ctx}
+
+[INTERNAL — not from Philip] ${trigger.from} (${trigger.jobId}) on his PC reported back. ` +
+        'Pass it on to him the way a sharp chief of staff would brief a busy person by text: a few plain sentences on what was done or found, ' +
+        'anything he has to decide or do, and what is still open. No headings, no tables, no jargon, no restating the whole report; he can read it in full in the PC sheet. ' +
+        'If it needs a decision from him, end with that question.\n\n<report>\n' +
+        trigger.report.slice(0, 20000) +
+        '\n</report>',
+    });
   } else {
     // Nightly reflection: the brief is internal and never logged — the journal
     // entry the agent writes IS the durable record of this run.
@@ -422,7 +443,7 @@ ${head}` });
   // of reply: nothing is running, so nothing ever comes back, and he waits on a
   // result that cannot arrive. One extra round to make the call or take the
   // claim back. The earlier text is replaced, never sent alongside.
-  if (trigger.kind === 'inbound' && text !== '' && !toolsUsed.has('start_claude_session') && !toolsUsed.has('continue_claude_session') && promisesPcDispatch(text)) {
+  if (trigger.kind === 'inbound' && text !== '' && !toolsUsed.has('start_claude_session') && !toolsUsed.has('continue_claude_session') && !toolsUsed.has('delegate_to_prime') && promisesPcDispatch(text)) {
     console.error('[agent] reply promised a PC session but never started one — asking it to act or correct itself');
     messages.push({ role: 'user', content: PC_PROMISE_NUDGE });
     try {
@@ -464,7 +485,9 @@ ${head}` });
         ? `touchpoint:${trigger.touchpoint.id}`
         : trigger.kind === 'lockin'
           ? `lockin:${trigger.phase}:${trigger.live.session.id}`
-          : 'inbound',
+          : trigger.kind === 'crew'
+            ? `crew:${trigger.jobId}`
+            : 'inbound',
   });
   bus.publish({ type: 'message', role: 'agent', content: message, ts: new Date().toISOString(), source: eventSource });
   return { message, silent: false };

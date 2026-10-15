@@ -1153,25 +1153,53 @@
       '<div class="row"><button class="btn primary" data-pc-allow="' + esc(a.id) + '">Approve</button>' +
       '<button class="btn" data-pc-deny="' + esc(a.id) + '">Deny</button></div></div>').join('');
     const cost = typeof j.costUsd === 'number' && (phase === 'done' || phase === 'idle') ? ' · $' + j.costUsd.toFixed(2) : '';
-    return '<div class="pc-job' + (mine.length ? ' attn' : '') + '"><div class="top"><span class="proj">' + esc(j.project) + (j.mode === 'persistent' ? ' · ' + esc(j.modeLabel || 'persistent') : '') +
-      '</span><span class="pc-state ' + tone + '">' + esc(label) + '</span></div>' +
+    const who = j.name || j.project;
+    const sub = [j.role === 'worker' ? 'Prime’s crew' : j.role === 'prime' ? 'chief of staff' : '', j.project, j.engine === 'codex' ? 'Codex' : 'Claude']
+      .filter(Boolean).join(' · ');
+    return '<div class="pc-job' + (mine.length ? ' attn' : '') + '" id="pcjob-' + esc(j.id) + '"><div class="top"><span class="proj">' + esc(who) +
+      '<span class="sub">' + esc(sub) + '</span></span><span class="pc-state ' + tone + '">' + esc(label) + '</span></div>' +
       '<div class="task">' + esc(j.task) + '</div>' + body + asks +
       '<div class="meta" style="margin-top:8px">' + esc(pcAgo(j.updatedAt)) + cost + ' · ' + esc(j.id) + '</div>' +
       (live ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">Stop this session</button>' : '') +
       (phase === 'idle' ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">End this session</button>' : '') + '</div>';
   }
 
-  // Start a session from here. Meeseeks (one task, then gone) is the default; Meeseeks Prime stays open for follow-ups.
+  // Start from here: a Meeseeks (one job, then gone) on a project, or a goal for Meeseeks Prime.
   function pcStartForm(s) {
     const projs = s.projects || [];
     if (!projs.length) return '';
-    const modes = (s.modes && s.modes.length) ? s.modes : [{ id: 'meeseeks', label: 'Meeseeks' }, { id: 'persistent', label: 'Meeseeks Prime' }];
-    return '<div class="pc-start" data-pc-start><select data-pc-project aria-label="Project">' +
+    return '<div class="pc-start" data-pc-start>' +
+      '<select data-pc-mode aria-label="Who should do it"><option value="meeseeks">Meeseeks — one job, then gone</option>' +
+      '<option value="prime">Meeseeks Prime — chief of staff, runs a crew</option></select>' +
+      '<div class="row" data-pc-solo><select data-pc-project aria-label="Project">' +
       projs.map((p) => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join('') + '</select>' +
-      '<select data-pc-mode aria-label="Session type">' +
-      modes.map((m) => '<option value="' + esc(m.id) + '">' + esc(m.label) + (m.id === 'persistent' ? ' — stays open for follow-ups' : ' — one task, then done') + '</option>').join('') +
-      '</select><input type="text" maxlength="2000" data-pc-task placeholder="What should Claude do?" aria-label="Task">' +
+      '<select data-pc-engine aria-label="Engine"><option value="claude">Claude</option><option value="codex">Codex (desktop)</option></select></div>' +
+      '<input type="text" maxlength="2000" data-pc-task placeholder="What do you want done?" aria-label="Goal">' +
       '<button class="btn primary" data-pc-begin>Start</button></div>';
+  }
+
+  // The crew at a glance: is Prime up, who is working, and on what.
+  const LIVE_PHASES = ['queued', 'running', 'waiting', 'idle'];
+  function crewPanel(jobs) {
+    const prime = jobs.find((j) => j.role === 'prime' && LIVE_PHASES.includes(j.phase || j.status));
+    const lastPrime = prime || jobs.find((j) => j.role === 'prime');
+    const working = jobs.filter((j) => ['queued', 'running', 'waiting'].includes(j.phase || j.status));
+    const crew = prime ? jobs.filter((j) => j.role === 'worker' && j.parentId === prime.id) : [];
+    const solos = working.filter((j) => j.role !== 'prime' && j.role !== 'worker');
+    const row = (j, cls) => {
+      const phase = j.phase || j.status;
+      const [label, tone] = PC_STATE[phase] || [phase, ''];
+      return '<a class="crew-row ' + cls + '" href="#pcjob-' + esc(j.id) + '"><span class="dot ' + (LIVE_PHASES.includes(phase) ? 'on' : 'off') + '"></span>' +
+        '<span class="who"><b>' + esc(j.name || j.project) + '</b><span>' + esc(j.brief || j.task || '') + '</span></span>' +
+        '<span class="pc-state ' + tone + '">' + esc(label) + '</span></a>';
+    };
+    const primeLine = prime
+      ? row(prime, 'prime')
+      : '<div class="crew-row prime"><span class="dot off"></span><span class="who"><b>Meeseeks Prime</b><span>' +
+        (lastPrime ? 'offline — last up ' + esc(pcAgo(lastPrime.updatedAt)) : 'offline — give it a goal to bring it up') + '</span></span></div>';
+    return '<div class="crew"><div class="crew-head"><span>Crew</span><span>' +
+      (working.length ? working.length + ' working' : 'nobody working') + '</span></div>' + primeLine +
+      crew.slice(0, 8).map((w) => row(w, 'worker')).join('') + solos.map((j) => row(j, '')).join('') + '</div>';
   }
 
   function renderPc(s) {
@@ -1179,6 +1207,8 @@
     const jobs = s.jobs || [];
     const approvals = s.approvals || [];
     const active = jobs.filter((j) => ['queued', 'running', 'waiting'].includes(j.phase || j.status)).length;
+    const primeUp = jobs.some((j) => j.role === 'prime' && LIVE_PHASES.includes(j.phase || j.status));
+    $('pcbtn').classList.toggle('prime-up', primeUp);
     const badge = $('pcbadge');
     badge.textContent = approvals.length || active || '';
     badge.classList.toggle('hidden', !(approvals.length || active));
@@ -1201,15 +1231,18 @@
     });
     const startSel = $('pcbody').querySelector('[data-pc-project]');
     const startKeep = { project: startSel ? startSel.value : '', mode: ($('pcbody').querySelector('[data-pc-mode]') || {}).value || 'meeseeks',
+      engine: ($('pcbody').querySelector('[data-pc-engine]') || {}).value || 'claude',
       task: ($('pcbody').querySelector('[data-pc-task]') || {}).value || '' };
     const startFocus = document.activeElement && document.activeElement.hasAttribute && document.activeElement.hasAttribute('data-pc-task');
-    $('pcbody').innerHTML = link + offNote + pcStartForm(s) + (jobs.length
+    $('pcbody').innerHTML = link + offNote + crewPanel(jobs) + pcStartForm(s) + (jobs.length
       ? jobs.map((j) => pcJobCard(j, approvals, s.limits)).join('')
-      : '<div class="pc-empty">No sessions yet. Ask the Keeper to start Claude on one of your projects.</div>');
+      : '<div class="pc-empty">No sessions yet. Ask the Keeper, or start one above.</div>');
     const f = $('pcbody').querySelector('[data-pc-start]');
     if (f) {
       if (startKeep.project) f.querySelector('[data-pc-project]').value = startKeep.project;
       f.querySelector('[data-pc-mode]').value = startKeep.mode;
+      f.querySelector('[data-pc-engine]').value = startKeep.engine;
+      f.querySelector('[data-pc-solo]').hidden = startKeep.mode === 'prime';
       f.querySelector('[data-pc-task]').value = startKeep.task;
       if (startFocus) f.querySelector('[data-pc-task]').focus();
     }
@@ -1246,6 +1279,12 @@
     }
   }, true);
 
+  $('pcbody').addEventListener('change', (e) => {
+    if (!e.target.hasAttribute('data-pc-mode')) return;
+    const solo = e.target.closest('[data-pc-start]').querySelector('[data-pc-solo]');
+    if (solo) solo.hidden = e.target.value === 'prime';
+  });
+
   $('pcbody').addEventListener('click', async (e) => {
     const t = e.target.closest('button');
     if (!t) return;
@@ -1257,12 +1296,15 @@
       const box = t.closest('[data-pc-start]');
       const project = box.querySelector('[data-pc-project]').value;
       const mode = box.querySelector('[data-pc-mode]').value;
+      const engine = box.querySelector('[data-pc-engine]').value;
       const taskEl = box.querySelector('[data-pc-task]');
       const task = taskEl.value.trim();
-      if (!task) { toast('type the task first'); return; }
+      if (!task) { toast('say what you want done first'); return; }
       t.disabled = true;
       try {
-        const r = await pcCall('/pc/start', { project, task, mode });
+        const r = mode === 'prime'
+          ? await pcCall('/pc/delegate', { goal: task })
+          : await pcCall('/pc/start', { project, task, mode: 'meeseeks', engine });
         if (!r.ok) toast(r.error || 'couldn’t start that session');
         else taskEl.value = '';
       } catch { toast('couldn’t reach it — nothing was started'); }

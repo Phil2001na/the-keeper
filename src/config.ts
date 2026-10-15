@@ -123,7 +123,7 @@ const defaultModel =
     : modelProvider === 'openrouter'
       ? 'google/gemini-2.5-flash'
       : modelProvider === 'openai'
-        ? 'gpt-5.6-luna'
+        ? 'gpt-6-luna'
       : 'claude-sonnet-4-6';
 const defaultDigestModel =
   modelProvider === 'gemini'
@@ -131,7 +131,7 @@ const defaultDigestModel =
     : modelProvider === 'openrouter'
       ? 'google/gemini-2.5-flash'
       : modelProvider === 'openai'
-        ? 'gpt-5.6-luna'
+        ? 'gpt-6-luna'
       : 'claude-haiku-4-5-20251001';
 
 export const config = {

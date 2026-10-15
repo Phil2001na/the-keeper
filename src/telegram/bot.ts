@@ -15,7 +15,7 @@ import {
 } from '../deploy/github.js';
 import { extractPdfText, extractPdfTextFromBuffer } from './parsePdf.js';
 import { drainMedia } from '../generate/queue.js';
-import { pcEvents, decide, type PcEvent } from '../web/pcBridge.js';
+import { pcEvents, decide, relaysThroughKeeper, type PcEvent } from '../web/pcBridge.js';
 import { sendPush } from '../web/push.js';
 
 /**
@@ -257,12 +257,27 @@ function attachPcToTelegram(): void {
     await sendPush({ title: 'keeper', body: text, url: '/' }).catch((err) => console.error('[telegram] pc ending push fallback failed:', err));
   };
 
+  // A long or Prime report goes through the Keeper, which says what matters in a
+  // few plain sentences. If that turn fails or says nothing, he still gets the
+  // start of the report: an ending must never become silence.
+  const relayReport = async (from: string, jobId: string, report: string): Promise<void> => {
+    let said: string | null = null;
+    try {
+      said = (await runAgent({ kind: 'crew', from, jobId, report })).message;
+    } catch (err) {
+      console.error('[telegram] crew relay turn failed, sending the report itself:', err);
+    }
+    await sendEnding(
+      said ?? `✅ ${from} reported back (${jobId}). The full report is in the PC sheet; here is the start:\n\n${report.slice(0, 1200)}`
+    );
+  };
+
   pcEvents.on('event', (e: PcEvent) => {
     void (async () => {
       if (e.type === 'approval') {
         const m = await keeperBot.sendMessage(
           OWNER,
-          `🔐 Claude on ${e.job.project} wants to:
+          `🔐 ${e.job.name} on ${e.job.project} wants to:
 
 ${e.approval.summary}`.slice(0, TG_LIMIT),
           {
@@ -288,19 +303,40 @@ ${e.approval.summary}`.slice(0, TG_LIMIT),
         return;
       }
       const { job, event } = e;
+      // Who hears what (see the crew notes in pcBridge.ts): Prime pings when it comes
+      // online and goes offline; a worker only when it dies; a report reaches him
+      // through the Keeper when it is Prime's or too long to read as a text.
+      if (job.role === 'worker') {
+        if (event.kind === 'error' && job.status === 'failed') {
+          await sendEnding(`💀 ${job.name} (one of Prime's crew) ${job.lost ? 'lost contact' : 'died'}: ${(event.text ?? '').slice(0, 600)}`);
+        }
+        return;
+      }
+      if (job.role === 'prime') {
+        const engine = `${job.engine}${job.model ? ` · ${job.model}` : ''}`;
+        if (event.kind === 'started') await sendToOwner(`🟢 ${job.name} is online (${engine}).`);
+        else if (event.kind === 'text' && /^The PC is back/.test(event.text ?? '')) await sendToOwner(`🟢 ${job.name} is back online.`);
+        else if (event.kind === 'turn_done' || event.kind === 'done') await relayReport(job.name, job.id, event.text ?? '');
+        else if (event.kind === 'error') {
+          await sendEnding(`🔴 ${job.name} went offline${job.lost ? ' (lost contact with the PC)' : job.status === 'stopped' ? '' : ' (it failed)'}: ${(event.text ?? '').slice(0, 600)}`);
+        }
+        return;
+      }
       if (event.kind === 'started') {
-        await sendToOwner(`▶️ Claude started on ${job.project} (${job.id}).`);
+        await sendToOwner(`▶️ ${job.name} started on ${job.project} (${job.id}).`);
+      } else if ((event.kind === 'done' || event.kind === 'turn_done') && relaysThroughKeeper(job, event.text)) {
+        await relayReport(job.name, job.id, event.text ?? '');
       } else if (event.kind === 'done' || event.kind === 'turn_done') {
         if (job.shot) {
           await keeperBot
             .sendPhoto(OWNER, Buffer.from(job.shot.b64, 'base64'), { caption: (job.shot.caption ?? job.project).slice(0, 1000) }, { filename: 'screen.jpg', contentType: 'image/jpeg' })
             .catch(() => {});
         }
-        await sendEnding(`✅ Claude finished${event.kind === 'turn_done' ? ' this task' : ''} on ${job.project} (${job.id}).${event.kind === 'turn_done' ? ' The session stays open for a follow-up.' : ''}
+        await sendEnding(`✅ ${job.name} finished${event.kind === 'turn_done' ? ' this task' : ''} on ${job.project} (${job.id}).${event.kind === 'turn_done' ? ' The session stays open for a follow-up.' : ''}
 
 ${(event.text ?? '(no summary)').slice(0, 3500)}`);
       } else if (event.kind === 'error') {
-        await sendEnding(`⚠️ Claude on ${job.project} (${job.id}) ${job.status === 'stopped' ? 'stopped' : 'failed'}: ${(event.text ?? '').slice(0, 800)}`);
+        await sendEnding(`⚠️ ${job.name} on ${job.project} (${job.id}) ${job.status === 'stopped' ? 'stopped' : 'failed'}: ${(event.text ?? '').slice(0, 800)}`);
       }
     })().catch((err) => console.error('[telegram] pc notify failed:', err));
   });

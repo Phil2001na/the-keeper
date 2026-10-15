@@ -1,5 +1,5 @@
 import { bus } from './bus.js';
-import { pcEvents, type PcEvent } from './pcBridge.js';
+import { pcEvents, relaysThroughKeeper, type PcEvent } from './pcBridge.js';
 import { interactions } from '../db/repositories.js';
 
 /**
@@ -25,29 +25,44 @@ export function attachPcToKeeper(): void {
         .catch((err) => console.error('[pc] failed to log to chat history:', err));
     };
 
+    const chip = (label: string) => bus.publish({ type: 'step', label: `${job.name}: ${label.slice(0, 120)}`, tool: 'pc_session' });
+
+    // Workers report to Prime: their steps show as chips, and only a death is said out loud.
+    if (job.role === 'worker') {
+      if (event.kind === 'error' && job.status === 'failed') say(`[crew] ${job.name} (worker ${job.id}, for Prime) died: ${(event.text ?? '').slice(0, 600)}`);
+      else if (event.kind !== 'screenshot') chip(event.kind === 'started' ? `spawned on ${job.project}` : event.kind === 'done' ? 'finished, reported to Prime' : event.text ?? '');
+      return;
+    }
+
     switch (event.kind) {
       case 'started':
-        say(`[PC] Claude started on ${job.project} (session ${job.id}): ${job.task.slice(0, 300)}`);
+        say(job.role === 'prime'
+          ? `[PC] ${job.name} is online (${job.engine}${job.model ? ` · ${job.model}` : ''}, session ${job.id}): ${job.brief}`
+          : `[PC] ${job.name} started on ${job.project} (session ${job.id}): ${job.task.slice(0, 300)}`);
         break;
       case 'step':
       case 'text':
       case 'decided':
-        bus.publish({ type: 'step', label: `${job.project}: ${(event.text ?? '').slice(0, 120)}`, tool: 'pc_session' });
+        chip(event.text ?? '');
         break;
       case 'approval':
-        bus.publish({ type: 'step', label: `${job.project}: needs your OK: ${(event.text ?? '').slice(0, 100)}`, tool: 'pc_session' });
+        chip(`needs your OK: ${(event.text ?? '').slice(0, 100)}`);
         break;
       case 'screenshot':
         bus.publish({ type: 'media', kind: 'photo', url: `/pc/shot/${job.id}-${event.at}`, filename: `${job.project}.jpg`, mime: 'image/jpeg' });
         break;
       case 'turn_done':
-        say(`[PC] Claude finished this task on ${job.project} (session ${job.id}, stays open for a follow-up).\n\n${(event.text ?? '(no summary)').slice(0, 3500)}`);
-        break;
       case 'done':
-        say(`[PC] Claude finished on ${job.project} (session ${job.id}).\n\n${(event.text ?? '(no summary)').slice(0, 3500)}`);
+        // The Keeper's own retelling (a crew turn) is what lands in the chat; the full report lives in the PC sheet.
+        if (relaysThroughKeeper(job, event.text)) chip('reported back (full report in the PC sheet)');
+        else say(`[PC] ${job.name} finished ${event.kind === 'turn_done' ? 'this task ' : ''}on ${job.project} (session ${job.id}${event.kind === 'turn_done' ? ', stays open for a follow-up' : ''}).
+
+${(event.text ?? '(no summary)').slice(0, 3500)}`);
         break;
       case 'error':
-        say(`[PC] Claude session ${job.id} on ${job.project} ${job.status === 'stopped' ? 'was stopped' : 'failed'}: ${(event.text ?? '').slice(0, 800)}`);
+        say(job.role === 'prime'
+          ? `[PC] ${job.name} went offline (session ${job.id}): ${(event.text ?? '').slice(0, 600)}`
+          : `[PC] ${job.name} (session ${job.id}) on ${job.project} ${job.status === 'stopped' ? 'was stopped' : 'failed'}: ${(event.text ?? '').slice(0, 800)}`);
         break;
     }
   });

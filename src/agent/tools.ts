@@ -24,7 +24,7 @@ import {
   type DecisionSetStatus,
 } from '../db/repositories.js';
 import { parseRecurrence, nextOccurrence, monthStartUtc } from './recurrence.js';
-import { startJob, sendToJob, parseMode, SESSION_MODES, MODE_LABELS, stopJob, getJob, listJobs, jobSummary, openApprovals, pcOnline, pcProjects } from '../web/pcBridge.js';
+import { startJob, sendToJob, parseMode, parseEngine, ENGINES, SESSION_MODES, MODE_LABELS, stopJob, getJob, listJobs, jobSummary, openApprovals, pcOnline, pcProjects, delegateToPrime, livePrime, PRIME_NAME } from '../web/pcBridge.js';
 import { bus, type PresentCard } from '../web/bus.js';
 import {
   githubEnabled,
@@ -713,21 +713,37 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
   },
   // ─── Claude Code on the PC (src/web/pcBridge.ts) ─────────────────────────
   {
+    name: 'delegate_to_prime',
+    description:
+      `Hand a goal to ${PRIME_NAME}, Philip's chief of staff on the PC. It starts Prime if it is not up, or gives the goal to the idle Prime. ` +
+      'Use it for anything big, multi-part, open-ended or ongoing (build this, test that app end to end, research and compare, sort this out): ' +
+      'Prime plans it, spawns and names its own crew of workers, checks their work and reports back. ' +
+      'Write `goal` as intent: what he wants and what done looks like, plus facts only he gave you (URLs, test logins, constraints). ' +
+      'No step lists and no rules Prime already has (logins, approvals, report style are in its own instructions); Prime is a stronger model than you. ' +
+      "If Prime is busy, the error says on what: tell him, don't stack another goal.",
+    input_schema: {
+      type: 'object',
+      properties: { goal: { type: 'string', description: 'What he wants achieved and how to tell it is done. Intent, not instructions.' } },
+      required: ['goal'],
+    },
+  },
+  {
     name: 'start_claude_session',
     description:
-      "Start a Claude Code session on Philip's PC, in one of his project folders, with a task. Use it when he asks you to " +
-      'get Claude / a coding session / "the PC" to do something. Write `task` as a complete brief Claude can act on without ' +
-      'this conversation: what to do, where, how he wants to hear back. It runs on the PC (which must be on); risky actions ' +
-      '(sends, deletes, payments, prod) come to his phone as Approve/Deny buttons, and he is told when it finishes. ' +
-      'If the project name does not match, the error lists the allowed ones — ask him which, do not guess. ' +
-      'Choose `mode`: "meeseeks" (default) is a disposable one-task session that ends when the task is done; ' +
-      '"persistent" stays open afterwards so he can send follow-ups (continue_claude_session) on the same conversation. ' +
-      'Use persistent only when he asks for a session that keeps going / he wants to keep working with; otherwise leave it as meeseeks.',
+      "Start a single Meeseeks on Philip's PC: a coding agent that does ONE bounded job in one of his project folders, reports, and is gone. " +
+      'For anything bigger or multi-part use delegate_to_prime instead. ' +
+      'Write `task` as the goal: what he wants and what done looks like, plus facts only he gave you. Do not write steps, and do not repeat standing rules ' +
+      '(logins, approvals, how to report): the session already has them and is a stronger model than you. ' +
+      'It runs on the PC (which must be on); risky actions come to his phone as Approve/Deny, and he hears how it ended. ' +
+      'If the project name does not match, the error lists the allowed ones: ask him which, do not guess. ' +
+      'engine: "claude" (default) for code and browser work, "codex" when the job means driving the desktop itself (mouse, keyboard, native apps). ' +
+      'mode "persistent" only when he explicitly wants a session that stays open for follow-ups.',
     input_schema: {
       type: 'object',
       properties: {
         project: { type: 'string', description: 'Project folder name, e.g. "solarize" or "the-keeper".' },
-        task: { type: 'string', description: 'The full brief for Claude.' },
+        task: { type: 'string', description: 'The goal and what done looks like. Intent, not instructions.' },
+        engine: { type: 'string', enum: ENGINES, description: 'claude (default) or codex (desktop control).' },
         mode: { type: 'string', enum: SESSION_MODES, description: 'meeseeks = one task then the session ends (default). persistent = stays open for follow-ups.' },
       },
       required: ['project', 'task'],
@@ -736,7 +752,7 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
   {
     name: 'claude_sessions',
     description:
-      'See whether the PC is online, which projects it allows, and the state of recent Claude sessions (running, waiting on his approval, done + summary). ' +
+      'See whether the PC is online, whether Meeseeks Prime is up, which projects it allows, and the crew: every recent session with its name, role, engine, what it is about and its state (running, waiting on his approval, done + report). ' +
       'Pass `id` for one session in detail. Read this before telling him anything about a PC session — never report progress from memory.',
     input_schema: { type: 'object', properties: { id: { type: 'string', description: 'Session id (or prefix) for detail.' } } },
   },
@@ -2092,20 +2108,32 @@ export async function dispatchTool(
     }
 
     // ─── Claude Code on the PC ─────────────────────────────────────────────
+    case 'delegate_to_prime': {
+      if (!pcOnline()) return { output: "The PC isn't checking in, so Prime can't be reached. Tell him; nothing was started." };
+      const r = delegateToPrime(String(input.goal ?? ''));
+      if (!r.ok) return { output: r.error };
+      return {
+        output: r.started
+          ? `${PRIME_NAME} is starting (${r.job.id}). He gets a ping when it comes online, and its report comes back through you. Tell him it is on it; do not claim anything is done.`
+          : `Gave the goal to ${PRIME_NAME} (${r.job.id}), which was idle and keeps its context. Its report comes back through you. Do not claim anything is done.`,
+      };
+    }
     case 'start_claude_session': {
       if (!pcOnline()) {
         return { output: "The PC isn't checking in, so it's off, asleep, or the PC agent isn't running. Tell him; nothing was started." };
       }
       const mode = parseMode(input.mode);
       if (!mode) return { output: `Unknown mode "${String(input.mode)}". Use one of: ${SESSION_MODES.join(', ')}. Nothing was started.` };
-      const r = startJob(String(input.project ?? ''), String(input.task ?? ''), mode);
+      const engine = parseEngine(input.engine);
+      if (!engine) return { output: `Unknown engine "${String(input.engine)}". Use one of: ${ENGINES.join(', ')}. Nothing was started.` };
+      const r = startJob(String(input.project ?? ''), String(input.task ?? ''), mode, { engine });
       if (!r.ok) return { output: r.error };
       return {
         output:
-          `Queued ${MODE_LABELS[mode]} session ${r.job.id} on ${r.job.project}` +
+          `Queued "${r.job.name}" (${r.job.id}, ${engine}) on ${r.job.project}` +
           (mode === 'persistent' ? ' (it stays open after the task; continue it with continue_claude_session)' : ' (one task, then it ends)') +
           `. He'll get a Telegram ping when it starts, Approve/Deny buttons for anything risky, ` +
-          'and a message however it ends: the summary, a failure, or a note that the PC never picked it up. Tell him it is on its way — do not claim it has done anything yet.',
+          'and a message however it ends. Tell him it is on its way, by name if you like; do not claim it has done anything yet.',
       };
     }
     case 'claude_sessions': {
@@ -2116,10 +2144,14 @@ export async function dispatchTool(
       return {
         output: JSON.stringify({
           pcOnline: pcOnline(),
+          prime: (() => {
+            const p = livePrime();
+            return p ? { id: p.id, status: p.status, on: p.brief } : 'offline';
+          })(),
           projects: pcProjects(),
-          sessions: listJobs().slice(0, 8).map((j) => {
+          sessions: listJobs().slice(0, 10).map((j) => {
             const x = jobSummary(j);
-            return { id: x.id, project: x.project, mode: x.mode, status: x.status, task: x.task.slice(0, 160), result: x.result?.slice(0, 600) };
+            return { id: x.id, name: x.name, role: x.role, engine: x.engine, project: x.project, status: x.phase, about: x.brief, result: x.result?.slice(0, 600) };
           }),
           waitingOnHim: openApprovals().map((a) => ({ session: a.jobId, wants: a.summary.slice(0, 200) })),
         }),

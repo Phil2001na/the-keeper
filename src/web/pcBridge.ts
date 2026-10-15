@@ -32,6 +32,18 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
  *  POST /pc/send          {jobId, message}        follow-up to an idle persistent session   (viewer)
  *  POST /pc/approve       {id, allow}                                               (viewer)
  *  POST /pc/stop          {jobId}                 ends the session (idle or running)        (viewer)
+ *  POST /pc/delegate      {goal}                  hand a goal to Meeseeks Prime (starts it if needed) (viewer)
+ *  POST /pc/agent/crew    {op, parentId, ...}     Prime's crew tools: spawn / status / stop    (agent)
+ *
+ * The crew. Every job has a role:
+ *   solo    a Meeseeks the Keeper (or he) started directly. Reports straight to him.
+ *   prime   Meeseeks Prime, the chief of staff. One at a time, always persistent,
+ *           runs on PRIME_ENGINE/PRIME_MODEL (Codex + gpt-6.1-sol by default).
+ *           He hears when it comes online and goes offline.
+ *   worker  spawned and named by Prime through pc-agent/crew-mcp.mjs. Reports to
+ *           Prime, not to him: he only hears when one dies or fails. When the
+ *           last of Prime's workers ends while Prime is idle, Prime is woken
+ *           with their results (capped by PRIME_MAX_AUTOWAKE per ask).
  *
  * Two session modes (see SessionMode):
  *   meeseeks    one task, then the session is gone. The original behaviour.
@@ -62,6 +74,14 @@ const IDLE_MAX_MIN = minutes('PC_IDLE_MAX_MIN', 480);
 const LOST_CONTACT_MIN = minutes('PC_LOST_CONTACT_MIN', 5);
 /** Hard cap on one session; past it the relay asks the PC to stop it. */
 const MAX_RUN_MIN = minutes('PC_MAX_RUN_MIN', 120);
+/** Workers one Prime may have alive at once. */
+const MAX_CREW = minutes('PC_MAX_CREW', 3);
+/** Times Prime is woken by its own crew finishing before he has to speak again. */
+const PRIME_MAX_AUTOWAKE = minutes('PRIME_MAX_AUTOWAKE', 6);
+const PRIME_ENGINE: Engine = process.env.PRIME_ENGINE === 'claude' ? 'claude' : 'codex';
+const PRIME_MODEL = (process.env.PRIME_MODEL ?? 'gpt-6.1-sol').trim() || undefined;
+const PRIME_PROJECT = process.env.PRIME_PROJECT ?? 'the-keeper';
+export const PRIME_NAME = 'Meeseeks Prime';
 
 export type JobStatus = 'queued' | 'running' | 'waiting' | 'idle' | 'done' | 'failed' | 'stopped';
 
@@ -78,6 +98,53 @@ export const MODE_LABELS: Record<SessionMode, string> = {
   meeseeks: 'Meeseeks',
   persistent: 'Meeseeks Prime',
 };
+
+/** Which coding agent runs the session on the PC. */
+export type Engine = 'claude' | 'codex';
+export const ENGINES: Engine[] = ['claude', 'codex'];
+
+export function parseEngine(v: unknown): Engine | null {
+  if (v === undefined || v === null || v === '') return 'claude';
+  return ENGINES.includes(v as Engine) ? (v as Engine) : null;
+}
+
+/** Where a session sits in the crew. See the header. */
+export type CrewRole = 'solo' | 'prime' | 'worker';
+
+export interface StartOpts {
+  name?: string;
+  role?: CrewRole;
+  parentId?: string;
+  engine?: Engine;
+  model?: string;
+  /** One line on what it is about, for the crew panel. Defaults to the start of the task. */
+  brief?: string;
+}
+
+// Solo Meeseeks get a name too, so the joke holds even when Prime is not the one naming.
+const SOLO_NAMES = [
+  'Mr. Meeseeks', 'Can-Do Meeseeks', 'Look-At-Me Meeseeks', 'Box-Fresh Meeseeks', 'Existence-Is-Pain Meeseeks',
+  'Ooh-Wee Meeseeks', 'Tiny Meeseeks', 'Pickle Meeseeks', 'Squanchy Meeseeks', 'Plumbus Meeseeks',
+];
+let soloCounter = 0;
+
+function briefOf(text: string): string {
+  const line = text.replace(/\s+/g, ' ').trim();
+  return line.length > 140 ? line.slice(0, 137) + '…' : line;
+}
+
+const LIVE: JobStatus[] = ['queued', 'running', 'waiting', 'idle'];
+const isLive = (j: Job): boolean => LIVE.includes(j.status);
+
+/** A live name is never reused: a second one gets "II", "III"… */
+function uniqueName(want: string): string {
+  const base = want.replace(/\s+/g, ' ').trim().slice(0, 60) || 'Mr. Meeseeks';
+  const taken = new Set([...jobs.values()].filter(isLive).map((j) => j.name.toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
+  const roman = ['II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
+  for (const r of roman) if (!taken.has(`${base} ${r}`.toLowerCase())) return `${base} ${r}`;
+  return `${base} ${randomUUID().slice(0, 4)}`;
+}
 
 export function parseMode(v: unknown): SessionMode | null {
   if (v === undefined || v === null || v === '') return 'meeseeks';
@@ -97,6 +164,19 @@ export interface Job {
   project: string;
   task: string;
   mode: SessionMode;
+  /** Its crew name ("Meeseeks Prime", or whatever Prime called it). */
+  name: string;
+  role: CrewRole;
+  /** Workers: the Prime that spawned it. */
+  parentId?: string;
+  engine: Engine;
+  model?: string;
+  /** One line on what it is about. */
+  brief: string;
+  /** Workers: its ending has been handed to Prime (in a wake-up or a status read). */
+  reportedToParent?: boolean;
+  /** Prime: wake-ups by its own crew since he last spoke to it. */
+  autoWakes?: number;
   status: JobStatus;
   createdAt: number;
   updatedAt: number;
@@ -196,7 +276,7 @@ function flush(): void {
   const follow = followQueue.splice(0).map((id) => jobs.get(id)).filter((j): j is Job => Boolean(j?.followup));
   for (const j of follow) j.followup!.handedAt = Date.now();
   json(res, 200, {
-    jobs: start.map((j) => ({ id: j.id, project: j.project, task: j.task, mode: j.mode })),
+    jobs: start.map((j) => ({ id: j.id, project: j.project, task: j.task, mode: j.mode, name: j.name, role: j.role, parentId: j.parentId, engine: j.engine, model: j.model })),
     followups: follow.map((j) => ({ id: j.id, message: j.followup!.text })),
     decisions: decisionQueue.splice(0),
     stops: stopQueue.splice(0),
@@ -216,6 +296,18 @@ function push(job: Job, event: JobEvent): void {
   job.events.push(event);
   if (job.events.length > MAX_EVENTS) job.events.splice(0, job.events.length - MAX_EVENTS);
   pcEvents.emit('event', { type: 'job', job, event } satisfies PcEvent);
+  // Crew bookkeeping runs after everyone has seen this event, so his "Prime
+  // finished" message is never overtaken by the wake-up it triggers.
+  if (job.role === 'worker' && (event.kind === 'done' || event.kind === 'error')) {
+    queueMicrotask(() => maybeWakePrime(job.parentId));
+  } else if (job.role === 'prime' && event.kind === 'turn_done') {
+    queueMicrotask(() => maybeWakePrime(job.id));
+  } else if (job.role === 'prime' && event.kind === 'error' && !job.lost) {
+    // Prime is gone for good: its crew does not keep running unwatched.
+    queueMicrotask(() => {
+      for (const w of crewOf(job.id)) if (isLive(w)) stopJob(w.id);
+    });
+  }
 }
 
 // ─── API for the rest of Keeper ─────────────────────────────────────────────
@@ -238,9 +330,39 @@ export function matchProject(name: string): string | null {
   return partial.length === 1 ? partial[0]! : null;
 }
 
-export function startJob(project: string, task: string, mode: SessionMode = 'meeseeks'): { ok: true; job: Job } | { ok: false; error: string } {
+/** The one Meeseeks Prime that is up (queued, working, waiting on him, or idle), if any. */
+export function livePrime(): Job | null {
+  return [...jobs.values()].find((j) => j.role === 'prime' && isLive(j)) ?? null;
+}
+
+/** Workers Prime spawned, newest first. */
+export function crewOf(parentId: string): Job[] {
+  return listJobs().filter((j) => j.role === 'worker' && j.parentId === parentId);
+}
+
+export function startJob(
+  project: string,
+  task: string,
+  mode: SessionMode = 'meeseeks',
+  opts: StartOpts = {}
+): { ok: true; job: Job } | { ok: false; error: string } {
+  const role: CrewRole = opts.role ?? 'solo';
+  if (role === 'prime') mode = 'persistent';
   if (!SESSION_MODES.includes(mode)) return { ok: false, error: `Unknown session mode "${String(mode)}". Use one of: ${SESSION_MODES.join(', ')}.` };
+  const engine: Engine = opts.engine ?? (role === 'prime' ? PRIME_ENGINE : 'claude');
+  if (!ENGINES.includes(engine)) return { ok: false, error: `Unknown engine "${String(engine)}". Use one of: ${ENGINES.join(', ')}.` };
   if (!AGENT_TOKEN) return { ok: false, error: 'PC bridge is not configured (REMOTE_BROWSER_TOKEN unset).' };
+  if (role === 'prime') {
+    const p = livePrime();
+    if (p) return { ok: false, error: `${PRIME_NAME} is already up (${p.id}, ${p.status}). Send it the goal instead of starting another.` };
+  }
+  let parent: Job | undefined;
+  if (role === 'worker') {
+    parent = opts.parentId ? jobs.get(opts.parentId) : undefined;
+    if (!parent || parent.role !== 'prime' || !isLive(parent)) return { ok: false, error: 'Only a live Meeseeks Prime can spawn workers.' };
+    const alive = crewOf(parent.id).filter(isLive).length;
+    if (alive >= MAX_CREW) return { ok: false, error: `${alive} workers are already alive (limit ${MAX_CREW}). Wait for one to finish or stop one.` };
+  }
   const p = matchProject(project);
   if (!p) {
     return {
@@ -253,7 +375,26 @@ export function startJob(project: string, task: string, mode: SessionMode = 'mee
   const clean = task.trim().slice(0, 8000);
   if (!clean) return { ok: false, error: 'Empty task.' };
   const now = Date.now();
-  const job: Job = { id: randomUUID().slice(0, 8), project: p, task: clean, mode, status: 'queued', createdAt: now, updatedAt: now, seenAt: now, events: [] };
+  const name =
+    role === 'prime' ? PRIME_NAME : uniqueName(opts.name?.trim() || SOLO_NAMES[soloCounter++ % SOLO_NAMES.length]!);
+  const model = (opts.model ?? (role === 'prime' && engine === PRIME_ENGINE ? PRIME_MODEL : undefined))?.trim().slice(0, 60) || undefined;
+  const job: Job = {
+    id: randomUUID().slice(0, 8),
+    project: p,
+    task: clean,
+    mode,
+    name,
+    role,
+    parentId: parent?.id,
+    engine,
+    model,
+    brief: briefOf(opts.brief?.trim() || clean),
+    status: 'queued',
+    createdAt: now,
+    updatedAt: now,
+    seenAt: now,
+    events: [],
+  };
   jobs.set(job.id, job);
   startQueue.push(job.id);
   prune();
@@ -293,7 +434,11 @@ function closeIdle(job: Job, status: 'stopped' | 'failed', text: string, now = D
  * Give an idle persistent session its next task. Only an `idle` one accepts it:
  * a running session is busy, and a Meeseeks is gone after its one task.
  */
-export function sendToJob(jobId: string, message: string): { ok: true; job: Job } | { ok: false; error: string } {
+export function sendToJob(
+  jobId: string,
+  message: string,
+  from: 'philip' | 'crew' = 'philip'
+): { ok: true; job: Job } | { ok: false; error: string } {
   const job = getJob(jobId);
   if (!job) return { ok: false, error: `No single session matches "${jobId}".` };
   if (job.mode !== 'persistent') return { ok: false, error: `Session ${job.id} is a ${MODE_LABELS[job.mode]}: it ends after its one task. Start a new session instead.` };
@@ -306,6 +451,11 @@ export function sendToJob(jobId: string, message: string): { ok: true; job: Job 
   const now = Date.now();
   job.status = 'running';
   job.task = clean;
+  // A wake-up from its own crew is not a new ask: the brief stays what he wanted.
+  if (from === 'philip') {
+    job.brief = briefOf(clean);
+    job.autoWakes = 0;
+  }
   job.turnStartedAt = now;
   job.seenAt = now;
   job.result = undefined;
@@ -314,9 +464,86 @@ export function sendToJob(jobId: string, message: string): { ok: true; job: Job 
   job.stopContext = undefined;
   job.followup = { text: clean };
   followQueue.push(job.id);
-  push(job, { at: now, kind: 'step', text: `follow-up sent: ${clean.slice(0, 200)}` });
+  push(job, { at: now, kind: 'step', text: from === 'crew' ? 'woken by its crew finishing' : `follow-up sent: ${clean.slice(0, 200)}` });
   flush();
   return { ok: true, job };
+}
+
+/**
+ * Hand a goal to Meeseeks Prime: start it if it is not up, give it the goal if it
+ * is idle. A busy Prime is not interrupted; he is told what it is on.
+ */
+export function delegateToPrime(goal: string): { ok: true; job: Job; started: boolean } | { ok: false; error: string } {
+  const p = livePrime();
+  if (!p) {
+    const r = startJob(PRIME_PROJECT, goal, 'persistent', { role: 'prime' });
+    return r.ok ? { ...r, started: true } : r;
+  }
+  if (p.status !== 'idle') {
+    return { ok: false, error: `${PRIME_NAME} is busy (${p.status}) on: ${p.brief}. Wait for its report, or stop it first.` };
+  }
+  const r = sendToJob(p.id, goal);
+  return r.ok ? { ...r, started: false } : r;
+}
+
+// ─── The crew (Prime's tools, via pc-agent/crew-mcp.mjs) ───────────────────
+
+const ENDED: JobStatus[] = ['done', 'failed', 'stopped'];
+
+/** What Prime sees about one worker. The result is its full report. */
+function crewView(w: Job) {
+  return {
+    id: w.id,
+    name: w.name,
+    engine: w.engine,
+    project: w.project,
+    brief: w.brief,
+    status: w.status,
+    phase: jobPhase(w),
+    lastStep: lastStep(w).replace(/^ Last thing it reported: /, '') || undefined,
+    report: ENDED.includes(w.status) ? (w.status === 'done' ? w.result : [...w.events].reverse().find((e) => e.kind === 'error')?.text) : undefined,
+  };
+}
+
+export function crewStatus(parentId: string) {
+  const crew = crewOf(parentId);
+  for (const w of crew) if (ENDED.includes(w.status)) w.reportedToParent = true;
+  return { workers: crew.slice(0, 12).map(crewView), limit: MAX_CREW };
+}
+
+export function crewStop(parentId: string, workerId: string): boolean {
+  const w = jobs.get(workerId);
+  return Boolean(w && w.role === 'worker' && w.parentId === parentId && stopJob(w.id));
+}
+
+/**
+ * A worker ended. If that was the last live one and Prime is idle, wake Prime
+ * with the results so the loop closes without Prime blocking on a wait. A busy
+ * Prime picks them up when it goes idle (see onAgentEvent turn_done).
+ */
+function maybeWakePrime(parentId: string | undefined): void {
+  const prime = parentId ? jobs.get(parentId) : undefined;
+  if (!prime || prime.role !== 'prime' || prime.status !== 'idle') return;
+  const crew = crewOf(prime.id);
+  if (crew.some(isLive)) return;
+  const fresh = crew.filter((w) => ENDED.includes(w.status) && !w.reportedToParent);
+  if (!fresh.length) return;
+  if ((prime.autoWakes ?? 0) >= PRIME_MAX_AUTOWAKE) {
+    push(prime, { at: Date.now(), kind: 'step', text: `crew finished, but it has woken itself ${PRIME_MAX_AUTOWAKE} times since he last spoke, so it waits for him` });
+    return;
+  }
+  for (const w of fresh) w.reportedToParent = true;
+  prime.autoWakes = (prime.autoWakes ?? 0) + 1;
+  const lines = fresh.map((w) => {
+    const v = crewView(w);
+    return `## ${w.name} (${w.id}, ${w.engine}) — ${v.phase}\n${(v.report ?? '(no report)').slice(0, 6000)}`;
+  });
+  sendToJob(
+    prime.id,
+    `[Your crew has finished. This is not from Philip.]\n\n${lines.join('\n\n')}\n\n` +
+      'Judge these against the goal. Spawn more workers if something is still open; otherwise write your report for Philip.',
+    'crew'
+  );
 }
 
 /** Answer a pending permission request. Returns false if it's unknown or already answered. */
@@ -417,6 +644,16 @@ export function sweepPcJobs(now = Date.now()): void {
 
 setInterval(() => sweepPcJobs(), SWEEP_MS).unref();
 
+/**
+ * Whether a report should reach him through the Keeper (which says what matters
+ * in plain words) instead of verbatim. Prime's reports always do; a solo
+ * Meeseeks' only when it is long. Workers report to Prime, never to him.
+ */
+export const RELAY_OVER_CHARS = 1200;
+export function relaysThroughKeeper(job: Job, text: string | undefined): boolean {
+  return job.role === 'prime' || (job.role === 'solo' && (text ?? '').length > RELAY_OVER_CHARS);
+}
+
 /** What the phone shows for a job. Finer than `status`: it tells apart the endings that all read "failed". */
 export type JobPhase = 'queued' | 'running' | 'waiting' | 'idle' | 'done' | 'failed' | 'timed_out' | 'not_picked_up' | 'lost' | 'stopped';
 
@@ -441,7 +678,15 @@ export function jobSummary(j: Job) {
     project: j.project,
     task: j.task.slice(0, 300),
     mode: j.mode,
-    modeLabel: MODE_LABELS[j.mode],
+    modeLabel: j.role === 'prime' ? PRIME_NAME : MODE_LABELS[j.mode],
+    name: j.name,
+    role: j.role,
+    parentId: j.parentId,
+    engine: j.engine,
+    model: j.model,
+    brief: j.brief,
+    /** Prime is "online" while it is up (working, waiting on him, or idle between asks). */
+    online: isLive(j),
     turns: j.turns ?? 0,
     status: j.status,
     phase: jobPhase(j),
@@ -471,11 +716,19 @@ const JOB_ID = /^[a-z0-9-]{4,40}$/i;
  */
 function adopt(r: Record<string, unknown>, id: string, now: number): Job | undefined {
   if (!JOB_ID.test(id) || typeof r.project !== 'string' || !r.project || r.project.length >= 100) return undefined;
+  const task = typeof r.task === 'string' ? r.task.slice(0, 8000) : '(task not known: the Keeper restarted while this was running)';
+  const role: CrewRole = r.role === 'prime' || r.role === 'worker' ? r.role : 'solo';
   const job: Job = {
     id,
     project: r.project,
-    task: typeof r.task === 'string' ? r.task.slice(0, 8000) : '(task not known: the Keeper restarted while this was running)',
-    mode: r.mode === 'persistent' ? 'persistent' : 'meeseeks',
+    task,
+    mode: r.mode === 'persistent' || role === 'prime' ? 'persistent' : 'meeseeks',
+    name: role === 'prime' ? PRIME_NAME : typeof r.name === 'string' && r.name.trim() ? r.name.trim().slice(0, 60) : 'Mr. Meeseeks',
+    role,
+    parentId: role === 'worker' && typeof r.parentId === 'string' ? r.parentId.slice(0, 40) : undefined,
+    engine: r.engine === 'codex' ? 'codex' : 'claude',
+    model: typeof r.model === 'string' ? r.model.slice(0, 60) : undefined,
+    brief: briefOf(typeof r.brief === 'string' ? r.brief : task),
     status: 'running',
     createdAt: now,
     updatedAt: now,
@@ -600,7 +853,7 @@ export function onAgentEvent(b: Record<string, unknown>): string | null {
     case 'started':
       job.status = 'running';
       if (typeof b.sessionId === 'string') job.sessionId = b.sessionId.slice(0, 80);
-      push(job, { at, kind: 'started', text: `Claude started on ${job.project}.` });
+      push(job, { at, kind: 'started', text: `${job.name} started on ${job.project} (${job.engine}${job.model ? ` · ${job.model}` : ''}).` });
       return null;
     case 'text':
     case 'step':
@@ -658,6 +911,37 @@ export function onAgentEvent(b: Record<string, unknown>): string | null {
   return null;
 }
 
+/**
+ * Prime's crew tools, called by pc-agent/crew-mcp.mjs on the PC with the agent
+ * token. Every op names the Prime it acts for, and only a live Prime may act.
+ */
+export function crewOp(b: Record<string, unknown>): Record<string, unknown> {
+  const parentId = typeof b.parentId === 'string' ? b.parentId : '';
+  const prime = jobs.get(parentId);
+  if (!prime || prime.role !== 'prime' || !isLive(prime)) return { ok: false, error: 'Only a live Meeseeks Prime can use the crew.' };
+  switch (b.op) {
+    case 'spawn': {
+      const engine = parseEngine(b.engine);
+      if (!engine) return { ok: false, error: `engine must be one of: ${ENGINES.join(', ')}` };
+      const r = startJob(String(b.project ?? '') || prime.project, String(b.goal ?? ''), 'meeseeks', {
+        role: 'worker',
+        parentId,
+        name: typeof b.name === 'string' ? b.name : undefined,
+        engine,
+        model: typeof b.model === 'string' && b.model.trim() ? b.model : undefined,
+        brief: typeof b.brief === 'string' ? b.brief : undefined,
+      });
+      return r.ok ? { ok: true, worker: { id: r.job.id, name: r.job.name, engine: r.job.engine, project: r.job.project } } : r;
+    }
+    case 'status':
+      return { ok: true, ...crewStatus(parentId) };
+    case 'stop':
+      return { ok: crewStop(parentId, String(b.workerId ?? '')) };
+    default:
+      return { ok: false, error: 'op must be spawn, status or stop' };
+  }
+}
+
 /** Returns true if it handled the request. `authed` = the normal web token check. */
 export function handlePcBridge(req: IncomingMessage, res: ServerResponse, path: string, authed: boolean): boolean {
   if (!path.startsWith('/pc/')) return false;
@@ -698,6 +982,12 @@ export function handlePcBridge(req: IncomingMessage, res: ServerResponse, path: 
         .catch(() => json(res, 400, { ok: false }));
       return true;
     }
+    if (req.method === 'POST' && path === '/pc/agent/crew') {
+      void readJson<Record<string, unknown>>(req, 64 * 1024)
+        .then((b) => json(res, 200, crewOp(b)))
+        .catch(() => json(res, 400, { ok: false, error: 'bad request' }));
+      return true;
+    }
     json(res, 404, { ok: false });
     return true;
   }
@@ -729,11 +1019,13 @@ export function handlePcBridge(req: IncomingMessage, res: ServerResponse, path: 
     return true;
   }
   if (req.method === 'POST' && path === '/pc/start') {
-    void readJson<{ project?: unknown; task?: unknown; mode?: unknown }>(req, 32 * 1024)
+    void readJson<{ project?: unknown; task?: unknown; mode?: unknown; engine?: unknown }>(req, 32 * 1024)
       .then((b) => {
         const mode = parseMode(b.mode);
         if (!mode) return json(res, 400, { ok: false, error: `Unknown mode. Use one of: ${SESSION_MODES.join(', ')}.` });
-        const r = startJob(String(b.project ?? ''), String(b.task ?? ''), mode);
+        const engine = parseEngine(b.engine);
+        if (!engine) return json(res, 400, { ok: false, error: `Unknown engine. Use one of: ${ENGINES.join(', ')}.` });
+        const r = startJob(String(b.project ?? ''), String(b.task ?? ''), mode, { engine });
         json(res, r.ok ? 200 : 400, r.ok ? { ok: true, job: jobSummary(r.job) } : r);
       })
       .catch(() => json(res, 400, { ok: false }));
@@ -744,6 +1036,15 @@ export function handlePcBridge(req: IncomingMessage, res: ServerResponse, path: 
       .then((b) => {
         const r = sendToJob(String(b.jobId ?? ''), String(b.message ?? ''));
         json(res, r.ok ? 200 : 400, r.ok ? { ok: true, job: jobSummary(r.job) } : r);
+      })
+      .catch(() => json(res, 400, { ok: false }));
+    return true;
+  }
+  if (req.method === 'POST' && path === '/pc/delegate') {
+    void readJson<{ goal?: unknown }>(req, 32 * 1024)
+      .then((b) => {
+        const r = delegateToPrime(String(b.goal ?? ''));
+        json(res, r.ok ? 200 : 400, r.ok ? { ok: true, started: r.started, job: jobSummary(r.job) } : r);
       })
       .catch(() => json(res, 400, { ok: false }));
     return true;

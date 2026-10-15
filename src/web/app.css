@@ -2188,3 +2188,51 @@ input[type='range']::-moz-range-thumb {
 .pc-start select option { color: #111; }
 .pc-start .btn { justify-content: center; }
 .pc-empty { font-size: 13px; color: var(--text-faint); line-height: 1.5; }
+
+/* The crew: Prime first, its workers indented under it, then any solo Meeseeks. */
+.crew {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+.crew-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.crew-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 0;
+  color: inherit;
+  text-decoration: none;
+  border-top: 1px solid var(--line);
+}
+.crew-head + .crew-row { border-top: 0; }
+.crew-row.worker { padding-left: 16px; }
+.crew-row .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
+.crew-row .dot.on { background: var(--good); }
+.crew-row.prime .dot.on { box-shadow: 0 0 0 3px color-mix(in oklch, var(--good) 25%, transparent); }
+.crew-row .who { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.crew-row .who b { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.crew-row .who span { font-size: 12px; line-height: 1.4; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-job .proj .sub { display: block; margin-top: 2px; font-size: 11.5px; font-weight: 400; color: var(--text-faint); }
+.pc-start .row { display: flex; gap: 8px; }
+.pc-start .row select { flex: 1; }
+.pc-start .row[hidden] { display: none; }
+#pcbtn.prime-up::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--good);
+}
