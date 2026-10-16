@@ -1370,7 +1370,7 @@ footer {
   right: 0;
   z-index: 20;
   height: 100dvh;
-  width: min(420px, 92vw);
+  width: min(460px, 100vw);
   padding: calc(22px + env(safe-area-inset-top)) 22px calc(40px + env(safe-area-inset-bottom));
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1387,14 +1387,14 @@ footer {
 }
 
 .sheet h2 {
-  font-size: 13px;
+  font-size: 24px;
   font-weight: 620;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
+  letter-spacing: -0.035em;
+  padding-right: 48px;
 }
 .sheet .sub {
   font-size: 12.5px;
-  color: var(--text-faint);
+  color: var(--text-dim);
   margin: 6px 0 24px;
   line-height: 1.5;
 }
@@ -1416,8 +1416,8 @@ footer {
   right: 18px;
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   border: 1px solid var(--line);
   border-radius: 50%;
   background: none;
@@ -2236,3 +2236,35 @@ input[type='range']::-moz-range-thumb {
   border-radius: 50%;
   background: var(--good);
 }
+
+/* Quiet navigation and comfortable controls, using the existing theme ramp. */
+.header-tools { display: flex; align-items: center; gap: 6px; }
+.header-tools .icon-btn { display: flex; justify-content: center; gap: 7px; width: auto; min-width: 44px; height: 44px; padding: 0 12px; }
+.nav-label { font-size: 12px; font-weight: 550; }
+.header-tools .icon-btn[aria-expanded="true"] { color: var(--accent-hi); border-color: var(--accent-line); background: var(--accent-soft); }
+#statusline { margin-top: 4px; color: var(--text-dim); }
+#composer-hint { display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px 0; color: var(--text-dim); font-size: 11px; }
+#attachbtn { background: var(--surface-2); color: var(--text-dim); box-shadow: none; }
+.round-btn { width: 44px; height: 44px; }
+.sheet h3 { font-size: 12px; letter-spacing: 0.035em; text-transform: none; }
+.sheet section + section { border-top: 1px solid var(--line); padding-top: 22px; }
+#pc.sheet { width: min(560px, 100vw); }
+.pc-job { padding: 16px; }
+.pc-job .top { flex-wrap: wrap; gap: 8px; }
+.pc-job .task { margin-top: 8px; line-height: 1.65; }
+.pc-job .result { max-height: 340px; overflow-y: auto; overscroll-behavior: contain; }
+.pc-start select, .pc-start input, .pc-follow input { min-height: 44px; background: var(--surface-1); }
+.pc-start .row { flex-wrap: wrap; }
+.pc-start .row select { min-width: 110px; }
+.sheet .btn { min-height: 44px; }
+@media (max-width: 560px) {
+  header { gap: 9px; padding-inline: 12px; }
+  .title { font-size: 12px; letter-spacing: 0.1em; }
+  header > .orb { width: 34px; height: 34px; }
+  .header-tools { gap: 3px; }
+  .header-tools .icon-btn { flex-direction: column; gap: 3px; height: 50px; padding: 5px 7px; border-color: transparent; background: transparent; }
+  .nav-label { font-size: 10px; line-height: 1; }
+  #composer-hint span { display: none; }
+  .sheet { padding-inline: 20px; }
+}
+@media (max-height: 500px) { #composer-hint { display: none; } }

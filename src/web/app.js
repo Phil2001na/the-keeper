@@ -959,11 +959,15 @@
     if (files.length) addFiles(files);
   });
 
+  let sending = false;
   async function send() {
+    if (sending) return;
     const text = box.value.trim();
     if (!text && pending.length === 0) return;
     if (!navigator.onLine) { toast('still offline — it didn’t get that'); return; }
     const files = pending;
+    sending = true;
+    let delivered = false;
     box.value = '';
     autosize();
     pending = [];
@@ -975,6 +979,7 @@
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
         body: JSON.stringify({ text, files }),
       });
+      delivered = res.ok;
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         if (res.status === 401) { token = ''; enter(); }
@@ -983,6 +988,13 @@
     } catch {
       toast('no connection — it didn’t get that');
     } finally {
+      if (!delivered) {
+        box.value = text + (box.value ? '\n' + box.value : '');
+        pending = [...files, ...pending];
+        renderChips();
+        autosize();
+      }
+      sending = false;
       sendbtn.disabled = !navigator.onLine;
       box.focus();
     }
@@ -990,7 +1002,7 @@
 
   sendbtn.addEventListener('click', send);
   box.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
 
   // ── jump to latest ────────────────────────────────────────────────────
@@ -1002,10 +1014,16 @@
   });
 
   // ══ sheets ════════════════════════════════════════════════════════════
+  let sheetOpener = null;
   function openSheet(which) {
     closeSheets();
+    sheetOpener = document.activeElement;
+    $(which).inert = false;
     $(which).classList.add('open');
     $(which).setAttribute('aria-hidden', 'false');
+    $(which + 'btn').setAttribute('aria-expanded', 'true');
+    $(which).querySelector('[data-close]').focus();
+    $('app').inert = true;
     $('scrim').classList.add('show');
     if (which === 'mind') loadMind();
     if (which === 'pc') pcTick();
@@ -1018,19 +1036,36 @@
   }
 
   function closeSheets() {
+    $('app').inert = false;
     for (const id of ['pc', 'mind', 'settings']) {
       $(id).classList.remove('open');
       $(id).setAttribute('aria-hidden', 'true');
+      $(id).inert = true;
+      $(id + 'btn').setAttribute('aria-expanded', 'false');
     }
     $('scrim').classList.remove('show');
+    if (sheetOpener?.isConnected) sheetOpener.focus();
+    sheetOpener = null;
   }
+
+  document.addEventListener('keydown', (e) => {
+    const sheet = document.querySelector('.sheet.open');
+    if (!sheet || e.key !== 'Tab' || document.querySelector('dialog[open]')) return;
+    const controls = [...sheet.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')]
+      .filter((el) => !el.disabled && el.getClientRects().length && !el.closest('[inert]'));
+    const first = controls[0], last = controls[controls.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+  });
 
   $('pcbtn').addEventListener('click', () => openSheet('pc'));
   $('mindbtn').addEventListener('click', () => openSheet('mind'));
   $('settingsbtn').addEventListener('click', () => openSheet('settings'));
   $('scrim').addEventListener('click', closeSheets);
   document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', closeSheets));
-  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheets(); });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !document.querySelector('dialog[open]')) closeSheets();
+  });
 
   function renderMind(snap) {
     const pri = (p) => '●'.repeat(Math.max(1, 6 - (p || 3))).padEnd(5, '○');

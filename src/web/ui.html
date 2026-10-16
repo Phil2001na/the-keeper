@@ -176,9 +176,11 @@
       <div class="title">THE KEEPER</div>
       <div id="statusline"><span class="dot"></span><span id="statustext">here</span></div>
     </div>
-    <button class="icon-btn" id="pcbtn" title="PC sessions" aria-label="PC sessions"><svg><use href="#i-pc"/></svg><span class="pc-badge hidden" id="pcbadge"></span></button>
-    <button class="icon-btn" id="mindbtn" title="its mind" aria-label="its mind"><svg><use href="#i-mind"/></svg></button>
-    <button class="icon-btn" id="settingsbtn" title="settings" aria-label="settings"><svg><use href="#i-settings"/></svg></button>
+    <nav class="header-tools" aria-label="Keeper tools">
+      <button class="icon-btn" id="pcbtn" title="PC sessions" aria-label="PC sessions" aria-controls="pc" aria-expanded="false"><svg><use href="#i-pc"/></svg><span class="nav-label">PC</span><span class="pc-badge hidden" id="pcbadge"></span></button>
+      <button class="icon-btn" id="mindbtn" title="Memory" aria-label="Memory" aria-controls="mind" aria-expanded="false"><svg><use href="#i-mind"/></svg><span class="nav-label">Memory</span></button>
+      <button class="icon-btn" id="settingsbtn" title="Settings" aria-label="Settings" aria-controls="settings" aria-expanded="false"><svg><use href="#i-settings"/></svg><span class="nav-label">Settings</span></button>
+    </nav>
   </header>
 
   <main id="stream" aria-live="polite"></main>
@@ -190,33 +192,34 @@
     <input id="fileinput" type="file" accept="image/*,application/pdf" multiple hidden>
     <div class="composer">
       <button class="round-btn" id="attachbtn" title="attach an image or PDF" aria-label="attach"><svg><use href="#i-plus"/></svg></button>
-      <textarea id="box" rows="1" placeholder="talk to it" aria-label="message"></textarea>
+      <textarea id="box" rows="1" placeholder="Message the Keeper…" aria-label="message" aria-describedby="composer-hint"></textarea>
       <button class="round-btn" id="sendbtn" title="send" aria-label="send"><svg><use href="#i-send"/></svg></button>
     </div>
+    <div id="composer-hint">Images &amp; PDFs welcome<span>Enter to send · Shift + Enter for a new line</span></div>
     <div id="offlinebar" class="hidden"><svg><use href="#i-offline"/></svg><span>offline — you can read, but it can't hear you right now</span></div>
   </footer>
 </div>
 
 <div id="scrim"></div>
 
-<aside id="pc" class="sheet" aria-hidden="true">
+<aside id="pc" class="sheet" role="dialog" aria-modal="true" aria-labelledby="pc-title" aria-hidden="true" inert>
   <button class="sheet-close" data-close="pc" aria-label="close"><svg width="15" height="15"><use href="#i-x"/></svg></button>
-  <h2>THE PC</h2>
-  <div class="sub">Your crew on the computer: Meeseeks Prime, its workers, and one-job Meeseeks. Nothing here approves anything on its own.</div>
+  <h2 id="pc-title">Your PC</h2>
+  <div class="sub">Follow your crew, review approvals, and pick up a session.</div>
   <div id="pcbody">loading…</div>
 </aside>
 
-<aside id="mind" class="sheet" aria-hidden="true">
+<aside id="mind" class="sheet" role="dialog" aria-modal="true" aria-labelledby="mind-title" aria-hidden="true" inert>
   <button class="sheet-close" data-close="mind" aria-label="close"><svg width="15" height="15"><use href="#i-x"/></svg></button>
-  <h2>ITS MIND</h2>
-  <div class="sub">what it holds about your life — read straight from memory, no tokens spent</div>
+  <h2 id="mind-title">Memory</h2>
+  <div class="sub">What the Keeper remembers about your life. Read directly from memory.</div>
   <div id="mindbody">loading…</div>
 </aside>
 
-<aside id="settings" class="sheet" aria-hidden="true">
+<aside id="settings" class="sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-hidden="true" inert>
   <button class="sheet-close" data-close="settings" aria-label="close"><svg width="15" height="15"><use href="#i-x"/></svg></button>
-  <h2>SETTINGS</h2>
-  <div class="sub">the whole interface is derived from one colour — move it anywhere you like</div>
+  <h2 id="settings-title">Settings</h2>
+  <div class="sub">Make this space yours. Appearance changes save automatically on this device.</div>
 
   <section>
     <h3>palette</h3>
@@ -299,7 +302,7 @@
   </div>
 </dialog>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script src="/app.js"></script>
 </body>

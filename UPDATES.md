@@ -1,4 +1,13 @@
-## 2026-10-16 11:03
+## 2026-10-16
+### 11:43
+- Philip approved the reviewed UI for release; publishing the four UI/changelog files from main through the existing Railway GitHub deployment.
+
+### 11:40
+- Polished the web UI with labelled PC/Memory/Settings navigation, clearer panel headings, larger touch targets, composer guidance, and roomier PC session reports using existing theme tokens.
+- Closed panels are inert; open panels manage keyboard focus and return it on close. Failed sends restore text and attachments, duplicate sends are blocked, and IME composition no longer triggers send.
+- Verified desktop and 390px mobile layout through the local UI preview, failed-send draft recovery, and panel focus trapping/restoration. Typecheck and all 29 existing tests pass. Not deployed.
+
+### 11:03
 - **Why the Auto-Tune runs failed (16 Oct, 08:20 to 08:44 UTC):** the laptop idled into Modern Standby (display off) while both sessions were running, so Chrome stopped answering browser control (every CDP call timed out). Then at 10:34 local it hit **critical battery** and slept for 7 minutes, which is the "lost contact". Seen in the Windows event log, not guessed.
 - **pc-agent keeps the PC awake while any session runs** (small PowerShell helper holding system + display required; released when the last session ends, exits by itself if the agent dies; `keepAwake: false` in projects.json turns it off). Every relay call now has a deadline (poll 45 s, others 60 s) so a half-open socket after sleep cannot hang the agent, and a wake from sleep is detected: the agent reconnects at once and tells each running session's watcher how long the PC slept.
 - **Relay: an approval answer or a Stop sent to a dead socket is now sent again** while the PC still shows it never got it (before, the session waited forever or kept running). New tests for both; `npm test` 29/29, typecheck clean, real agent run against `scripts/pc-harness.ts`. Not deployed; the live PC agent picks up its part on its next restart.
