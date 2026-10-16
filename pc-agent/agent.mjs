@@ -85,11 +85,16 @@ function projects() {
   return out;
 }
 
-async function api(path, body) {
+// Every call has a deadline. After the PC sleeps, a socket can stay half-open
+// and a fetch with no timeout waits minutes on it while the relay counts the
+// PC as gone; a step hook awaiting such a call would stall the session too.
+async function api(path, body, { timeoutMs = 60_000, signal } = {}) {
+  const deadline = AbortSignal.timeout(timeoutMs);
   const res = await fetch(BASE + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Agent-Token': TOKEN },
     body: JSON.stringify(body),
+    signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
   });
   if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
   return res.json();
@@ -527,6 +532,7 @@ async function runJob(job) {
   saveIdle();
   running.set(job.id, me);
   saveRunning();
+  keepAwake(true);
   log('start', job.id, job.project, JSON.stringify(job.task.slice(0, 120)));
   const limit = setTimeout(() => {
     me.stopReason = 'timeout';
@@ -591,8 +597,58 @@ async function runJob(job) {
     running.delete(job.id);
     finished.add(job.id);
     saveRunning();
+    keepAwake(running.size > 0);
   }
 }
+
+// ─── Staying awake ──────────────────────────────────────────────────────────
+
+// A laptop left alone idles into Modern Standby mid-session: Chrome freezes
+// (browser control times out on every CDP call), then the PC drops off the
+// relay and the session is reported lost. That is what sank the Auto-Tune runs
+// on 16 Oct. While anything runs, a small PowerShell holds a "system and
+// display required" request; it ends with the last session, or by itself if
+// this process dies. It cannot stop a closed lid, the power button, or a
+// critical battery.
+let awake = null;
+function keepAwake(on) {
+  if (process.platform !== 'win32' || CONFIG.keepAwake === false) return;
+  if (on && !awake) {
+    // ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED, held while this agent lives.
+    const ps = `$k = Add-Type -Name Power -Namespace KeeperAwake -PassThru -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint f);'
+if ($k::SetThreadExecutionState([uint32]2147483651) -eq 0) { exit 3 }
+while (Get-Process -Id ${process.pid} -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 15 }`;
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], { windowsHide: true, stdio: 'ignore' });
+    awake = child;
+    child.on('error', (e) => log('keep-awake failed:', e.message));
+    child.on('exit', (code) => {
+      if (awake === child) awake = null;
+      if (code) log('keep-awake ended early, code', code);
+    });
+    log('keeping the PC awake while sessions run');
+  } else if (!on && awake) {
+    const child = awake;
+    awake = null;
+    child.kill();
+    log('PC may sleep again');
+  }
+}
+
+// A timer that fires far later than it should means the PC was asleep (or the
+// process was frozen). The long-poll socket did not survive that, so drop it
+// and reconnect now, and tell each running session's watcher why it went quiet.
+const TICK_MS = 15_000;
+let pollAbort = null;
+let lastTick = Date.now();
+setInterval(() => {
+  const late = Date.now() - lastTick - TICK_MS;
+  lastTick = Date.now();
+  if (late < 60_000) return;
+  const min = Math.max(1, Math.round(late / 60_000));
+  log(`PC was asleep or frozen for about ${min} min, reconnecting`);
+  pollAbort?.abort();
+  for (const id of running.keys()) void event(id, 'step', { text: `the PC was asleep for about ${min} min; carrying on` });
+}, TICK_MS).unref();
 
 // ─── Poll loop ──────────────────────────────────────────────────────────────
 
@@ -607,6 +663,7 @@ async function loop() {
     try {
       // Each running session goes up with its project, task and open approvals,
       // so a relay that lost its memory (Railway restart) takes them back.
+      pollAbort = new AbortController();
       const r = await api('/pc/agent/poll', {
         projects: Object.keys(projects()).sort(),
         idle: [...idle.entries()].map(([id, j]) => ({ id, project: j.project, task: j.task, ...crewId(j) })),
@@ -618,7 +675,7 @@ async function loop() {
           ...crewId(j),
           approvals: [...pendingApprovals.entries()].filter(([, p]) => p.jobId === id).map(([approvalId, p]) => ({ approvalId, tool: p.tool, text: p.text })),
         })),
-      });
+      }, { timeoutMs: 45_000, signal: pollAbort.signal }); // the relay answers within 25 s
       backoff = 1000;
       for (const d of r.decisions ?? []) pendingApprovals.get(d.id)?.resolve({ allow: d.allow, note: d.note });
       for (const id of r.stops ?? []) {

@@ -2,6 +2,7 @@
 // Run with `npm test`. No network, no Telegram, no database.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { Readable } from 'node:stream';
 
 process.env.REMOTE_BROWSER_TOKEN = 'test-token';
 const pc = await import('../src/web/pcBridge.js');
@@ -274,4 +275,44 @@ test('a persistent session is taken back after a relay restart, and a follow-up 
   pc.notePoll({ projects: ['sandbox'], running: [], idle: [{ id: 'beefbeef', project: 'sandbox', task: 'earlier' }] });
   assert.equal(job.followup?.handedAt, undefined, 'queued again for the next poll');
   pc.onAgentEvent({ jobId: 'beefbeef', kind: 'turn_done', text: 'ok' });
+});
+
+/** One real long-poll through the HTTP handler. Only call it when something is queued, or it holds for 25 s. */
+function poll(body: Record<string, unknown>): Promise<{ decisions: { id: string; allow: boolean }[]; stops: string[] }> {
+  return new Promise((resolve) => {
+    const res = { writeHead() { return res; }, end(b: string) { resolve(JSON.parse(b)); }, on() {} };
+    const req = Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]), { method: 'POST', headers: { 'x-agent-token': 'test-token' } });
+    pc.handlePcBridge(req as never, res as never, '/pc/agent/poll', false);
+  });
+}
+
+test('an answer that went to a dead socket is sent again while the PC is still waiting for it, without asking him twice', async () => {
+  const job = queue();
+  pc.onAgentEvent({ jobId: job.id, kind: 'started' });
+  pc.onAgentEvent({ jobId: job.id, kind: 'approval', approvalId: 'ap-lost', tool: 'Bash', text: 'Run a command: x' });
+  const asked = () => seen.filter((e) => e.type === 'approval' && e.approval.id === 'ap-lost').length;
+  const listing = { projects: ['sandbox'], running: [{ id: job.id, project: 'sandbox', task: 'x', approvals: [{ approvalId: 'ap-lost', tool: 'Bash', text: 'x' }] }] };
+  assert.equal(pc.decide('ap-lost', true), true);
+  const first = await poll(listing);
+  assert.ok(first.decisions.some((d) => d.id === 'ap-lost'));
+
+  // The PC slept through that reply and still lists the approval as open.
+  pc.notePoll(listing, Date.now() + 30_000);
+  const again = await poll(listing);
+  assert.deepEqual(again.decisions.filter((d) => d.id === 'ap-lost'), [{ id: 'ap-lost', allow: true }]);
+  assert.equal(asked(), 1, 'his answer is reused, he is not asked again');
+  pc.onAgentEvent({ jobId: job.id, kind: 'done', text: 'ok' });
+});
+
+test('a stop that went to a dead socket is sent again while the session keeps running', async () => {
+  const job = queue();
+  pc.onAgentEvent({ jobId: job.id, kind: 'started' });
+  const listing = { projects: ['sandbox'], running: [{ id: job.id, project: 'sandbox', task: 'x' }] };
+  assert.equal(pc.stopJob(job.id), true);
+  assert.ok((await poll(listing)).stops.includes(job.id));
+
+  pc.notePoll(listing, Date.now() + 30_000);
+  assert.ok((await poll(listing)).stops.includes(job.id), 'sent again');
+  pc.onAgentEvent({ jobId: job.id, kind: 'error', stopped: true, text: 'Stopped from the phone.' });
+  assert.equal(job.status, 'stopped');
 });

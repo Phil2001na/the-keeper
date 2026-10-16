@@ -210,6 +210,8 @@ export interface Job {
   followup?: { text: string; handedAt?: number };
   /** Reported as failed because the PC went quiet; it may still come back. */
   lost?: boolean;
+  /** When a stop for it last went out to the PC, so a stop lost in transit is sent again. */
+  stopSentAt?: number;
 }
 
 export interface Approval {
@@ -242,12 +244,20 @@ const shots = new Map<string, Buffer>();
 const MAX_SHOTS = 40;
 /** Event ids already applied: the agent retries until it gets a 200, so a lost reply must not double-post. */
 const seenEids = new Set<string>();
-/** Approvals already answered, so a poll that still lists one does not ask him twice. */
-const decidedIds = new Set<string>();
+/**
+ * Approvals already answered, so a poll that still lists one does not ask him
+ * twice. The answer is kept: if the poll reply carrying it went to a dead socket
+ * (PC asleep), the PC keeps listing the approval and gets the answer again.
+ */
+const decided = new Map<string, { allow: boolean; note?: string; sentAt?: number }>();
 
 function remember(set: Set<string>, id: string, max: number): void {
   set.add(id);
-  while (set.size > max) set.delete(set.values().next().value!);
+  trim(set, max);
+}
+
+function trim(c: Set<string> | Map<string, unknown>, max: number): void {
+  while (c.size > max) c.delete(c.keys().next().value!);
 }
 
 function json(res: ServerResponse, code: number, body: unknown): void {
@@ -284,11 +294,22 @@ function flush(): void {
   for (const j of start) j.handedAt = Date.now();
   const follow = followQueue.splice(0).map((id) => jobs.get(id)).filter((j): j is Job => Boolean(j?.followup));
   for (const j of follow) j.followup!.handedAt = Date.now();
+  // Answers and stops can be lost the same way; notePoll sends them again while the PC still shows it never got them.
+  const answers = decisionQueue.splice(0);
+  for (const d of answers) {
+    const x = decided.get(d.id);
+    if (x) x.sentAt = Date.now();
+  }
+  const stops = stopQueue.splice(0);
+  for (const id of stops) {
+    const j = jobs.get(id);
+    if (j) j.stopSentAt = Date.now();
+  }
   json(res, 200, {
     jobs: start.map((j) => ({ id: j.id, project: j.project, task: j.task, mode: j.mode, name: j.name, role: j.role, parentId: j.parentId, engine: j.engine, model: j.model, lessons: crewLessons })),
     followups: follow.map((j) => ({ id: j.id, message: j.followup!.text, lessons: crewLessons })),
-    decisions: decisionQueue.splice(0),
-    stops: stopQueue.splice(0),
+    decisions: answers,
+    stops,
   });
 }
 
@@ -560,7 +581,8 @@ export function decide(approvalId: string, allow: boolean, note?: string): boole
   const a = approvals.get(approvalId);
   if (!a) return false;
   approvals.delete(approvalId);
-  remember(decidedIds, approvalId, 300);
+  decided.set(approvalId, { allow, note });
+  trim(decided, 300);
   decisionQueue.push({ id: approvalId, allow, note });
   const job = jobs.get(a.jobId);
   if (job) {
@@ -787,6 +809,11 @@ export function notePoll(b: { projects?: unknown; running?: unknown; idle?: unkn
     }
     job.seenAt = now;
     job.followup = undefined; // the PC has it: it is running
+    // Still running after a stop went out: that reply was lost, ask again.
+    if (job.stopSentAt && now - job.stopSentAt >= REHAND_MS && !stopQueue.includes(id)) {
+      job.stopSentAt = undefined;
+      stopQueue.push(id);
+    }
     if (job.status === 'queued') job.status = 'running';
     if (job.lost) {
       job.lost = false;
@@ -796,7 +823,16 @@ export function notePoll(b: { projects?: unknown; running?: unknown; idle?: unkn
     for (const a of Array.isArray(o?.approvals) ? (o.approvals as unknown[]) : []) {
       const x = a && typeof a === 'object' ? (a as Record<string, unknown>) : null;
       const aid = typeof x?.approvalId === 'string' ? x.approvalId.slice(0, 64) : '';
-      if (!aid || approvals.has(aid) || decidedIds.has(aid)) continue;
+      if (!aid || approvals.has(aid)) continue;
+      const d = decided.get(aid);
+      if (d) {
+        // Answered, but the PC is still waiting: the answer went to a dead socket.
+        if (d.sentAt && now - d.sentAt >= REHAND_MS && !decisionQueue.some((q) => q.id === aid)) {
+          d.sentAt = undefined;
+          decisionQueue.push({ id: aid, allow: d.allow, note: d.note });
+        }
+        continue;
+      }
       registerApproval(job, aid, x?.tool, typeof x?.text === 'string' ? x.text : undefined, now);
     }
   }
@@ -880,7 +916,7 @@ export function onAgentEvent(b: Record<string, unknown>): string | null {
     case 'approval': {
       const id = typeof b.approvalId === 'string' ? b.approvalId.slice(0, 64) : '';
       if (!id) return 'bad approval id';
-      if (approvals.has(id) || decidedIds.has(id)) return null; // a poll already re-registered it
+      if (approvals.has(id) || decided.has(id)) return null; // a poll already re-registered it
       registerApproval(job, id, b.tool, text, at);
       return null;
     }
