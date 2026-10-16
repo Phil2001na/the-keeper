@@ -1139,9 +1139,9 @@
     return e ? e.text : '';
   };
 
-  function pcJobCard(j, approvals, limits) {
+  // The body of a card: what happened, why, and what you can do about it.
+  function pcJobBody(j, approvals, limits) {
     const phase = j.phase || j.status;
-    const [label, tone] = PC_STATE[phase] || [phase, ''];
     const mine = approvals.filter((a) => a.jobId === j.id);
     const live = phase === 'queued' || phase === 'running' || phase === 'waiting';
     let body = '';
@@ -1150,7 +1150,7 @@
         esc(String((limits && limits.queueMin) || 10)) + ' minutes and tells you nothing was done.</div>';
     } else if (phase === 'running') {
       const s = pcLast(j);
-      body = s ? '<div class="why">' + esc(s) + '</div>' : '<div class="why">Started — no update yet.</div>';
+      body = s ? '<div class="why live">' + esc(s) + '</div>' : '<div class="why">Started — no update yet.</div>';
     } else if (phase === 'waiting') {
       body = '<div class="why">Paused until you answer. Nothing continues on its own' +
         (mine.length ? '.' : ' — the question will appear here once the PC repeats it.') + '</div>';
@@ -1161,8 +1161,6 @@
           esc(mediaSrc({ url: j.shotUrl })) + '" data-pc-shot>';
       } else if (j.shotMissing) {
         body += '<div class="noshot">No screenshot: the PC couldn’t capture its screen, which usually means it is locked or the display is off. The summary above is still the real result.</div>';
-      } else {
-        body += '<div class="noshot">No screenshot was taken for this one.</div>';
       }
     } else if (phase === 'timed_out') {
       body = '<div class="why bad">Ran past the ' + esc(String((limits && limits.maxRunMin) || 120)) + '-minute limit and was stopped before it finished.</div>';
@@ -1183,51 +1181,84 @@
       body += '<div class="pc-follow"><input type="text" maxlength="2000" placeholder="Next task for this session…" aria-label="Follow-up for session ' +
         esc(j.id) + '" data-pc-draft="' + esc(j.id) + '"><button class="btn primary" data-pc-send="' + esc(j.id) + '">Send</button></div>';
     }
-    const asks = mine.map((a) =>
-      '<div class="pc-approve"><strong>Wants your OK:</strong> ' + esc(a.summary) +
+    body += mine.map((a) =>
+      '<div class="pc-approve"><strong>Wants your OK</strong><span>' + esc(a.summary) + '</span>' +
       '<div class="row"><button class="btn primary" data-pc-allow="' + esc(a.id) + '">Approve</button>' +
       '<button class="btn" data-pc-deny="' + esc(a.id) + '">Deny</button></div></div>').join('');
     const cost = typeof j.costUsd === 'number' && (phase === 'done' || phase === 'idle') ? ' · $' + j.costUsd.toFixed(2) : '';
-    const who = j.name || j.project;
+    body += '<div class="pc-foot"><span class="meta">' + esc(pcAgo(j.updatedAt)) + cost + ' · ' + esc(j.id) + '</span>' +
+      (live ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">Stop</button>' : '') +
+      (phase === 'idle' ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">End session</button>' : '') + '</div>';
+    return body;
+  }
+
+  function pcWho(j) {
     const sub = [j.role === 'worker' ? 'Prime’s crew' : j.role === 'prime' ? 'chief of staff' : '', j.project, j.engine === 'codex' ? 'Codex' : 'Claude']
       .filter(Boolean).join(' · ');
-    return '<div class="pc-job' + (mine.length ? ' attn' : '') + '" id="pcjob-' + esc(j.id) + '"><div class="top"><span class="proj">' + esc(who) +
-      '<span class="sub">' + esc(sub) + '</span></span><span class="pc-state ' + tone + '">' + esc(label) + '</span></div>' +
-      '<div class="task">' + esc(j.task) + '</div>' + body + asks +
-      '<div class="meta" style="margin-top:8px">' + esc(pcAgo(j.updatedAt)) + cost + ' · ' + esc(j.id) + '</div>' +
-      (live ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">Stop this session</button>' : '') +
-      (phase === 'idle' ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">End this session</button>' : '') + '</div>';
+    return '<span class="proj">' + esc(j.name || j.project) + '<span class="sub">' + esc(sub) + '</span></span>';
+  }
+
+  function pcStateTag(j) {
+    const phase = j.phase || j.status;
+    const [label, tone] = PC_STATE[phase] || [phase, ''];
+    return '<span class="pc-state ' + tone + '">' + esc(label) + '</span>';
+  }
+
+  function pcJobCard(j, approvals, limits) {
+    const attn = approvals.some((a) => a.jobId === j.id);
+    return '<article class="pc-job' + (attn ? ' attn' : '') + '" id="pcjob-' + esc(j.id) + '"><div class="top">' + pcWho(j) + pcStateTag(j) + '</div>' +
+      '<div class="task">' + esc(j.task) + '</div>' + pcJobBody(j, approvals, limits) + '</article>';
+  }
+
+  // A finished session, folded to one line until it is opened.
+  function pcHistoryRow(j, approvals, limits) {
+    return '<details class="pc-hist" data-pc-hist="' + esc(j.id) + '" id="pcjob-' + esc(j.id) + '"><summary>' +
+      '<span class="hist-main"><b>' + esc(j.name || j.project) + '</b><span>' + esc(j.brief || j.task || '') + '</span></span>' +
+      '<span class="hist-side">' + pcStateTag(j) + '<span class="when">' + esc(pcAgo(j.updatedAt)) + '</span></span></summary>' +
+      '<div class="hist-body"><div class="hist-sub">' + pcWho(j) + '</div><div class="task">' + esc(j.task) + '</div>' +
+      pcJobBody(j, approvals, limits) + '</div></details>';
   }
 
   // Start from here: a Meeseeks (one job, then gone) on a project, or a goal for Meeseeks Prime.
-  function pcStartForm(s) {
-    const projs = s.projects || [];
-    if (!projs.length) return '';
-    return '<div class="pc-start" data-pc-start>' +
-      '<select data-pc-mode aria-label="Who should do it"><option value="meeseeks">Meeseeks — one job, then gone</option>' +
-      '<option value="prime">Meeseeks Prime — chief of staff, runs a crew</option></select>' +
-      '<div class="row" data-pc-solo><select data-pc-project aria-label="Project">' +
-      projs.map((p) => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join('') + '</select>' +
-      '<select data-pc-engine aria-label="Engine"><option value="claude">Claude</option><option value="codex">Codex (desktop)</option></select></div>' +
-      '<input type="text" maxlength="2000" data-pc-task placeholder="What do you want done?" aria-label="Goal">' +
-      '<button class="btn primary" data-pc-begin>Start</button></div>';
+  // Built once and never re-rendered by the refresh — a rebuilt <select> closes the
+  // picker under his thumb, which is the bug this replaced.
+  function pcStartForm() {
+    const chevron = '<svg width="14" height="14" aria-hidden="true"><use href="#i-chevron-down"/></svg>';
+    return '<form class="pc-start" data-pc-start novalidate>' +
+      '<div class="seg" role="radiogroup" aria-label="Who should do it">' +
+      '<label><input type="radio" name="pc-mode" value="meeseeks" data-pc-mode checked><span><b>Meeseeks</b><small>one job, then gone</small></span></label>' +
+      '<label><input type="radio" name="pc-mode" value="prime" data-pc-mode><span><b>Meeseeks Prime</b><small>chief of staff, runs a crew</small></span></label></div>' +
+      '<div class="row" data-pc-solo>' +
+      '<label class="pc-field"><span>Project</span><span class="select"><select data-pc-project></select>' + chevron + '</span></label>' +
+      '<label class="pc-field"><span>Engine</span><span class="select"><select data-pc-engine><option value="claude">Claude</option><option value="codex">Codex (desktop)</option></select>' +
+      chevron + '</span></label></div>' +
+      '<div class="ask"><input type="text" maxlength="2000" data-pc-task placeholder="What do you want done?" aria-label="Goal" enterkeyhint="go">' +
+      '<button class="btn primary" type="submit" data-pc-begin>Start</button></div></form>';
   }
 
-  // The crew at a glance: is Prime up, who is working, and on what.
+  // Only touches the options when the project list really changed, and never while he's in it.
+  function pcSyncProjects(projs) {
+    const sel = $('pcbody').querySelector('[data-pc-project]');
+    if (!sel || sel === document.activeElement) return;
+    if ([...sel.options].map((o) => o.value).join('\n') === projs.join('\n')) return;
+    const keep = sel.value;
+    sel.innerHTML = projs.map((p) => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join('');
+    if (projs.includes(keep)) sel.value = keep;
+  }
+
+  // The crew at a glance: is Prime up, who is working, and on what. Live sessions
+  // only — whatever finished is in History.
   const LIVE_PHASES = ['queued', 'running', 'waiting', 'idle'];
+  const pcLive = (j) => LIVE_PHASES.includes(j.phase || j.status);
   function crewPanel(jobs) {
-    const prime = jobs.find((j) => j.role === 'prime' && LIVE_PHASES.includes(j.phase || j.status));
+    const prime = jobs.find((j) => j.role === 'prime' && pcLive(j));
     const lastPrime = prime || jobs.find((j) => j.role === 'prime');
     const working = jobs.filter((j) => ['queued', 'running', 'waiting'].includes(j.phase || j.status));
-    const crew = prime ? jobs.filter((j) => j.role === 'worker' && j.parentId === prime.id) : [];
-    const solos = working.filter((j) => j.role !== 'prime' && j.role !== 'worker');
-    const row = (j, cls) => {
-      const phase = j.phase || j.status;
-      const [label, tone] = PC_STATE[phase] || [phase, ''];
-      return '<a class="crew-row ' + cls + '" href="#pcjob-' + esc(j.id) + '"><span class="dot ' + (LIVE_PHASES.includes(phase) ? 'on' : 'off') + '"></span>' +
-        '<span class="who"><b>' + esc(j.name || j.project) + '</b><span>' + esc(j.brief || j.task || '') + '</span></span>' +
-        '<span class="pc-state ' + tone + '">' + esc(label) + '</span></a>';
-    };
+    const crew = prime ? jobs.filter((j) => j.role === 'worker' && j.parentId === prime.id && pcLive(j)) : [];
+    const solos = jobs.filter((j) => j.role !== 'prime' && j.role !== 'worker' && pcLive(j));
+    const row = (j, cls) =>
+      '<a class="crew-row ' + cls + '" href="#pcjob-' + esc(j.id) + '"><span class="dot ' + ((j.phase || j.status) === 'idle' ? 'idle' : 'on') + '"></span>' +
+      '<span class="who"><b>' + esc(j.name || j.project) + '</b><span>' + esc(j.brief || j.task || '') + '</span></span>' + pcStateTag(j) + '</a>';
     const primeLine = prime
       ? row(prime, 'prime')
       : '<div class="crew-row prime"><span class="dot off"></span><span class="who"><b>Meeseeks Prime</b><span>' +
@@ -1237,54 +1268,107 @@
       crew.slice(0, 8).map((w) => row(w, 'worker')).join('') + solos.map((j) => row(j, '')).join('') + '</div>';
   }
 
+  const pcDay = (ts) => {
+    const d = new Date(ts);
+    const days = Math.round((new Date(new Date().toDateString()) - new Date(d.toDateString())) / 86400000);
+    return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' });
+  };
+
+  let pcTab = 'active';
+
+  // Lays out the frame once; after that a refresh only swaps the regions whose markup
+  // actually changed, so open pickers, focus and half-typed text survive the 4 s poll.
+  function pcFrame() {
+    if ($('pcbody').querySelector('[data-pc-region]')) return;
+    $('pcbody').innerHTML = '<div data-pc-region="status"></div>' +
+      '<section class="pc-compose" data-pc-compose hidden><h3>Start something</h3>' + pcStartForm() + '</section>' +
+      '<div class="pc-tabs" role="tablist" aria-label="Sessions">' +
+      '<button type="button" role="tab" id="pctab-active" aria-controls="pcpane-active" data-pc-tab="active">Active<i data-pc-count="active"></i></button>' +
+      '<button type="button" role="tab" id="pctab-history" aria-controls="pcpane-history" data-pc-tab="history">History<i data-pc-count="history"></i></button></div>' +
+      '<div class="pc-pane" role="tabpanel" id="pcpane-active" aria-labelledby="pctab-active" data-pc-region="active"></div>' +
+      '<div class="pc-pane" role="tabpanel" id="pcpane-history" aria-labelledby="pctab-history" data-pc-region="history"></div>';
+    pcShowTab(pcTab);
+  }
+
+  function pcShowTab(tab) {
+    pcTab = tab;
+    $('pcbody').querySelectorAll('.pc-tabs [data-pc-tab]').forEach((b) => {
+      const on = b.dataset.pcTab === tab;
+      b.setAttribute('aria-selected', String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+    $('pcbody').querySelectorAll('.pc-pane').forEach((p) => { p.hidden = p.dataset.pcRegion !== tab; });
+  }
+
+  function pcRegion(name, html) {
+    const el = $('pcbody').querySelector('[data-pc-region="' + name + '"]');
+    if (!el || el.dataset.html === html) return;
+    // Keep half-typed follow-ups, the focused field, and which history rows are open.
+    const drafts = {};
+    let focused = null;
+    el.querySelectorAll('[data-pc-draft]').forEach((f) => {
+      if (f.value) drafts[f.dataset.pcDraft] = f.value;
+      if (f === document.activeElement) focused = f.dataset.pcDraft;
+    });
+    const open = new Set([...el.querySelectorAll('details[open]')].map((d) => d.dataset.pcHist));
+    el.dataset.html = html;
+    el.innerHTML = html;
+    el.querySelectorAll('details[data-pc-hist]').forEach((d) => { if (open.has(d.dataset.pcHist)) d.open = true; });
+    el.querySelectorAll('[data-pc-draft]').forEach((f) => {
+      if (drafts[f.dataset.pcDraft]) f.value = drafts[f.dataset.pcDraft];
+      if (f.dataset.pcDraft === focused) f.focus();
+    });
+  }
+
   function renderPc(s) {
     pcData = s;
     const jobs = s.jobs || [];
     const approvals = s.approvals || [];
     const active = jobs.filter((j) => ['queued', 'running', 'waiting'].includes(j.phase || j.status)).length;
-    const primeUp = jobs.some((j) => j.role === 'prime' && LIVE_PHASES.includes(j.phase || j.status));
+    const primeUp = jobs.some((j) => j.role === 'prime' && pcLive(j));
     $('pcbtn').classList.toggle('prime-up', primeUp);
     const badge = $('pcbadge');
     badge.textContent = approvals.length || active || '';
     badge.classList.toggle('hidden', !(approvals.length || active));
     badge.classList.toggle('attn', approvals.length > 0);
 
+    pcFrame();
+    const projs = s.projects || [];
     const link = '<div class="pc-link' + (s.online ? '' : ' off') + '"><span class="dot"></span><span>' +
-      (s.online ? 'PC online' + ((s.projects || []).length ? ' · ' + s.projects.length + ' projects' : '')
+      (s.online ? 'PC online' + (projs.length ? ' · ' + projs.length + ' projects' : '')
         : 'PC offline' + (s.lastSeenAt ? ' — last heard ' + esc(pcAgo(s.lastSeenAt)) : ' — not heard from since the Keeper last restarted')) +
       '</span></div>';
     const offNote = !s.online
       ? '<div class="pc-note">The PC is off, asleep, or its agent isn’t running. New sessions wait ' +
         esc(String((s.limits && s.limits.queueMin) || 10)) + ' minutes for it, then are reported as not done.</div>'
       : '';
-    // The 4 s refresh rebuilds the sheet: keep half-typed follow-ups and the focused field.
-    const drafts = {};
-    let focused = null;
-    $('pcbody').querySelectorAll('[data-pc-draft]').forEach((el) => {
-      if (el.value) drafts[el.dataset.pcDraft] = el.value;
-      if (el === document.activeElement) focused = el.dataset.pcDraft;
-    });
-    const startSel = $('pcbody').querySelector('[data-pc-project]');
-    const startKeep = { project: startSel ? startSel.value : '', mode: ($('pcbody').querySelector('[data-pc-mode]') || {}).value || 'meeseeks',
-      engine: ($('pcbody').querySelector('[data-pc-engine]') || {}).value || 'claude',
-      task: ($('pcbody').querySelector('[data-pc-task]') || {}).value || '' };
-    const startFocus = document.activeElement && document.activeElement.hasAttribute && document.activeElement.hasAttribute('data-pc-task');
-    $('pcbody').innerHTML = link + offNote + crewPanel(jobs) + pcStartForm(s) + (jobs.length
-      ? jobs.map((j) => pcJobCard(j, approvals, s.limits)).join('')
-      : '<div class="pc-empty">No sessions yet. Ask the Keeper, or start one above.</div>');
-    const f = $('pcbody').querySelector('[data-pc-start]');
-    if (f) {
-      if (startKeep.project) f.querySelector('[data-pc-project]').value = startKeep.project;
-      f.querySelector('[data-pc-mode]').value = startKeep.mode;
-      f.querySelector('[data-pc-engine]').value = startKeep.engine;
-      f.querySelector('[data-pc-solo]').hidden = startKeep.mode === 'prime';
-      f.querySelector('[data-pc-task]').value = startKeep.task;
-      if (startFocus) f.querySelector('[data-pc-task]').focus();
-    }
-    $('pcbody').querySelectorAll('[data-pc-draft]').forEach((el) => {
-      if (drafts[el.dataset.pcDraft]) el.value = drafts[el.dataset.pcDraft];
-      if (el.dataset.pcDraft === focused) el.focus();
-    });
+    pcRegion('status', link + offNote);
+    $('pcbody').querySelector('[data-pc-compose]').hidden = !projs.length;
+    pcSyncProjects(projs);
+
+    // Anything still going, or still asking him something, stays up front.
+    const asking = new Set(approvals.map((a) => a.jobId));
+    const live = jobs.filter((j) => pcLive(j) || asking.has(j.id));
+    const past = jobs.filter((j) => !pcLive(j) && !asking.has(j.id)).sort((a, b) => b.updatedAt - a.updatedAt);
+    $('pcbody').querySelector('[data-pc-count="active"]').textContent = live.length || '';
+    $('pcbody').querySelector('[data-pc-count="history"]').textContent = past.length || '';
+    $('pcbody').querySelector('.pc-tabs [data-pc-tab="active"]').classList.toggle('attn', approvals.length > 0);
+
+    pcRegion('active', crewPanel(jobs) + (live.length
+      ? live.map((j) => pcJobCard(j, approvals, s.limits)).join('')
+      : '<div class="pc-empty"><b>Nothing running.</b><span>' + (past.length
+        ? 'Finished sessions are in <button type="button" class="linkish" data-pc-tab="history">History</button>.'
+        : 'Ask the Keeper, or start one above.') + '</span></div>'));
+
+    let day = '';
+    pcRegion('history', past.length
+      ? past.map((j) => {
+        const d = pcDay(j.updatedAt);
+        const head = d !== day ? '<h4 class="hist-day">' + esc(d) + '</h4>' : '';
+        day = d;
+        return head + pcHistoryRow(j, approvals, s.limits);
+      }).join('')
+      : '<div class="pc-empty"><b>No history yet.</b><span>Finished, stopped and failed sessions collect here.</span></div>');
   }
 
   async function pcCall(path, body) {
@@ -1298,8 +1382,10 @@
   }
 
   async function loadPc() {
-    try { renderPc(await pcCall('/pc/state')); }
-    catch {
+    try {
+      renderPc(await pcCall('/pc/state'));
+      $('pcbody').querySelector('.pc-stale')?.remove();
+    } catch {
       if (!pcData) $('pcbody').textContent = 'couldn’t reach the PC bridge just now';
       else if (!$('pcbody').querySelector('.pc-stale')) {
         $('pcbody').insertAdjacentHTML('afterbegin', '<div class="pc-note pc-stale">Couldn’t refresh — this is the last thing it knew.</div>');
@@ -1320,32 +1406,45 @@
     if (solo) solo.hidden = e.target.value === 'prime';
   });
 
+  $('pcbody').addEventListener('keydown', (e) => {
+    if (!e.target.closest('.pc-tabs') || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+    pcShowTab(pcTab === 'active' ? 'history' : 'active');
+    $('pctab-' + pcTab).focus();
+  });
+
+  // The start form lives for the life of the sheet, so Enter and the button share one path.
+  $('pcbody').addEventListener('submit', async (e) => {
+    const box = e.target.closest('[data-pc-start]');
+    if (!box) return;
+    e.preventDefault();
+    const t = box.querySelector('[data-pc-begin]');
+    if (t.disabled) return;
+    const project = box.querySelector('[data-pc-project]').value;
+    const mode = (box.querySelector('[data-pc-mode]:checked') || {}).value || 'meeseeks';
+    const engine = box.querySelector('[data-pc-engine]').value;
+    const taskEl = box.querySelector('[data-pc-task]');
+    const task = taskEl.value.trim();
+    if (!task) { toast('say what you want done first'); taskEl.focus(); return; }
+    t.disabled = true;
+    try {
+      const r = mode === 'prime'
+        ? await pcCall('/pc/delegate', { goal: task })
+        : await pcCall('/pc/start', { project, task, mode: 'meeseeks', engine });
+      if (!r.ok) toast(r.error || 'couldn’t start that session');
+      else { taskEl.value = ''; pcShowTab('active'); }
+    } catch { toast('couldn’t reach it — nothing was started'); }
+    t.disabled = false;
+    void loadPc();
+  });
+
   $('pcbody').addEventListener('click', async (e) => {
     const t = e.target.closest('button');
     if (!t) return;
+    if (t.dataset.pcTab) { pcShowTab(t.dataset.pcTab); return; }
     const stop = t.dataset.pcStop;
     const allow = t.dataset.pcAllow;
     const deny = t.dataset.pcDeny;
     const send = t.dataset.pcSend;
-    if (t.hasAttribute('data-pc-begin')) {
-      const box = t.closest('[data-pc-start]');
-      const project = box.querySelector('[data-pc-project]').value;
-      const mode = box.querySelector('[data-pc-mode]').value;
-      const engine = box.querySelector('[data-pc-engine]').value;
-      const taskEl = box.querySelector('[data-pc-task]');
-      const task = taskEl.value.trim();
-      if (!task) { toast('say what you want done first'); return; }
-      t.disabled = true;
-      try {
-        const r = mode === 'prime'
-          ? await pcCall('/pc/delegate', { goal: task })
-          : await pcCall('/pc/start', { project, task, mode: 'meeseeks', engine });
-        if (!r.ok) toast(r.error || 'couldn’t start that session');
-        else taskEl.value = '';
-      } catch { toast('couldn’t reach it — nothing was started'); }
-      void loadPc();
-      return;
-    }
     if (!stop && !allow && !deny && !send) return;
     if (send) {
       const field = [...$('pcbody').querySelectorAll('[data-pc-draft]')].find((el) => el.dataset.pcDraft === send);
@@ -1355,8 +1454,10 @@
       try {
         const r = await pcCall('/pc/send', { jobId: send, message });
         if (!r.ok) toast(r.error || 'that session can’t take a follow-up right now');
+        else if (field) field.value = '';
       } catch { toast('couldn’t reach it — nothing was sent'); }
-      void loadPc();
+      await loadPc();
+      t.disabled = false;
       return;
     }
     t.disabled = true;
@@ -1364,7 +1465,8 @@
       const r = stop ? await pcCall('/pc/stop', { jobId: stop }) : await pcCall('/pc/approve', { id: allow || deny, allow: Boolean(allow) });
       if (!r.ok) toast(stop ? 'that session already ended' : 'that request was already answered');
     } catch { toast('couldn’t reach it — nothing was sent'); }
-    void loadPc();
+    await loadPc();
+    t.disabled = false;
   });
 
   // Badge while the sheet is shut; faster refresh while it is open.

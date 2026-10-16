@@ -1,4 +1,12 @@
 ## 2026-10-16
+### 13:50
+- Committed and pushed the 12:30 PC sheet work (picker fix, Active/History tabs, visual pass) to main for the Railway GitHub deploy.
+
+### 12:30
+- **PC sheet project picker no longer snaps shut.** The 4 s refresh rebuilt the whole sheet, destroying the open `<select>`. The sheet now lays out a fixed frame once; the start form is never re-rendered (project options only change when the list really does, and never while focused), and each other region is swapped only when its markup changed.
+- **Active / History tabs.** Active keeps live sessions (and anything still asking for approval) plus the crew roster, which now lists live members only. Finished, stopped and failed sessions fold into History as one-line rows grouped by day that open in place; open rows survive refreshes.
+- Visual pass: composed "Start something" card with a segmented Meeseeks / Prime picker and custom selects (16 px inputs so iOS doesn't zoom), sticky tabs with counts, tinted status pills, quieter Stop buttons. Verified at iPhone 13 size in the UI preview (picker kept, value and focus kept across refreshes, no console errors); typecheck clean, `npm test` 29/29. Not deployed.
+
 ### 11:43
 - Philip approved the reviewed UI for release; publishing the four UI/changelog files from main through the existing Railway GitHub deployment.
 
