@@ -1,4 +1,9 @@
 ## 2026-10-16
+### 16:02
+- **Working bubble v2 (web).** Turns now carry an id, steps are tagged with their turn (AsyncLocalStorage in `runAgent`), and every new SSE connection gets a `sync` of the turns actually running. Fixes a bubble stuck on "thinking" forever after a reconnect or redeploy, a second turn orphaning the first bubble, and reloads mid-turn losing the bubble (it now rejoins with the right clock). A reply that landed while disconnected is pulled back from history.
+- Presentation: each step holds at least 700 ms (no strobing through parallel tool calls), elapsed time appears after 4 s, the dots no longer make the pill change width. Finished turns collapse to one quiet line ("first two steps +N · 6s") that expands to the full trail; PC chips summarise as the session name. Background turns (reflection, reach-outs, crew) that said nothing fade out instead of leaving "thought it over".
+- Verified in `npm run ui` with headless Chrome: normal turn, step burst, silent reflection, overlapping crew turn, reload mid-turn and a killed-and-restarted server mid-turn. Typecheck clean, `npm test` passing. Pushed to main for the Railway deploy.
+
 ### 13:50
 - Committed and pushed the 12:30 PC sheet work (picker fix, Active/History tabs, visual pass) to main for the Railway GitHub deploy.
 

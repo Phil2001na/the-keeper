@@ -14,12 +14,12 @@
 
   let token = localStorage.getItem('keeper_token') || '';
   let es = null;
-  let activity = null;
-  let activitySteps = [];
-  let turnStarted = 0;
-  let currentStep = null;
-  let stepSwapTimer = null;
   let lastRole = null;
+  // Newest message on screen, and what the last few said — catchUp() fills in
+  // after the one and skips repeats of the other (the stream's timestamp and
+  // the database's can differ by a few ms for the same message).
+  let lastMsgAt = 0;
+  const recentSaid = [];
 
   // ── helpers ───────────────────────────────────────────────────────────
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -480,23 +480,22 @@
     // The turn opens before the inbound message is logged, so a plain append
     // would leave "thinking…" sitting above the message that caused it. Your
     // own message belongs above the activity rail; the reply belongs below.
-    if (role === 'user' && activity && activity.parentNode === stream) {
+    const live = newestTurn();
+    if (role === 'user' && live && live.el.parentNode === stream) {
       const stick = nearBottom();
-      stream.insertBefore(turn, activity);
+      stream.insertBefore(turn, live.el);
       if (stick) stream.scrollTop = stream.scrollHeight;
     } else {
       append(turn);
     }
     lastRole = role;
+    lastMsgAt = Math.max(lastMsgAt, Date.parse(ts) || 0);
+    recentSaid.push(String(content ?? ''));
+    if (recentSaid.length > 40) recentSaid.shift();
+    if (role === 'agent') markSaid();
   }
 
   function setStatus(text) { $('statustext').textContent = text; }
-
-  function sourceTag(source) {
-    if (source === 'reflection') return 'reflecting';
-    if (source === 'touchpoint') return 'reaching out';
-    return '';
-  }
 
   function activityIcon(tool) {
     if (/^(list|read|create|update)_drive_file/.test(tool)) {
@@ -517,62 +516,196 @@
   }
 
   function stepContents(label, tool) {
-    return activityIcon(tool) + '<span class="step-label">' + esc(label) + '<span class="dots"></span></span>';
+    return activityIcon(tool) + '<span class="step-label">' + esc(label) + '<span class="dots" aria-hidden="true"></span></span>';
   }
 
-  function beginTurn(source) {
-    root.classList.add('busy');
-    pulseField(true);
-    setStatus('thinking');
-    turnStarted = Date.now();
-    activitySteps = [];
-    currentStep = null;
-    activity = el('div', 'activity');
+  // ── the activity rail ────────────────────────────────────────────────
+  // One rail per turn, keyed by the turn id the server stamps on it. Turns can
+  // overlap (a crew report landing mid-conversation), and a single global rail
+  // used to orphan the first one, still "thinking" forever.
+  const turns = new Map();
+  let localTurnSeq = 0;
+  // A step stays readable for at least this long. Tool calls often land within
+  // a few ms of each other, and swapping on every one is a strobe, not a status.
+  const STEP_HOLD = 700;
+  // Don't show a clock on a reply that's about to land anyway.
+  const SHOW_CLOCK_AFTER = 4000;
+  // Turns he didn't start (reflection, reach-outs, crew reports) only leave a
+  // trace if they actually said something — otherwise they were background
+  // housekeeping and the transcript shouldn't fill up with "thought it over".
+  const foreground = (source) => source === 'inbound:web' || source === 'inbound:telegram' || source === 'inbound';
+
+  function sourceTag(source) {
+    if (source === 'reflection') return 'reflecting';
+    if (source === 'touchpoint') return 'reaching out';
+    if (source === 'inbound:crew') return 'from the PC';
+    return '';
+  }
+
+  const fmtSecs = (ms) => {
+    const s = Math.max(1, Math.round(ms / 1000));
+    return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's';
+  };
+
+  const newestTurn = () => [...turns.values()].pop() || null;
+
+  function refreshBusy() {
+    const t = newestTurn();
+    const busy = !!t;
+    if (busy !== root.classList.contains('busy')) {
+      root.classList.toggle('busy', busy);
+      pulseField(busy);
+    }
+    if (t) setStatus(t.shown ? t.shown.label : 'thinking');
+    else setStatus(navigator.onLine ? 'here' : 'offline');
+  }
+
+  function beginTurn(source, id, startedAt) {
+    id = id || 'local-' + (++localTurnSeq);
+    if (turns.has(id)) return turns.get(id);
+    const t = {
+      id, source,
+      // A reconnect can join a turn halfway; its clock starts when it did.
+      startedAt: startedAt || Date.now(),
+      steps: [],
+      shown: null,
+      want: null,
+      lastSwap: 0,
+      swapTimer: null,
+      tick: null,
+      said: false,
+    };
+    t.el = el('div', 'activity');
+    t.el.setAttribute('role', 'status');
     const tag = sourceTag(source);
-    if (tag) activity.appendChild(el('span', 'tag', esc(tag)));
-    const thinking = el('span', 'step live', stepContents('thinking', ''));
-    activity.appendChild(thinking);
-    currentStep = thinking;
-    append(activity);
+    if (tag) t.el.appendChild(el('span', 'tag', esc(tag)));
+    t.pill = el('span', 'step live', stepContents('thinking', ''));
+    t.clock = el('span', 'step-time');
+    t.clock.setAttribute('aria-hidden', 'true');
+    t.pill.appendChild(t.clock);
+    t.el.appendChild(t.pill);
+    turns.set(id, t);
+    append(t.el);
+    tickClock(t);
+    t.tick = setInterval(() => tickClock(t), 1000);
+    refreshBusy();
+    return t;
   }
 
-  function addStep(label, tool) {
-    if (!activity) return;
+  function tickClock(t) {
+    const ms = Date.now() - t.startedAt;
+    t.clock.textContent = ms >= SHOW_CLOCK_AFTER ? fmtSecs(ms) : '';
+  }
+
+  function addStep(label, tool, turnId) {
+    // PC chips carry no turn of their own, and one tagged with a turn that
+    // already ended (a timer born inside it) belongs to whatever is live now —
+    // a crew report first, if one is running, since that's what they're about.
+    const crew = tool === 'pc_session' && [...turns.values()].reverse().find((x) => x.source === 'inbound:crew');
+    const t = turns.get(turnId) || crew || newestTurn();
+    if (!t) return;
     // Every real step kicks the field, so the surges line up with work actually
     // happening rather than only with a timer.
     kickField();
-    activitySteps.push(label);
-    const stick = nearBottom();
-    if (!currentStep) {
-      currentStep = el('span', 'step live', stepContents(label, tool));
-      activity.appendChild(currentStep);
-    } else {
-      clearTimeout(stepSwapTimer);
-      currentStep.classList.add('swapping');
-      stepSwapTimer = setTimeout(() => {
-        if (!currentStep) return;
-        currentStep.innerHTML = stepContents(label, tool);
-        currentStep.classList.remove('swapping');
-      }, 170);
-    }
-    if (stick) stream.scrollTop = stream.scrollHeight;
-    setStatus(label);
+    t.steps.push({ label, tool });
+    t.want = { label, tool };
+    if (!t.swapTimer) t.swapTimer = setTimeout(() => swapStep(t), Math.max(0, t.lastSwap + STEP_HOLD - Date.now()));
   }
 
-  function endTurn() {
-    clearTimeout(stepSwapTimer);
-    root.classList.remove('busy');
-    pulseField(false);
-    setStatus(navigator.onLine ? 'here' : 'offline');
-    if (activity) {
-      const secs = Math.max(1, Math.round((Date.now() - turnStarted) / 1000));
-      const uniq = [...new Set(activitySteps)];
-      const what = uniq.length ? uniq.join(' · ') : 'thought it over';
-      activity.classList.add('done');
-      activity.appendChild(el('span', 'summary', esc(what + ' — ' + secs + 's')));
-      activity = null;
-      currentStep = null;
+  function swapStep(t) {
+    t.swapTimer = null;
+    const next = t.want;
+    if (!turns.has(t.id) || !next || (t.shown && t.shown.label === next.label && t.shown.tool === next.tool)) return;
+    t.lastSwap = Date.now();
+    const stick = nearBottom();
+    t.pill.classList.add('swapping');
+    setTimeout(() => {
+      if (!turns.has(t.id)) return;
+      t.pill.innerHTML = stepContents(next.label, next.tool);
+      t.pill.appendChild(t.clock);
+      t.pill.title = next.label;
+      t.shown = next;
+      t.pill.classList.remove('swapping');
+      if (stick) stream.scrollTop = stream.scrollHeight;
+      if (t === newestTurn()) setStatus(next.label);
+      // Whatever arrived during the fade waits out its own hold, then shows.
+      if (t.want !== next && !t.swapTimer) t.swapTimer = setTimeout(() => swapStep(t), STEP_HOLD);
+    }, 160);
+  }
+
+  /** The finished rail: one quiet line, the full trail one tap away. */
+  function traceOf(t) {
+    // PC chips are "Name: whatever it's doing" — in the one-liner they're
+    // just the session; the trail below keeps the detail.
+    const short = (s) => (s.tool === 'pc_session' ? s.label.split(':')[0] + ' on the PC' : s.label);
+    const uniq = [...new Set(t.steps.map(short))];
+    const secs = fmtSecs(Date.now() - t.startedAt);
+    if (!uniq.length) return el('span', 'summary', esc('thought it over · ' + secs));
+
+    const head = uniq.slice(0, 2).join(' · ') + (uniq.length > 2 ? ' +' + (uniq.length - 2) : '');
+    const trail = [];
+    for (const s of t.steps) if (trail[trail.length - 1] !== s.label) trail.push(s.label);
+    const d = el('details', 'trace');
+    d.innerHTML =
+      '<summary><span class="trace-what">' + esc(head) + '</span><span class="trace-time">' + esc(secs) + '</span></summary>' +
+      '<ol>' + trail.slice(-40).map((l) => '<li>' + esc(l) + '</li>').join('') + '</ol>';
+    return d;
+  }
+
+  function endTurn(id, opts) {
+    // An end with no id (an older server) closes the newest rail.
+    const t = id ? turns.get(id) : newestTurn();
+    if (!t) return;
+    turns.delete(t.id);
+    clearTimeout(t.swapTimer);
+    clearInterval(t.tick);
+    refreshBusy();
+
+    const lost = opts && opts.lost;
+    if (lost || (!t.said && !foreground(t.source))) {
+      // Nothing worth keeping: let it go rather than leave a stale line behind.
+      t.el.classList.add('leaving');
+      setTimeout(() => t.el.remove(), 260);
+      return;
     }
+    t.el.classList.add('done');
+    t.el.removeAttribute('role');
+    t.pill.remove();
+    t.el.appendChild(traceOf(t));
+  }
+
+  /** Something visible landed — every live turn has now said something. */
+  function markSaid() {
+    for (const t of turns.values()) t.said = true;
+  }
+
+  /**
+   * The server's view of what's running, sent on every (re)connect. A rail it
+   * doesn't know about ended while we weren't listening; a turn we don't have
+   * started before this page did. The reply to a turn that ended out of
+   * earshot was missed too, so pull it from history.
+   */
+  function syncTurns(list) {
+    const live = new Map((Array.isArray(list) ? list : []).map((s) => [s.id, s]));
+    let missed = false;
+    for (const t of [...turns.values()]) {
+      if (!live.has(t.id)) { endTurn(t.id, { lost: true }); missed = true; }
+      else if (!t.el.isConnected) append(t.el); // the stream was re-rendered under it
+    }
+    for (const s of live.values()) {
+      if (turns.has(s.id)) continue;
+      beginTurn(s.source, s.id, s.startedAt);
+      if (s.label) addStep(s.label, s.tool, s.id);
+    }
+    if (missed) void catchUp();
+  }
+
+  async function catchUp() {
+    try {
+      const snap = await snapshot();
+      const fresh = (snap.history || []).filter((h) => h.ts && Date.parse(h.ts) > lastMsgAt);
+      for (const h of fresh) if (!recentSaid.includes(String(h.content ?? ''))) addMessage(h.role === 'user' ? 'user' : 'agent', h.content, h.ts);
+    } catch {}
   }
 
   // ── generative cards (the `present` tool) ─────────────────────────────
@@ -747,11 +880,12 @@
 
   // ══ events ════════════════════════════════════════════════════════════
   function handleEvent(ev) {
-    if (ev.type === 'turn') { ev.phase === 'start' ? beginTurn(ev.source) : endTurn(); return; }
-    if (ev.type === 'step') { addStep(ev.label, ev.tool); return; }
+    if (ev.type === 'turn') { ev.phase === 'start' ? beginTurn(ev.source, ev.id, ev.startedAt) : endTurn(ev.id); return; }
+    if (ev.type === 'step') { addStep(ev.label, ev.tool, ev.turn); return; }
+    if (ev.type === 'sync') { syncTurns(ev.turns); return; }
     if (ev.type === 'message') { addMessage(ev.role, ev.content, ev.ts); return; }
-    if (ev.type === 'card') { addCard(ev.card); return; }
-    if (ev.type === 'media') { addMedia(ev); return; }
+    if (ev.type === 'card') { markSaid(); addCard(ev.card); return; }
+    if (ev.type === 'media') { markSaid(); addMedia(ev); return; }
   }
 
   let esStarted = false;
@@ -837,6 +971,8 @@
   function renderHistory(history) {
     stream.innerHTML = '';
     lastRole = null;
+    lastMsgAt = 0;
+    recentSaid.length = 0;
     for (const h of history) addMessage(h.role === 'user' ? 'user' : 'agent', h.content, h.ts);
     stream.scrollTop = stream.scrollHeight;
   }

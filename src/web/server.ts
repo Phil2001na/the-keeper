@@ -386,6 +386,9 @@ function handleEvents(res: ServerResponse): void {
     'X-Accel-Buffering': 'no',
   });
   res.write(': connected\n\n');
+  // What's running right now, so a page that reconnected mid-turn (or missed
+  // an end across a redeploy) can settle its activity rail instead of guessing.
+  res.write(`data: ${JSON.stringify({ type: 'sync', turns: bus.liveTurns() })}\n\n`);
   sseClients.add(res);
   res.on('close', () => sseClients.delete(res));
 }

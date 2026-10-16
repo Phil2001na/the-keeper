@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { config, isQuietHours, localTimeString, relativeDayContext } from '../config.js';
 import {
@@ -9,7 +10,7 @@ import {
   type Touchpoint,
   type ActiveLockIn,
 } from '../db/repositories.js';
-import { bus, stepLabel } from '../web/bus.js';
+import { bus, stepLabel, turnScope } from '../web/bus.js';
 import { maybeFold } from './digest.js';
 import { createMessage, type LlmResponse } from './llm.js';
 import { buildSystemPrompt } from './systemPrompt.js';
@@ -101,11 +102,14 @@ export interface AgentResult {
 export async function runAgent(trigger: Trigger): Promise<AgentResult> {
   // Narrate the turn to the web UI (no-op when no browser is connected).
   const source = trigger.kind === 'inbound' ? `inbound:${trigger.surface ?? 'telegram'}` : trigger.kind === 'crew' ? 'inbound:crew' : trigger.kind;
-  bus.publish({ type: 'turn', phase: 'start', source });
+  const id = randomUUID();
+  const startedAt = Date.now();
+  bus.publish({ type: 'turn', phase: 'start', source, id, startedAt });
   try {
-    return await runTurn(trigger);
+    // Scoped so every step published below is tagged with this turn's id.
+    return await turnScope.run(id, () => runTurn(trigger));
   } finally {
-    bus.publish({ type: 'turn', phase: 'end', source });
+    bus.publish({ type: 'turn', phase: 'end', source, id, startedAt });
     // Window maintenance: if too much has piled up since the digest anchor,
     // fold the overflow into the rolling digest. Async — never delays a reply.
     maybeFold();

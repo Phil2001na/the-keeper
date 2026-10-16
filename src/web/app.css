@@ -718,6 +718,12 @@ main {
   margin: 0 0 14px;
   min-height: 34px;
   animation: mount var(--d-3) var(--ease) both;
+  transition: opacity 240ms var(--ease), transform 240ms var(--ease);
+}
+/* A background turn that said nothing, or one that ended out of earshot. */
+.activity.leaving {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 .activity .tag {
@@ -792,6 +798,25 @@ main {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Fixed width, so the pill doesn't breathe in and out with the dots. */
+.step-label .dots {
+  display: inline-block;
+  width: 1.1em;
+  text-align: left;
+}
+/* Elapsed time, only once a turn has run long enough to wonder about. */
+.step-time {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  margin-left: -2px;
+  padding-left: 8px;
+  border-left: 1px solid var(--accent-line);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+.step-time:empty { display: none; }
 
 @keyframes sweep {
   to { transform: translateX(100%); }
@@ -799,15 +824,68 @@ main {
 
 .activity.done {
   min-height: 0;
-}
-.activity.done .step {
-  display: none;
+  animation: none;
 }
 
-.activity .summary {
+.activity .summary,
+.trace > summary {
   font-size: 11.5px;
   color: var(--text-faint);
-  font-style: italic;
+}
+
+/* The finished rail: one quiet line, the full trail one tap away. */
+.trace { min-width: 0; max-width: min(88vw, 420px); }
+.trace > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--r-full);
+  padding: 2px 4px;
+  margin-left: -4px;
+  -webkit-tap-highlight-color: transparent;
+  transition: color var(--d-2) var(--ease);
+}
+.trace > summary::-webkit-details-marker { display: none; }
+.trace > summary::before {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  opacity: 0.7;
+  transition: transform var(--d-2) var(--ease);
+}
+.trace[open] > summary::before { transform: rotate(45deg); }
+.trace > summary:hover,
+.trace > summary:focus-visible { color: var(--text-dim); }
+.trace > summary:focus-visible { outline: 1px solid var(--accent-line); outline-offset: 2px; }
+.trace-what {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trace-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.trace-time::before { content: '· '; }
+.trace > ol {
+  margin: 6px 0 2px 2px;
+  padding: 0 0 0 14px;
+  border-left: 1px solid var(--line);
+  list-style: none;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+.trace > ol > li {
+  overflow-wrap: anywhere;
 }
 
 .dots::after {

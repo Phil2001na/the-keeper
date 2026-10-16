@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 /**
  * In-process event bus between the agent loop and the web UI.
@@ -16,8 +17,20 @@ export interface PresentCard {
 }
 
 export type KeeperEvent =
-  | { type: 'turn'; phase: 'start' | 'end'; source: string }
-  | { type: 'step'; label: string; tool: string }
+  /**
+   * `id` lets the page tell overlapping turns apart (a crew report can land
+   * while he's mid-conversation) instead of the second start orphaning the
+   * first rail, still "thinking" forever.
+   */
+  | { type: 'turn'; phase: 'start' | 'end'; source: string; id: string; startedAt: number }
+  /** `turn` is stamped from the async context by publish(); PC chips have none. */
+  | { type: 'step'; label: string; tool: string; turn?: string }
+  /**
+   * Sent once to each new SSE client: the turns running right now. An `end`
+   * missed during a reconnect or a redeploy would otherwise leave the page
+   * busy forever; this is what lets it reconcile.
+   */
+  | { type: 'sync'; turns: LiveTurn[] }
   /**
    * `source` is what the turn was: 'inbound:web', 'inbound:telegram' or
    * 'touchpoint'. Required rather than optional on purpose — src/web/push.ts
@@ -33,10 +46,36 @@ export type KeeperEvent =
    */
   | { type: 'media'; kind: 'photo' | 'document'; url: string; filename?: string; mime?: string; bytes?: number };
 
+export interface LiveTurn {
+  id: string;
+  source: string;
+  startedAt: number;
+  label?: string;
+  tool?: string;
+}
+
+/** Which turn the current async call chain belongs to — see runAgent. */
+export const turnScope = new AsyncLocalStorage<string>();
+
 class KeeperBus extends EventEmitter {
+  private live = new Map<string, LiveTurn>();
+
   publish(event: KeeperEvent): void {
+    if (event.type === 'turn') {
+      if (event.phase === 'start') this.live.set(event.id, { id: event.id, source: event.source, startedAt: event.startedAt });
+      else this.live.delete(event.id);
+    } else if (event.type === 'step') {
+      event = { ...event, turn: event.turn ?? turnScope.getStore() };
+      const t = event.turn && this.live.get(event.turn);
+      if (t) Object.assign(t, { label: event.label, tool: event.tool });
+    }
     this.emit('event', event);
   }
+
+  liveTurns(): LiveTurn[] {
+    return [...this.live.values()];
+  }
+
   subscribe(fn: (event: KeeperEvent) => void): () => void {
     this.on('event', fn);
     return () => this.off('event', fn);

@@ -103,19 +103,68 @@ const SNAPSHOT = {
   ],
 };
 
+const emit = (e: unknown) => { for (const c of clients) c.write(`data: ${JSON.stringify(e)}\n\n`); };
+
+/** Turns in flight, mirrored from src/web/bus.ts so /events can send `sync`. */
+type Live = { id: string; source: string; startedAt: number; label?: string; tool?: string };
+const live = new Map<string, Live>();
+let turnSeq = 0;
+function startTurn(source: string) {
+  const t: Live = { id: `t${++turnSeq}`, source, startedAt: Date.now() };
+  live.set(t.id, t);
+  emit({ type: 'turn', phase: 'start', id: t.id, source, startedAt: t.startedAt });
+  return {
+    step(label: string, tool: string) {
+      Object.assign(t, { label, tool });
+      emit({ type: 'step', label, tool, turn: t.id });
+    },
+    end() {
+      live.delete(t.id);
+      emit({ type: 'turn', phase: 'end', id: t.id, source, startedAt: t.startedAt });
+    },
+  };
+}
+
+/**
+ * Background turns, for the rail's other paths. "bg" is a reflection that
+ * says nothing (its rail should leave no trace); "pc" is a crew report that
+ * streams PC chips with no turn id of their own.
+ */
+async function backgroundTurn(kind: string): Promise<void> {
+  if (kind === 'bg') {
+    const t = startTurn('reflection');
+    await sleep(900);
+    t.step('writing in my journal', 'write_journal');
+    await sleep(1400);
+    t.end();
+    return;
+  }
+  const t = startTurn('inbound:crew');
+  for (const what of ['opening cart.ts', 'running the test suite', 'tests passed (42)', 'committing']) {
+    await sleep(800);
+    emit({ type: 'step', label: `Can-Do Meeseeks: ${what}`, tool: 'pc_session' });
+  }
+  await sleep(600);
+  emit({ type: 'message', role: 'agent', content: 'the crew finished the cart fix — tests are green.', ts: new Date().toISOString(), source: 'inbound:crew' });
+  t.end();
+}
+
 /** A scripted turn, so every live state (steps, cards, media) can be seen. */
 async function fakeTurn(text: string): Promise<void> {
-  const emit = (e: unknown) => { for (const c of clients) c.write(`data: ${JSON.stringify(e)}\n\n`); };
-
-  emit({ type: 'turn', phase: 'start', source: 'inbound' });
+  if (text === 'bg' || text === 'pc') return backgroundTurn(text);
+  const t = startTurn('inbound:web');
   emit({ type: 'message', role: 'user', content: text, ts: new Date().toISOString() });
   await sleep(700);
-  emit({ type: 'step', label: 'consulting my memory', tool: 'recall_facts' });
+  t.step('consulting my memory', 'recall_facts');
+  // A burst, the way parallel tool calls actually land — the rail should hold
+  // each readable step rather than strobe through all three.
   await sleep(1100);
-  emit({ type: 'step', label: 'looking through the drive', tool: 'list_drive_files' });
-  await sleep(900);
-  emit({ type: 'step', label: 'reading a file', tool: 'read_drive_file' });
-  await sleep(700);
+  t.step('looking through the drive', 'list_drive_files');
+  await sleep(40);
+  t.step('reading a file', 'read_drive_file');
+  await sleep(40);
+  t.step('searching the web', 'web_search');
+  await sleep(2600);
   emit({
     type: 'message',
     role: 'agent',
@@ -198,7 +247,7 @@ async function fakeTurn(text: string): Promise<void> {
   }
 
   await sleep(400);
-  emit({ type: 'turn', phase: 'end', source: 'inbound' });
+  t.end();
 }
 
 const server = createServer(async (req, res) => {
@@ -212,6 +261,7 @@ const server = createServer(async (req, res) => {
     if (!authed) { res.writeHead(401).end(); return; }
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.write(': connected\n\n');
+    res.write(`data: ${JSON.stringify({ type: 'sync', turns: [...live.values()] })}\n\n`);
     clients.add(res);
     req.on('close', () => clients.delete(res));
     return;
