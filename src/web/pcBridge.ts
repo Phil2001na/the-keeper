@@ -32,14 +32,16 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
  *  POST /pc/send          {jobId, message}        follow-up to an idle persistent session   (viewer)
  *  POST /pc/approve       {id, allow}                                               (viewer)
  *  POST /pc/stop          {jobId}                 ends the session (idle or running)        (viewer)
- *  POST /pc/delegate      {goal}                  hand a goal to Meeseeks Prime (starts it if needed) (viewer)
+ *  POST /pc/delegate      {goal, primeId?}        a goal for a new Meeseeks Prime, or for that idle one (viewer)
  *  POST /pc/agent/crew    {op, parentId, ...}     Prime's crew tools: spawn / status / stop    (agent)
  *
  * The crew. Every job has a role:
  *   solo    a Meeseeks the Keeper (or he) started directly. Reports straight to him.
- *   prime   Meeseeks Prime, the chief of staff. One at a time, always persistent,
- *           runs on PRIME_ENGINE/PRIME_MODEL (Codex + gpt-6.1-sol by default).
- *           He hears when it comes online and goes offline.
+ *   prime   Meeseeks Prime, the chief of staff. Up to MAX_PRIMES (3) at once, each on
+ *           its own goal with its own crew; always persistent, runs on
+ *           PRIME_ENGINE/PRIME_MODEL (Codex + gpt-6.1-sol by default).
+ *           He hears when each comes online and goes offline. Solo Meeseeks never
+ *           count against the Prime limit (and pc-agent/lanes.mjs keeps it that way on the PC).
  *   worker  spawned and named by Prime through pc-agent/crew-mcp.mjs. Reports to
  *           Prime, not to him: he only hears when one dies or fails. When the
  *           last of Prime's workers ends while Prime is idle, Prime is woken
@@ -76,6 +78,8 @@ const LOST_CONTACT_MIN = minutes('PC_LOST_CONTACT_MIN', 5);
 const MAX_RUN_MIN = minutes('PC_MAX_RUN_MIN', 120);
 /** Workers one Prime may have alive at once. */
 const MAX_CREW = minutes('PC_MAX_CREW', 3);
+/** Meeseeks Primes up at once. Env may lower it, never raise it past 3 (the PC enforces 3 too). */
+export const MAX_PRIMES = Math.min(3, Math.floor(minutes('PC_MAX_PRIMES', 3)) || 1);
 /** Times Prime is woken by its own crew finishing before he has to speak again. */
 const PRIME_MAX_AUTOWAKE = minutes('PRIME_MAX_AUTOWAKE', 6);
 const PRIME_ENGINE: Engine = process.env.PRIME_ENGINE === 'claude' ? 'claude' : 'codex';
@@ -360,9 +364,31 @@ export function matchProject(name: string): string | null {
   return partial.length === 1 ? partial[0]! : null;
 }
 
-/** The one Meeseeks Prime that is up (queued, working, waiting on him, or idle), if any. */
-export function livePrime(): Job | null {
-  return [...jobs.values()].find((j) => j.role === 'prime' && isLive(j)) ?? null;
+/** The Meeseeks Primes that are up (queued, working, waiting on him, or idle), oldest first. */
+export function livePrimes(): Job[] {
+  return [...jobs.values()].filter((j) => j.role === 'prime' && isLive(j)).sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/**
+ * Who holds a Prime slot. A Prime lost with the PC still holds one: it comes
+ * back when the PC does, and a fourth must not have taken its place by then.
+ * Stopping it (stopJob) gives the slot back.
+ */
+function primeSlotHolders(): Job[] {
+  return [...jobs.values()].filter((j) => j.role === 'prime' && (isLive(j) || (j.status === 'failed' && j.lost)));
+}
+
+export function primeSlots(): { used: number; limit: number; free: number } {
+  const used = primeSlotHolders().length;
+  return { used, limit: MAX_PRIMES, free: Math.max(0, MAX_PRIMES - used) };
+}
+
+/** One line per Prime holding a slot, for a refusal he (or the Keeper) can act on. */
+function primeRoster(): string {
+  return primeSlotHolders()
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((p) => `${p.name} (${p.id}, ${p.lost ? 'lost contact' : p.status}) on: ${p.brief}`)
+    .join('; ');
 }
 
 /** Workers Prime spawned, newest first. */
@@ -382,9 +408,10 @@ export function startJob(
   const engine: Engine = opts.engine ?? (role === 'prime' ? PRIME_ENGINE : 'claude');
   if (!ENGINES.includes(engine)) return { ok: false, error: `Unknown engine "${String(engine)}". Use one of: ${ENGINES.join(', ')}.` };
   if (!AGENT_TOKEN) return { ok: false, error: 'PC bridge is not configured (REMOTE_BROWSER_TOKEN unset).' };
-  if (role === 'prime') {
-    const p = livePrime();
-    if (p) return { ok: false, error: `${PRIME_NAME} is already up (${p.id}, ${p.status}). Send it the goal instead of starting another.` };
+  // Checked and claimed in this one synchronous call (the job is in `jobs` before
+  // it returns), so two starts can never both see the last free slot.
+  if (role === 'prime' && primeSlots().free === 0) {
+    return { ok: false, error: `All ${MAX_PRIMES} Meeseeks Primes are already up: ${primeRoster()}. Give this goal to an idle one, wait for one to finish, or stop one first.` };
   }
   let parent: Job | undefined;
   if (role === 'worker') {
@@ -406,7 +433,7 @@ export function startJob(
   if (!clean) return { ok: false, error: 'Empty task.' };
   const now = Date.now();
   const name =
-    role === 'prime' ? PRIME_NAME : uniqueName(opts.name?.trim() || SOLO_NAMES[soloCounter++ % SOLO_NAMES.length]!);
+    uniqueName(role === 'prime' ? PRIME_NAME : opts.name?.trim() || SOLO_NAMES[soloCounter++ % SOLO_NAMES.length]!);
   const model = (opts.model ?? (role === 'prime' && engine === PRIME_ENGINE ? PRIME_MODEL : undefined))?.trim().slice(0, 60) || undefined;
   const job: Job = {
     id: randomUUID().slice(0, 8),
@@ -434,6 +461,16 @@ export function startJob(
 
 export function stopJob(jobId: string): boolean {
   const job = jobs.get(jobId);
+  if (job?.status === 'failed' && job.lost) {
+    // Lost with the PC: let it go here (a lost Prime gives back its slot), and
+    // stop it on the PC if it turns up again.
+    job.lost = false;
+    job.status = 'stopped';
+    if (!stopQueue.includes(job.id)) stopQueue.push(job.id);
+    push(job, { at: Date.now(), kind: 'step', text: 'let go after losing contact; if the PC comes back with it, it will be stopped' });
+    flush();
+    return true;
+  }
   if (!job || !['queued', 'running', 'waiting', 'idle'].includes(job.status)) return false;
   if (job.status === 'queued') {
     startQueue = startQueue.filter((id) => id !== jobId);
@@ -500,20 +537,23 @@ export function sendToJob(
 }
 
 /**
- * Hand a goal to Meeseeks Prime: start it if it is not up, give it the goal if it
- * is idle. A busy Prime is not interrupted; he is told what it is on.
+ * Hand a goal to Meeseeks Prime. With `primeId`, that Prime takes it as its next
+ * ask (it must be idle; it keeps its context). Without, a new Prime starts on it
+ * while there is a free slot; once all MAX_PRIMES are up he is told who is on
+ * what. A busy Prime is never interrupted.
  */
-export function delegateToPrime(goal: string): { ok: true; job: Job; started: boolean } | { ok: false; error: string } {
-  const p = livePrime();
-  if (!p) {
-    const r = startJob(PRIME_PROJECT, goal, 'persistent', { role: 'prime' });
-    return r.ok ? { ...r, started: true } : r;
+export function delegateToPrime(goal: string, primeId?: string): { ok: true; job: Job; started: boolean } | { ok: false; error: string } {
+  const want = primeId?.trim();
+  if (want) {
+    const p = getJob(want);
+    if (!p || p.role !== 'prime') return { ok: false, error: `No single ${PRIME_NAME} matches "${want}". Up now: ${primeRoster() || 'none'}.` };
+    if (!isLive(p)) return { ok: false, error: `${p.name} (${p.id}) has already ended (${jobPhase(p)}). Leave the id out to start a new Prime.` };
+    if (p.status !== 'idle') return { ok: false, error: `${p.name} (${p.id}) is busy (${p.status}) on: ${p.brief}. Wait for its report, or stop it first.` };
+    const r = sendToJob(p.id, goal);
+    return r.ok ? { ...r, started: false } : r;
   }
-  if (p.status !== 'idle') {
-    return { ok: false, error: `${PRIME_NAME} is busy (${p.status}) on: ${p.brief}. Wait for its report, or stop it first.` };
-  }
-  const r = sendToJob(p.id, goal);
-  return r.ok ? { ...r, started: false } : r;
+  const r = startJob(PRIME_PROJECT, goal, 'persistent', { role: 'prime' });
+  return r.ok ? { ...r, started: true } : r;
 }
 
 // ─── The crew (Prime's tools, via pc-agent/crew-mcp.mjs) ───────────────────
@@ -754,7 +794,7 @@ function adopt(r: Record<string, unknown>, id: string, now: number): Job | undef
     project: r.project,
     task,
     mode: r.mode === 'persistent' || role === 'prime' ? 'persistent' : 'meeseeks',
-    name: role === 'prime' ? PRIME_NAME : typeof r.name === 'string' && r.name.trim() ? r.name.trim().slice(0, 60) : 'Mr. Meeseeks',
+    name: typeof r.name === 'string' && r.name.trim() ? r.name.trim().slice(0, 60) : role === 'prime' ? PRIME_NAME : 'Mr. Meeseeks',
     role,
     parentId: role === 'worker' && typeof r.parentId === 'string' ? r.parentId.slice(0, 40) : undefined,
     engine: r.engine === 'codex' ? 'codex' : 'claude',
@@ -1052,6 +1092,7 @@ export function handlePcBridge(req: IncomingMessage, res: ServerResponse, path: 
       online: pcOnline(),
       lastSeenAt: agentSeen || null,
       limits: { queueMin: QUEUE_TIMEOUT_MIN, lostContactMin: LOST_CONTACT_MIN, maxRunMin: MAX_RUN_MIN },
+      primes: primeSlots(),
       modes: SESSION_MODES.map((id) => ({ id, label: MODE_LABELS[id] })),
       projects,
       jobs: listJobs().map(jobSummary),
@@ -1092,9 +1133,9 @@ export function handlePcBridge(req: IncomingMessage, res: ServerResponse, path: 
     return true;
   }
   if (req.method === 'POST' && path === '/pc/delegate') {
-    void readJson<{ goal?: unknown }>(req, 32 * 1024)
+    void readJson<{ goal?: unknown; primeId?: unknown }>(req, 32 * 1024)
       .then((b) => {
-        const r = delegateToPrime(String(b.goal ?? ''));
+        const r = delegateToPrime(String(b.goal ?? ''), typeof b.primeId === 'string' ? b.primeId : undefined);
         json(res, r.ok ? 200 : 400, r.ok ? { ok: true, started: r.started, job: jobSummary(r.job) } : r);
       })
       .catch(() => json(res, 400, { ok: false }));

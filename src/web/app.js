@@ -1507,7 +1507,9 @@
     const cost = typeof j.costUsd === 'number' && (phase === 'done' || phase === 'idle') ? ' · $' + j.costUsd.toFixed(2) : '';
     body += '<div class="pc-foot"><span class="meta">' + esc(pcAgo(j.updatedAt)) + cost + ' · ' + esc(j.id) + '</span>' +
       (live ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">Stop</button>' : '') +
-      (phase === 'idle' ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">End session</button>' : '') + '</div>';
+      (phase === 'idle' ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">End session</button>' : '') +
+      // Lost may still come back with the PC (a lost Prime holds its slot); letting go stops it if it does.
+      (phase === 'lost' ? '<button class="btn stop" data-pc-stop="' + esc(j.id) + '">Let go</button>' : '') + '</div>';
     return body;
   }
 
@@ -1546,7 +1548,8 @@
     return '<form class="pc-start" data-pc-start novalidate>' +
       '<div class="seg" role="radiogroup" aria-label="Who should do it">' +
       '<label><input type="radio" name="pc-mode" value="meeseeks" data-pc-mode checked><span><b>Meeseeks</b><small>one job, then gone</small></span></label>' +
-      '<label><input type="radio" name="pc-mode" value="prime" data-pc-mode><span><b>Meeseeks Prime</b><small>chief of staff, runs a crew</small></span></label></div>' +
+      '<label><input type="radio" name="pc-mode" value="prime" data-pc-mode><span><b>Meeseeks Prime</b><small>chief of staff, runs a crew<span data-pc-prime-slots></span></small></span></label></div>' +
+      '<div class="pc-full" data-pc-prime-full role="status" hidden></div>' +
       '<div class="row" data-pc-solo>' +
       '<label class="pc-field"><span>Project</span><span class="select"><select data-pc-project></select>' + chevron + '</span></label>' +
       '<label class="pc-field"><span>Engine</span><span class="select"><select data-pc-engine><option value="claude">Claude</option><option value="codex">Codex (desktop)</option></select>' +
@@ -1565,26 +1568,50 @@
     if (projs.includes(keep)) sel.value = keep;
   }
 
-  // The crew at a glance: is Prime up, who is working, and on what. Live sessions
-  // only — whatever finished is in History.
+  // The crew at a glance: which Primes are up (each with its own workers), who is
+  // working, and on what. Live sessions only — whatever finished is in History.
   const LIVE_PHASES = ['queued', 'running', 'waiting', 'idle'];
   const pcLive = (j) => LIVE_PHASES.includes(j.phase || j.status);
-  function crewPanel(jobs) {
-    const prime = jobs.find((j) => j.role === 'prime' && pcLive(j));
-    const lastPrime = prime || jobs.find((j) => j.role === 'prime');
+  // Older relays send no `primes`; count what is up.
+  const pcSlots = (s, jobs) => s.primes || { used: jobs.filter((j) => j.role === 'prime' && pcLive(j)).length, limit: 3 };
+  function crewPanel(jobs, slots) {
+    const primes = jobs.filter((j) => j.role === 'prime' && pcLive(j)).sort((a, b) => a.createdAt - b.createdAt);
+    const lastPrime = jobs.find((j) => j.role === 'prime');
     const working = jobs.filter((j) => ['queued', 'running', 'waiting'].includes(j.phase || j.status));
-    const crew = prime ? jobs.filter((j) => j.role === 'worker' && j.parentId === prime.id && pcLive(j)) : [];
     const solos = jobs.filter((j) => j.role !== 'prime' && j.role !== 'worker' && pcLive(j));
     const row = (j, cls) =>
       '<a class="crew-row ' + cls + '" href="#pcjob-' + esc(j.id) + '"><span class="dot ' + ((j.phase || j.status) === 'idle' ? 'idle' : 'on') + '"></span>' +
       '<span class="who"><b>' + esc(j.name || j.project) + '</b><span>' + esc(j.brief || j.task || '') + '</span></span>' + pcStateTag(j) + '</a>';
-    const primeLine = prime
-      ? row(prime, 'prime')
+    const primeLines = primes.length
+      ? primes.map((p) => row(p, 'prime') +
+        jobs.filter((j) => j.role === 'worker' && j.parentId === p.id && pcLive(j)).slice(0, 8).map((w) => row(w, 'worker')).join('')).join('')
       : '<div class="crew-row prime"><span class="dot off"></span><span class="who"><b>Meeseeks Prime</b><span>' +
         (lastPrime ? 'offline — last up ' + esc(pcAgo(lastPrime.updatedAt)) : 'offline — give it a goal to bring it up') + '</span></span></div>';
-    return '<div class="crew"><div class="crew-head"><span>Crew</span><span>' +
-      (working.length ? working.length + ' working' : 'nobody working') + '</span></div>' + primeLine +
-      crew.slice(0, 8).map((w) => row(w, 'worker')).join('') + solos.map((j) => row(j, '')).join('') + '</div>';
+    // A Prime that lost contact still holds its slot until it is back or let go.
+    const held = slots.used - primes.length;
+    const heldLine = held > 0
+      ? '<div class="crew-held">' + held + (held === 1 ? ' Prime lost contact and still holds a slot' : ' Primes lost contact and still hold slots') +
+        ' — it comes back with the PC, or let it go from History.</div>'
+      : '';
+    const pips = Array.from({ length: slots.limit }, (_, i) => '<i class="' + (i < slots.used ? 'on' : '') + '"></i>').join('');
+    return '<div class="crew"><div class="crew-head"><span>Crew</span><span class="crew-count">' +
+      (working.length ? working.length + ' working' : 'nobody working') + ' · <span class="prime-slots" title="Meeseeks Primes up, out of ' + slots.limit +
+      '"><span class="pips" aria-hidden="true">' + pips + '</span>Primes ' + slots.used + '/' + slots.limit + '</span></span></div>' + primeLines + heldLine +
+      solos.map((j) => row(j, '')).join('') + '</div>';
+  }
+
+  // The start form is never rebuilt, so the Prime limit is written into it in place.
+  function pcSyncPrimeSlots(slots) {
+    const form = $('pcbody').querySelector('[data-pc-start]');
+    if (!form) return;
+    const full = slots.used >= slots.limit;
+    const prime = ((form.querySelector('[data-pc-mode]:checked') || {}).value) === 'prime';
+    form.querySelector('[data-pc-prime-slots]').textContent = ' · ' + slots.used + ' of ' + slots.limit + ' up';
+    const note = form.querySelector('[data-pc-prime-full]');
+    note.hidden = !(prime && full);
+    note.textContent = 'All ' + slots.limit + ' Primes are up. Give an idle one its next goal below, or stop one to start another. A one-job Meeseeks can still start.';
+    const begin = form.querySelector('[data-pc-begin]');
+    if (!begin.dataset.busy) begin.disabled = prime && full;
   }
 
   const pcDay = (ts) => {
@@ -1673,7 +1700,9 @@
     $('pcbody').querySelector('[data-pc-count="history"]').textContent = past.length || '';
     $('pcbody').querySelector('.pc-tabs [data-pc-tab="active"]').classList.toggle('attn', approvals.length > 0);
 
-    pcRegion('active', crewPanel(jobs) + (live.length
+    const slots = pcSlots(s, jobs);
+    pcSyncPrimeSlots(slots);
+    pcRegion('active', crewPanel(jobs, slots) + (live.length
       ? live.map((j) => pcJobCard(j, approvals, s.limits)).join('')
       : '<div class="pc-empty"><b>Nothing running.</b><span>' + (past.length
         ? 'Finished sessions are in <button type="button" class="linkish" data-pc-tab="history">History</button>.'
@@ -1723,6 +1752,7 @@
     if (!e.target.hasAttribute('data-pc-mode')) return;
     const solo = e.target.closest('[data-pc-start]').querySelector('[data-pc-solo]');
     if (solo) solo.hidden = e.target.value === 'prime';
+    if (pcData) pcSyncPrimeSlots(pcSlots(pcData, pcData.jobs || []));
   });
 
   $('pcbody').addEventListener('keydown', (e) => {
@@ -1745,6 +1775,7 @@
     const task = taskEl.value.trim();
     if (!task) { toast('say what you want done first'); taskEl.focus(); return; }
     t.disabled = true;
+    t.dataset.busy = '1';
     try {
       const r = mode === 'prime'
         ? await pcCall('/pc/delegate', { goal: task })
@@ -1752,6 +1783,7 @@
       if (!r.ok) toast(r.error || 'couldn’t start that session');
       else { taskEl.value = ''; pcShowTab('active'); }
     } catch { toast('couldn’t reach it — nothing was started'); }
+    delete t.dataset.busy;
     t.disabled = false;
     void loadPc();
   });

@@ -16,6 +16,8 @@ import { randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
+import { readPcState, startNote, createBrowserWatch, screenshotNote, ffmpegReason } from './pcState.mjs';
+import { primeLimit, refusal } from './lanes.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = readEnv(join(HERE, '..', '.env'));
@@ -23,6 +25,8 @@ const BASE = (process.env.KEEPER_URL || ENV.KEEPER_URL || 'https://the-keeper-pr
 const TOKEN = (process.env.REMOTE_BROWSER_TOKEN || ENV.REMOTE_BROWSER_TOKEN || '').replace(/\s+/g, '');
 const CONFIG = JSON.parse(readFileSync(process.env.PC_AGENT_CONFIG || join(HERE, 'projects.json'), 'utf-8'));
 const MAX_PARALLEL = CONFIG.maxParallel ?? 2;
+/** Meeseeks Primes up at once (running or idle), in their own lane: see lanes.mjs. */
+const MAX_PRIMES = primeLimit(CONFIG.maxPrimes);
 /** One session may run this long, then it is stopped and reported as unfinished. */
 const MAX_MINUTES = CONFIG.maxMinutes ?? 120;
 // PC_AGENT_STATE keeps a test run (scripts/pc-harness.ts) out of the live agent's outbox.
@@ -43,8 +47,9 @@ if (!TOKEN) {
 
 /** jobId -> { abort: AbortController, project, task, lastStep, stopReason } */
 const running = new Map();
-/** Persistent sessions between tasks: jobId -> { project, task, sessionId, mode }. Not counted against MAX_PARALLEL. */
+/** Persistent sessions between tasks: jobId -> { project, task, sessionId, mode }. Not counted against MAX_PARALLEL (idle Primes count against MAX_PRIMES). */
 const idle = new Map();
+const lanes = () => ({ running, idle, maxParallel: MAX_PARALLEL, maxPrimes: MAX_PRIMES });
 /** approvalId -> { resolve(decision), jobId, tool, text } */
 const pendingApprovals = new Map();
 /** Jobs that already ended here: the relay hands a job out again if it never saw it start. */
@@ -216,6 +221,7 @@ function stepText(block) {
 // still the truth about what's on screen.
 const FFMPEG = CONFIG.ffmpeg || 'ffmpeg';
 
+/** Resolves { b64 }, or { stderr } when the desktop could not be captured. */
 function screenshotB64() {
   const out = join(tmpdir(), `keeper-shot-${process.pid}.jpg`);
   return new Promise((resolve) => {
@@ -224,8 +230,9 @@ function screenshotB64() {
       ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'gdigrab', '-i', 'desktop', '-frames:v', '1', '-vf', "scale='min(1280,iw)':-2", '-q:v', '5', out],
       { timeout: 20_000, windowsHide: true },
       (err, _stdout, stderr) => {
-        if (err) { log('screenshot failed:', String(stderr || err.message).trim().split('\n').slice(-2).join(' | ').slice(0, 300)); return resolve(null); }
-        try { resolve(readFileSync(out).toString('base64')); } catch { resolve(null); }
+        // ffmpeg's last line is always "Invalid argument"; the reason is earlier (error 5 = Windows refused the capture).
+        if (err) { log('screenshot failed:', ffmpegReason(stderr || err.message)); return resolve({ stderr: String(stderr || err.message) }); }
+        try { resolve({ b64: readFileSync(out).toString('base64') }); } catch (e) { resolve({ stderr: e.message }); }
       }
     );
   });
@@ -262,7 +269,8 @@ You are Meeseeks Prime, Philip's chief of staff. The Keeper is his personal assi
 - Brief workers the way you would want to be briefed: the goal, what done looks like, and context they cannot find. Never a step-by-step script; they are as capable as you. engine "claude" for the browser, "codex" for driving the desktop (mouse, keyboard, native apps).
 - Check what they bring back before you rely on it. You can end your turn while they work: you are woken with their reports when the last one finishes.
 - Your report goes to the Keeper, which passes the essentials to him in plain words. So report the substance: findings, decisions he must make, what is still open. Short beats complete.
-- You stay open between asks until he says the job is done.`;
+- You stay open between asks until he says the job is done.
+- Up to two other Primes may be working on other goals at the same time, possibly in the same folder. Your crew tools only see your own workers. Keep to your goal and never undo or commit changes you did not make.`;
 
 const briefWorker = (name) => `
 
@@ -276,6 +284,7 @@ function systemBrief(job, engine) {
   if (job.mode === 'persistent') b += BRIEF_PERSISTENT;
   if (job.role === 'prime') b += BRIEF_PRIME;
   if (job.role === 'worker') b += briefWorker(job.name || 'a Meeseeks');
+  if (job.pcNote) b += job.pcNote; // the PC was asleep when this started (pcState.mjs)
   return b;
 }
 
@@ -330,13 +339,23 @@ async function runClaude(job, proj, me, hooks) {
       systemPrompt: { type: 'preset', preset: 'claude_code', append: systemBrief(job, 'claude') },
     },
   });
+  // Browser and desktop control are MCP tools; only their results are checked for a
+  // dead browser (a Bash or Read result can quote those words without meaning it).
+  const mcpCalls = new Set();
   for await (const m of q) {
     if (m.type === 'system' && m.subtype === 'init') {
       await hooks.onStarted(m.session_id);
     } else if (m.type === 'assistant') {
       for (const b of m.message?.content ?? []) {
         if (b.type === 'text' && b.text?.trim()) await hooks.onText(b.text.trim());
-        if (b.type === 'tool_use') await hooks.onStep(stepText(b));
+        if (b.type === 'tool_use') {
+          if (b.name?.startsWith('mcp__')) mcpCalls.add(b.id);
+          await hooks.onStep(stepText(b));
+        }
+      }
+    } else if (m.type === 'user' && Array.isArray(m.message?.content)) {
+      for (const b of m.message.content) {
+        if (b.type === 'tool_result' && mcpCalls.delete(b.tool_use_id)) await hooks.onToolResult(b.content);
       }
     } else if (m.type === 'result') {
       result = m.subtype === 'success' ? (m.result ?? '') : `Ended: ${m.subtype}${m.errors?.length ? ` — ${m.errors.join('; ')}` : ''}`;
@@ -367,7 +386,10 @@ function codexStep(item) {
   }
 }
 
-const RISKY_TOOL = /send|delete|remove|trash|pay|purchase|buy|transfer|deploy|publish|post|submit|email|message|drop/i;
+/** Codex items whose output comes from a tool that may be driving the browser. */
+const CODEX_TOOL_ITEMS = new Set(['functionCallOutput', 'mcpToolCall', 'dynamicToolCall']);
+
+const RISKY_TOOL =/send|delete|remove|trash|pay|purchase|buy|transfer|deploy|publish|post|submit|email|message|drop/i;
 
 /** What his phone shows for a Codex request, and how to answer it either way. */
 function codexAsk(method, p) {
@@ -478,6 +500,10 @@ function runCodex(job, proj, me, hooks) {
         } else if (m.method === 'item/completed' && p.item?.type === 'agentMessage' && p.item.text?.trim()) {
           result = p.item.text.trim();
           await hooks.onText(result);
+        } else if (m.method === 'item/completed' && CODEX_TOOL_ITEMS.has(p.item?.type)) {
+          // The browser (Computer Use's js tool, MCP browser tools) answers here; shell output does not count.
+          const it = p.item;
+          await hooks.onToolResult(it.type === 'mcpToolCall' ? [it.error, it.result] : it.type === 'dynamicToolCall' ? it.contentItems : it.output);
         } else if (m.method === 'turn/completed') {
           const t = p.turn ?? {};
           if (t.status === 'failed') finish(reject, new Error(t.error?.message ?? 'Codex reported the turn failed'));
@@ -509,6 +535,8 @@ function runCodex(job, proj, me, hooks) {
       };
       const t = job.resume ? await call('thread/resume', { threadId: job.resume, ...common, excludeTurns: true }) : await call('thread/start', common);
       threadId = t.thread.id;
+      // Lets the agent tell a running turn something it cannot see itself (the PC went to sleep).
+      me.steer = (text) => (turnId ? call('turn/steer', { threadId, expectedTurnId: turnId, input: [{ type: 'text', text, text_elements: [] }] }) : Promise.resolve());
       await hooks.onStarted(threadId);
       const turn = await call('turn/start', {
         threadId,
@@ -543,6 +571,26 @@ async function runJob(job) {
   const engine = job.engine === 'codex' && !proj.strict ? 'codex' : 'claude';
   me.engine = engine;
   if (job.engine === 'codex' && engine === 'claude') log('codex refused on strict project, using claude', job.id, job.project);
+
+  // A PC already in standby when the job arrives cannot drive Chrome, and the
+  // keep-awake above cannot bring it back. Say so now, and tell the session.
+  const atStart = await readPcState();
+  job.pcNote = startNote(atStart);
+  if (job.pcNote) {
+    log('PC is in standby at start', job.id, atStart.since?.toISOString() ?? '');
+    void event(job.id, 'step', { text: 'the PC screen is off (standby): browser work will fail until someone wakes it' });
+  }
+  // Browser calls that fail are explained by the PC's state at that moment, on
+  // the phone as they happen and in the report at the end.
+  me.watch = createBrowserWatch({
+    startState: atStart,
+    onNotice: async (text, state) => {
+      log('browser trouble', job.id, text);
+      await event(job.id, 'step', { text: text.slice(0, 300) });
+      if (state?.standby) await me.steer?.(`Note from the PC agent: ${text} Stop retrying browser control and report this.`).catch((e) => log('steer failed:', e.message));
+    },
+  });
+
   const hooks = {
     onStarted: async (sessionId) => {
       me.sessionId = sessionId;
@@ -555,6 +603,7 @@ async function runJob(job) {
       saveRunning();
       await event(job.id, 'step', { text });
     },
+    onToolResult: (content) => me.watch.see(content).catch((e) => log('browser watch failed:', e.message)),
   };
 
   try {
@@ -566,10 +615,10 @@ async function runJob(job) {
     // workers report in words, and a desktop picture per worker is just noise.
     if (CONFIG.screenshotOnFinish !== false && (job.role ?? 'solo') === 'solo') {
       const shot = await screenshotB64();
-      if (shot) await event(job.id, 'screenshot', { b64: shot, text: `${job.project}: screen when it finished` });
-      else note = '\n\n(No screenshot with this one: the screen could not be captured, which usually means the PC is locked or its display is off.)';
+      if (shot.b64) await event(job.id, 'screenshot', { b64: shot.b64, text: `${job.project}: screen when it finished` });
+      else note = '\n\n' + screenshotNote(shot.stderr, await readPcState());
     }
-    const text = (result || '(finished with no summary)') + note;
+    const text = (result || '(finished with no summary)') + me.watch.summary() + note;
     if (persistent && me.sessionId) {
       // Task finished, session stays: remember it before reporting so a follow-up can never find it missing.
       idle.set(job.id, { project: job.project, task: job.task, sessionId: me.sessionId, mode: 'persistent', ...crewId(me) });
@@ -583,11 +632,11 @@ async function runJob(job) {
   } catch (e) {
     const stopped = abort.signal.aborted;
     log(stopped ? `stopped${me.stopReason ? ` (${me.stopReason})` : ''}` : 'failed', job.id, e?.message ?? e);
-    const text = !stopped
+    const text = (!stopped
       ? String(e?.message ?? e).slice(0, 800)
       : me.stopReason === 'timeout'
         ? `It ran past the ${MAX_MINUTES}-minute limit and was stopped unfinished.${me.lastStep ? ` Last thing it was doing: ${me.lastStep}.` : ''}`
-        : 'Stopped from the phone.';
+        : 'Stopped from the phone.') + (me.watch?.summary() ?? '');
     idle.delete(job.id); // a failed or stopped turn ends a persistent session too: say so, do not leave it half-alive
     saveIdle();
     await ending(job, 'error', { text, stopped });
@@ -653,7 +702,7 @@ setInterval(() => {
 // ─── Poll loop ──────────────────────────────────────────────────────────────
 
 async function loop() {
-  log(`PC agent up → ${BASE} | projects: ${Object.keys(projects()).length} | parallel: ${MAX_PARALLEL}`);
+  log(`PC agent up → ${BASE} | projects: ${Object.keys(projects()).length} | parallel: ${MAX_PARALLEL} | primes: ${MAX_PRIMES}`);
   reportInterrupted();
   restoreIdle();
   void flushOutbox();
@@ -689,8 +738,9 @@ async function loop() {
           await ending({ id: f.id, project: 'unknown', task: f.message, mode: 'persistent' }, 'error', { text: 'This persistent session is no longer open on the PC (the agent restarted or it was closed), so the follow-up was not run. Start a new session.' });
           continue;
         }
-        if (running.size >= MAX_PARALLEL) {
-          await ending({ id: f.id, project: s.project, task: f.message, mode: 'persistent', ...crewId(s) }, 'error', { text: `PC is already running ${running.size} sessions, so the follow-up was not run. The session was closed; start a new one.` });
+        const full = refusal(s, lanes(), true);
+        if (full) {
+          await ending({ id: f.id, project: s.project, task: f.message, mode: 'persistent', ...crewId(s) }, 'error', { text: `${full}, so the follow-up was not run. The session was closed; start a new one.` });
           idle.delete(f.id); saveIdle();
           continue;
         }
@@ -698,9 +748,10 @@ async function loop() {
       }
       for (const job of r.jobs ?? []) {
         if (running.has(job.id) || finished.has(job.id)) continue; // handed out twice
-        if (running.size >= MAX_PARALLEL) {
+        const full = refusal(job, lanes());
+        if (full) {
           finished.add(job.id);
-          await ending(job, 'error', { text: `PC is already running ${running.size} sessions — try again when one finishes.` });
+          await ending(job, 'error', { text: `${full} — try again when one finishes.` });
           continue;
         }
         void runJob(job);

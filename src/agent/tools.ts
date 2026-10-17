@@ -26,7 +26,7 @@ import {
 import { parseRecurrence, nextOccurrence, monthStartUtc } from './recurrence.js';
 import { listLessons, addLesson, forgetLesson } from './crewLessons.js';
 import { briefProblem, withContext } from './brief.js';
-import { startJob, sendToJob, parseMode, parseEngine, ENGINES, SESSION_MODES, MODE_LABELS, stopJob, getJob, listJobs, jobSummary, openApprovals, pcOnline, pcProjects, delegateToPrime, livePrime, PRIME_NAME } from '../web/pcBridge.js';
+import { startJob, sendToJob, parseMode, parseEngine, ENGINES, SESSION_MODES, MODE_LABELS, stopJob, getJob, listJobs, jobSummary, openApprovals, pcOnline, pcProjects, delegateToPrime, livePrimes, primeSlots, MAX_PRIMES, PRIME_NAME } from '../web/pcBridge.js';
 import { bus, type PresentCard } from '../web/bus.js';
 import {
   githubEnabled,
@@ -717,17 +717,19 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
   {
     name: 'delegate_to_prime',
     description:
-      `Hand a goal to ${PRIME_NAME}, Philip's chief of staff on the PC. It starts Prime if it is not up, or gives the goal to the idle Prime. ` +
+      `Hand a goal to ${PRIME_NAME}, Philip's chief of staff on the PC. Up to ${MAX_PRIMES} Primes run at once, each on its own goal with its own crew. ` +
+      'Without `prime`, a new Prime starts on the goal. With `prime` (an id from claude_sessions), that Prime takes it as its next ask and keeps its context: use that for a follow-up on its goal; it must be idle. ' +
       'Use it for anything big, multi-part, open-ended or ongoing (build this, test that app end to end, research and compare, sort this out): ' +
       'Prime plans it, spawns and names its own crew of workers, checks their work and reports back. ' +
       'Write `goal` as intent: what he wants and what done looks like, plus facts only he gave you (URLs, test logins, constraints). ' +
       'No step lists and no rules Prime already has (logins, approvals, report style are in its own instructions); Prime is a stronger model than you. ' +
-      "If Prime is busy, the error says on what: tell him, don't stack another goal.",
+      `If that Prime is busy, or all ${MAX_PRIMES} are up, the error says who is on what: tell him, don't stack another goal or stop one on your own.`,
     input_schema: {
       type: 'object',
       properties: {
         goal: { type: 'string', description: 'What he wants achieved and how to tell it is done, in a few sentences. Intent, not instructions.' },
         context: { type: 'string', description: 'Optional: material HE gave you, passed on verbatim (a pasted doc, test logins, URLs). Never your own instructions.' },
+        prime: { type: 'string', description: 'Optional: id of an idle Prime to continue. Leave out for a new goal.' },
       },
       required: ['goal'],
     },
@@ -2131,12 +2133,13 @@ export async function dispatchTool(
       const goal = String(input.goal ?? '');
       const tooMuch = briefProblem(goal);
       if (tooMuch) return { output: tooMuch };
-      const r = delegateToPrime(withContext(goal, input.context));
+      const r = delegateToPrime(withContext(goal, input.context), typeof input.prime === 'string' ? input.prime : undefined);
       if (!r.ok) return { output: r.error };
+      const { used, limit } = primeSlots();
       return {
         output: r.started
-          ? `${PRIME_NAME} is starting (${r.job.id}). He gets a ping when it comes online, and its report comes back through you. Tell him it is on it; do not claim anything is done.`
-          : `Gave the goal to ${PRIME_NAME} (${r.job.id}), which was idle and keeps its context. Its report comes back through you. Do not claim anything is done.`,
+          ? `${r.job.name} is starting (${r.job.id}; ${used} of ${limit} Primes up). He gets a ping when it comes online, and its report comes back through you. Tell him it is on it; do not claim anything is done.`
+          : `Gave the goal to ${r.job.name} (${r.job.id}), which was idle and keeps its context. Its report comes back through you. Do not claim anything is done.`,
       };
     }
     case 'start_claude_session': {
@@ -2179,10 +2182,7 @@ export async function dispatchTool(
       return {
         output: JSON.stringify({
           pcOnline: pcOnline(),
-          prime: (() => {
-            const p = livePrime();
-            return p ? { id: p.id, status: p.status, on: p.brief } : 'offline';
-          })(),
+          primes: { ...primeSlots(), up: livePrimes().map((p) => ({ id: p.id, name: p.name, status: p.status, on: p.brief })) },
           projects: pcProjects(),
           sessions: listJobs().slice(0, 10).map((j) => {
             const x = jobSummary(j);

@@ -289,12 +289,16 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({
         online: true, lastSeenAt: now, modes: [{ id: 'meeseeks', label: 'Meeseeks' }, { id: 'persistent', label: 'Meeseeks Prime' }], projects: ['solarize', 'the-keeper'],
         limits: { queueMin: 10, lostContactMin: 5, maxRunMin: 120 },
+        primes: { used: 2, limit: 3, free: 1 },
         approvals: [{ id: 'ap1', jobId: 'w1', tool: 'Bash', summary: 'Run: npm install left-pad', at: now - m }],
         jobs: [
           // The crew: Prime up and running, two workers it named, one that died.
           job('pr1', 'the-keeper', 'running', 'running', { name: 'Meeseeks Prime', role: 'prime', engine: 'codex', model: 'gpt-6.1-sol', mode: 'persistent', modeLabel: 'Meeseeks Prime',
             brief: 'Test SitePMS end to end through the frontend and report every bug', task: 'Test SitePMS end to end through the frontend and report every bug',
             recent: [{ at: now, kind: 'step', text: 'using keeper_crew wait_for_crew' }] }),
+          // A second Prime on its own goal, idle between asks (two of three slots used).
+          job('pr2', 'solarize', 'idle', 'idle', { name: 'Meeseeks Prime II', role: 'prime', engine: 'codex', model: 'gpt-6.1-sol', mode: 'persistent', modeLabel: 'Meeseeks Prime',
+            brief: 'Compare three solar inverter suppliers on price and lead time', task: 'Compare three solar inverter suppliers on price and lead time', result: 'Shortlist ready; waiting for your pick.' }),
           job('cw1', 'sitepms', 'running', 'running', { name: 'Supervisor Rick', role: 'worker', parentId: 'pr1', engine: 'claude', brief: 'Fill in agreements and approve them as the supervisor',
             recent: [{ at: now, kind: 'step', text: 'opening sitepms.vercel.app/agreements' }] }),
           job('cw2', 'sitepms', 'running', 'running', { name: 'Rule-Breaker Meeseeks', role: 'worker', parentId: 'pr1', engine: 'claude', brief: 'Try to break the check-in and assessment rules as Selma (HR)' }),

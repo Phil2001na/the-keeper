@@ -2532,6 +2532,14 @@ input[type='range']::-moz-range-thumb {
 }
 .crew-head + .crew-row { border-top: 0; }
 .crew-row.worker { padding-left: 18px; }
+.crew-row.prime ~ .crew-row.prime { border-top-color: var(--line); }
+.prime-slots { display: inline-flex; align-items: center; gap: 6px; }
+.prime-slots .pips { display: inline-flex; gap: 3px; }
+.prime-slots .pips i { width: 6px; height: 6px; border-radius: 50%; border: 1px solid var(--text-faint); }
+.prime-slots .pips i.on { background: var(--good); border-color: var(--good); }
+.crew-held { padding: 8px 0; border-top: 1px solid var(--line-soft); font-size: 12px; line-height: 1.4; color: var(--text-dim); }
+.pc-full { font-size: 12px; line-height: 1.45; color: var(--text-dim); padding: 8px 10px; border-radius: var(--r-sm); border: 1px solid var(--accent-line); background: var(--accent-soft); }
+.pc-full[hidden] { display: none; }
 .crew-row .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
 .crew-row .dot.on { background: var(--good); }
 .crew-row .dot.idle { background: var(--accent-hi); }

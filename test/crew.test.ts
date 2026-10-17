@@ -23,24 +23,25 @@ function upPrime(goal = 'test SitePMS end to end') {
   return r.job;
 }
 
-test('Prime is one at a time, runs on Codex + gpt-6.1-sol, and takes new goals only when idle', () => {
+test('Prime runs on Codex + gpt-6.1-sol, and takes a follow-up by id only when idle', () => {
   const prime = upPrime();
   assert.equal(prime.role, 'prime');
   assert.equal(prime.name, 'Meeseeks Prime');
   assert.equal(prime.mode, 'persistent');
   assert.equal(prime.engine, 'codex');
   assert.equal(prime.model, 'gpt-6.1-sol');
-  assert.equal(pc.livePrime()?.id, prime.id);
+  assert.deepEqual(pc.livePrimes().map((p) => p.id), [prime.id]);
 
-  const busy = pc.delegateToPrime('something else');
+  const busy = pc.delegateToPrime('something else', prime.id);
   assert.ok(!busy.ok && /busy/.test(busy.error));
-  assert.ok(!pc.startJob('the-keeper', 'x', 'persistent', { role: 'prime' }).ok, 'a second Prime is refused');
 
   pc.onAgentEvent({ jobId: prime.id, kind: 'turn_done', eid: `t-${prime.id}`, text: 'plan made' });
-  const next = pc.delegateToPrime('now research the competitors');
+  const next = pc.delegateToPrime('now research the competitors', prime.id);
   assert.ok(next.ok && !next.started && next.job.id === prime.id);
   assert.equal(prime.brief, 'now research the competitors');
   endPrime(prime);
+  const gone = pc.delegateToPrime('more', prime.id);
+  assert.ok(!gone.ok && /already ended/.test(gone.error));
 });
 
 test('only a live Prime spawns workers, names stay unique, and the crew is capped', () => {
@@ -150,4 +151,93 @@ test('lessons ride along with every job handed to the PC, and Prime can add one'
   const handed = (body.jobs as Array<{ id: string; lessons: string[] }>).find((j) => j.id === job.job.id);
   assert.deepEqual(handed?.lessons, ['Sign in with his Google session before calling a site locked.']);
   endPrime(prime);
+});
+
+/** End every Prime still holding a slot, so each test starts from none. */
+function clearPrimes() {
+  for (const j of pc.listJobs()) if (j.role === 'prime' && (['queued', 'running', 'waiting', 'idle'].includes(j.status) || j.lost)) endPrime(j);
+  assert.equal(pc.primeSlots().used, 0);
+}
+
+test('up to three Primes run at once, each named and crewed on its own; a fourth is refused', async () => {
+  pc.notePoll({ projects: ['the-keeper', 'sitepms'], running: [] });
+  clearPrimes();
+  assert.equal(pc.MAX_PRIMES, 3);
+  const a = upPrime('build the invoice page');
+  const b = upPrime('research solar suppliers');
+  // Still queued (not yet picked up by the PC) holds a slot too.
+  const c = pc.delegateToPrime('test SitePMS end to end');
+  assert.ok(c.ok && c.started);
+  assert.deepEqual([a.name, b.name, c.job.name], ['Meeseeks Prime', 'Meeseeks Prime II', 'Meeseeks Prime III']);
+  assert.deepEqual(pc.primeSlots(), { used: 3, limit: 3, free: 0 });
+
+  const fourth = pc.delegateToPrime('one more big thing');
+  assert.ok(!fourth.ok);
+  assert.match(fourth.error, /All 3 Meeseeks Primes are already up/);
+  assert.match(fourth.error, /research solar suppliers/, 'says who is on what');
+  assert.ok(!pc.startJob('the-keeper', 'x', 'persistent', { role: 'prime' }).ok, 'no back door through startJob');
+  assert.equal(pc.livePrimes().length, 3);
+
+  // Regular Meeseeks and each Prime's own crew are untouched by the Prime limit.
+  const solo = pc.startJob('sitepms', 'one bounded fix');
+  assert.ok(solo.ok && solo.job.role === 'solo' && solo.job.mode === 'meeseeks');
+  const wa = pc.crewOp({ op: 'spawn', parentId: a.id, name: 'Tiny Rick', goal: 'g' });
+  const wb = pc.crewOp({ op: 'spawn', parentId: b.id, name: 'Tiny Rick', goal: 'g' });
+  assert.ok(wa.ok && wb.ok);
+  const status = pc.crewOp({ op: 'status', parentId: a.id }) as { workers: { id: string }[] };
+  assert.deepEqual(status.workers.map((w) => w.id), [(wa as { worker: { id: string } }).worker.id], 'a Prime sees only its own crew');
+
+  // The relay's state shows the limit.
+  const state = await new Promise<Record<string, unknown>>((resolve) => {
+    const res = { writeHead() { return res; }, end(x: string) { resolve(JSON.parse(x)); } };
+    pc.handlePcBridge({ method: 'GET', headers: {} } as never, res as never, '/pc/state', true);
+  });
+  assert.deepEqual(state.primes, { used: 3, limit: 3, free: 0 });
+
+  // A slot freed by one ending is usable again, and only once.
+  endPrime(b);
+  const again = pc.delegateToPrime('one more big thing');
+  assert.ok(again.ok && again.started);
+  assert.equal(again.job.name, 'Meeseeks Prime II', 'a freed name is reused');
+  assert.ok(!pc.delegateToPrime('and another').ok);
+  pc.stopJob(solo.job.id);
+  clearPrimes();
+});
+
+test('a Prime that lost contact keeps its slot until it is back or let go', () => {
+  clearPrimes();
+  const a = upPrime('a');
+  upPrime('b');
+  upPrime('c');
+  // The PC goes quiet: every Prime is reported lost, but none of their slots are free.
+  pc.sweepPcJobs(Date.now() + 6 * 60_000);
+  assert.equal(a.lost, true);
+  assert.equal(pc.livePrimes().length, 0);
+  assert.equal(pc.primeSlots().used, 3);
+  assert.ok(!pc.delegateToPrime('d').ok, 'a fourth cannot slip in while they may come back');
+
+  // Letting one go frees its slot, and the PC is told to stop it if it reappears.
+  assert.equal(pc.stopJob(a.id), true);
+  assert.equal(a.status, 'stopped');
+  assert.equal(pc.primeSlots().used, 2);
+  const d = pc.delegateToPrime('d');
+  assert.ok(d.ok);
+  clearPrimes();
+});
+
+test('a relay restart adopts several Primes under their own names', () => {
+  clearPrimes();
+  pc.notePoll({
+    projects: ['the-keeper'],
+    running: [],
+    idle: [
+      { id: 'adopt-p2', project: 'the-keeper', task: 'x', role: 'prime', name: 'Meeseeks Prime', engine: 'codex' },
+      { id: 'adopt-p3', project: 'the-keeper', task: 'y', role: 'prime', name: 'Meeseeks Prime II', engine: 'codex' },
+    ],
+  });
+  assert.deepEqual(['adopt-p2', 'adopt-p3'].map((id) => pc.getJob(id)!.name), ['Meeseeks Prime', 'Meeseeks Prime II']);
+  assert.equal(pc.primeSlots().used, 2);
+  const third = pc.delegateToPrime('z');
+  assert.ok(third.ok && third.job.name === 'Meeseeks Prime III');
+  clearPrimes();
 });
