@@ -2,12 +2,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
 import { appendEvent, correctEvent, createStream, snapshotInput } from '../workstreams/model.js';
 import type { State } from '../workstreams/model.js';
-export type WorkStore={readState:()=>Promise<State>;mutate:<T>(change:(s:State)=>T)=>Promise<T>};
+// briefs: fills in timeline summaries in the background (left out in tests — it calls a model).
+export type WorkStore={readState:()=>Promise<State>;mutate:<T>(change:(s:State)=>T)=>Promise<T>;briefs?:()=>void};
 export async function workstreamApi(req:IncomingMessage,res:ServerResponse,store:WorkStore) {
- const {mutate,readState}=store;
+ const {mutate,readState,briefs}=store;
  const reply=(status:number,body:unknown)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(body));};
  try {
-  if(req.method==='GET'){reply(200,await readState());return;}
+  if(req.method==='GET'){const state=await readState();if(state.events.some(e=>!e.brief))briefs?.();reply(200,state);return;}
   if(req.method!=='POST'){reply(405,{error:'Method not allowed'});return;}
   let body='';for await(const chunk of req){body+=chunk;if(Buffer.byteLength(body)>40000){reply(413,{error:'Update too large'});return;}}
   const {action,...input}=JSON.parse(body);
@@ -22,6 +23,6 @@ export async function workstreamApi(req:IncomingMessage,res:ServerResponse,store
     appendEvent(state,{streamId:id,kind:'correction',text:`Snapshot updated by Philip. Previous snapshot: ${before}`,certainty:'confirmed',source:'Philip'});return stream;
    }
    throw new Error('Unknown action');
-  });reply(200,{ok:true,result});
+  });briefs?.();reply(200,{ok:true,result});
  }catch(error){reply(400,{error:error instanceof Error?error.message:'Could not save workstreams'});}
 }

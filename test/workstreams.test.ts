@@ -33,3 +33,12 @@ test('authenticated HTTP flow: create, snapshot conflict, file, correct/move, re
  const loaded=(await call()).body;assert.equal(loaded.streams.find((s:{id:string})=>s.id===b.id).next,'Philip reviews');assert.equal(loaded.events.find((x:{id:string})=>x.id===e.id).revisions.length,1);
  }finally{await new Promise<void>((r,j)=>server.close(e=>e?j(e):r()));}
 });
+test('timeline briefs: bookkeeping is summarised without a model and a text correction clears a stale brief',async()=>{
+ const {fixedBrief}=await import('../src/workstreams/model.js');
+ const s=empty();const a=createStream(s,{title:'Job Search'});
+ const closed=appendEvent(s,{streamId:a.id,kind:'result',text:'Session closed. Nothing was running; the persistent session is over.',source:'agent:Meeseeks Prime II'});
+ assert.equal(fixedBrief(closed)?.what,'Meeseeks Prime II session closed');
+ const e=appendEvent(s,{streamId:a.id,kind:'result',text:'Tried the form; Chrome froze.',source:'agent:Prime'});assert.equal(fixedBrief(e),null);
+ e.brief={what:'Tried the form',stop:'Chrome froze',state:'stopped'};
+ correctEvent(s,e.id,{streamId:a.id,text:'Tried the form',certainty:'confirmed'});assert.equal(e.brief,undefined);
+});

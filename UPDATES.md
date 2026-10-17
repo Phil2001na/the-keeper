@@ -1,3 +1,9 @@
+## 2026-10-18
+
+### 00:58
+- Work page redesigned as a simple timeline: each update is one "what we did / found" line plus a "↳ why it stopped" line, grouped by day with times; tap an entry for the full report and correct/move. Restyled with the app's own glass, galaxy field, header and theme tokens.
+- Added background two-line summaries (`src/workstreams/brief.ts`, digest model, batched, stored as `brief` on each event; text corrections clear them). Session-closed and snapshot bookkeeping is summarised without a model call. 56 tests and typecheck pass; checked in `npm run ui`.
+
 ## 2026-10-17
 ### 18:00
 - Production c7239e5 deployed successfully (Railway 77726e92). Live token protection, save/reload, correction/move and Keeper resume-context tests passed; synthetic checks left as completed records.

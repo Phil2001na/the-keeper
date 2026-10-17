@@ -21,6 +21,7 @@ import { getFile, putFile, safeFilename } from './files.js';
 import { workstreamApi } from './workstreams.js';
 import * as workStore from '../workstreams/store.js';
 import { resumeContext } from '../workstreams/service.js';
+import { queueBriefs } from '../workstreams/brief.js';
 import { bus, type KeeperEvent } from './bus.js';
 import { handleRemoteBrowser } from './remoteBrowser.js';
 import { handlePcBridge } from './pcBridge.js';
@@ -503,7 +504,7 @@ export function startWebServer(): void {
       json(res, 401, { ok: false, error: 'unauthorized' });
       return;
     }
-    if (path === '/api/workstreams') { void workstreamApi(req, res, workStore); return; }
+    if (path === '/api/workstreams') { void workstreamApi(req, res, { ...workStore, briefs: queueBriefs }); return; }
     if (req.method === 'GET' && path === '/events') {
       handleEvents(res);
       return;
