@@ -18,6 +18,9 @@ import {
 } from '../db/repositories.js';
 import { drainMedia } from '../generate/queue.js';
 import { getFile, putFile, safeFilename } from './files.js';
+import { workstreamApi } from './workstreams.js';
+import * as workStore from '../workstreams/store.js';
+import { resumeContext } from '../workstreams/service.js';
 import { bus, type KeeperEvent } from './bus.js';
 import { handleRemoteBrowser } from './remoteBrowser.js';
 import { handlePcBridge } from './pcBridge.js';
@@ -110,9 +113,13 @@ function loadStatic(): void {
   const ui = read('ui.html');
   const css = read('app.css');
   const js = read('app.js');
+  const workHtml = read('workstreams.html');
+  const workJs = read('workstreams.js');
+  assets.set('/workstreams', asset(workHtml, 'workstreams.html', REVALIDATE));
+  assets.set('/workstreams.js', asset(workJs, 'workstreams.js', REVALIDATE));
 
   const version = createHash('sha256')
-    .update(ui).update(css).update(js)
+    .update(ui).update(css).update(js).update(workHtml).update(workJs)
     .digest('hex')
     .slice(0, 12);
   const sw = Buffer.from(read('sw.js').toString('utf-8').replace('__VERSION__', version), 'utf-8');
@@ -249,11 +256,17 @@ interface UploadFile {
 
 async function handleSend(req: IncomingMessage, res: ServerResponse): Promise<void> {
   let text: string;
+  let workstreamId: string | undefined;
   let files: UploadFile[];
   try {
     // Files (images/PDFs) ride in as base64 — allow a generous body.
-    const body = JSON.parse(await readBody(req, 20 * 1024 * 1024)) as { text?: unknown; files?: unknown };
+    const body = JSON.parse(await readBody(req, 20 * 1024 * 1024)) as { text?: unknown; files?: unknown; workstreamId?: unknown };
     text = String(body.text ?? '').trim();
+    if (body.workstreamId) {
+      if (typeof body.workstreamId !== 'string') throw new Error('Invalid workstream');
+      await resumeContext(body.workstreamId); // Validate before dispatch.
+      workstreamId = body.workstreamId;
+    }
     files = Array.isArray(body.files) ? (body.files as UploadFile[]) : [];
   } catch {
     json(res, 400, { ok: false, error: 'bad request body' });
@@ -285,6 +298,7 @@ async function handleSend(req: IncomingMessage, res: ServerResponse): Promise<vo
       kind: 'inbound',
       text,
       surface: 'web',
+      workstreamId,
       images: images.length ? images : undefined,
       pdfs: pdfs.length ? pdfs : undefined,
     });
@@ -489,6 +503,7 @@ export function startWebServer(): void {
       json(res, 401, { ok: false, error: 'unauthorized' });
       return;
     }
+    if (path === '/api/workstreams') { void workstreamApi(req, res, workStore); return; }
     if (req.method === 'GET' && path === '/events') {
       handleEvents(res);
       return;

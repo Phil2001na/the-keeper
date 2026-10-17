@@ -1,3 +1,4 @@
+import { bindWorkJob } from '../workstreams/service.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import { createHash } from 'node:crypto';
 import { localDateString } from '../config.js';
@@ -2135,6 +2136,7 @@ export async function dispatchTool(
       if (tooMuch) return { output: tooMuch };
       const r = delegateToPrime(withContext(goal, input.context), typeof input.prime === 'string' ? input.prime : undefined);
       if (!r.ok) return { output: r.error };
+      await bindWorkJob(r.job.id).catch(err => console.error('[workstreams] job binding failed', err));
       const { used, limit } = primeSlots();
       return {
         output: r.started
@@ -2155,6 +2157,7 @@ export async function dispatchTool(
       if (tooMuch) return { output: tooMuch };
       const r = startJob(String(input.project ?? ''), withContext(goal, input.context), mode, { engine, brief: goal });
       if (!r.ok) return { output: r.error };
+      await bindWorkJob(r.job.id).catch(err => console.error('[workstreams] job binding failed', err));
       return {
         output:
           `Queued "${r.job.name}" (${r.job.id}, ${engine}) on ${r.job.project}` +

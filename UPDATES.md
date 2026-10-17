@@ -1,4 +1,9 @@
 ## 2026-10-17
+### 17:30
+- Added Workstreams separate from private follow-up watches: areas/applications, editable snapshots, evidence-labelled history, correction/move controls, search and explicit resume-in-chat context.
+- Persisted chat/PC updates with idempotency and revision guards in protected keeper_settings; recovered eight relevant archived reports as reported claims. No schema change or client credential access.
+- Typecheck and 59 local tests passed; browser checked hierarchy, correction/move and chat resume. Authorized production deployment and live flow verification follow.
+
 ### 15:31
 - **Up to three Meeseeks Primes at once.** `delegate_to_prime` / `/pc/delegate` start a new Prime per goal ("Meeseeks Prime", "II", "III"), or continue an idle one by id (`prime` / `primeId`). The limit (`MAX_PRIMES` = 3, `PC_MAX_PRIMES` can only lower it) is checked and claimed in one synchronous `startJob`, so a fourth cannot start; Primes that lost contact keep their slot until they return or are let go (stopping a lost session now releases it). Each Prime keeps its own crew (3 workers each); solo Meeseeks are never limited by Primes.
 - PC agent backstop (`pc-agent/lanes.mjs`): Primes get their own lane capped at 3 (running + idle) and no longer use the `maxParallel` slots, so Meeseeks and workers still start while 3 Primes work, and a Prime's follow-up is no longer closed for lack of room. Prime brief now says other Primes may share the folder.

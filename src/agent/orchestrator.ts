@@ -1,3 +1,6 @@
+import { workContext, capture, resumeContext } from '../workstreams/service.js';
+import { readState } from '../workstreams/store.js';
+import { route } from '../workstreams/model.js';
 import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { config, isQuietHours, localTimeString, relativeDayContext } from '../config.js';
@@ -52,7 +55,7 @@ export interface InboundPdf {
 }
 
 export type Trigger =
-  | { kind: 'inbound'; text: string; images?: InboundImage[]; pdfs?: InboundPdf[]; surface?: Surface }
+  | { kind: 'inbound'; text: string; images?: InboundImage[]; pdfs?: InboundPdf[]; surface?: Surface; workstreamId?: string }
   | { kind: 'touchpoint'; touchpoint: Touchpoint }
   /** Private nightly reflection — never messages him, never logged as conversation. */
   | { kind: 'reflection'; brief: string }
@@ -107,7 +110,20 @@ export async function runAgent(trigger: Trigger): Promise<AgentResult> {
   bus.publish({ type: 'turn', phase: 'start', source, id, startedAt });
   try {
     // Scoped so every step published below is tagged with this turn's id.
-    return await turnScope.run(id, () => runTurn(trigger));
+    let workId: string | null = null;
+    if (trigger.kind === 'inbound') {
+      try { workId = trigger.workstreamId ?? route(await readState(), trigger.text); }
+      catch (err) { console.error('[workstreams] routing unavailable', err); }
+    }
+    const run = async () => {
+      if (trigger.kind === 'inbound' && workId) {
+        await capture(trigger.text || '(attachment)', 'Philip', `chat:${id}:user`, workId).catch(err => console.error('[workstreams] capture failed', err));
+      }
+      const result = await turnScope.run(id, () => runTurn(trigger));
+      if (workId && result.message) await capture(result.message, 'Keeper', `chat:${id}:agent`, workId).catch(err => console.error('[workstreams] reply capture failed', err));
+      return result;
+    };
+    return await (workId ? workContext.run(workId, run) : run());
   } finally {
     bus.publish({ type: 'turn', phase: 'end', source, id, startedAt });
     // Window maintenance: if too much has piled up since the digest anchor,
@@ -215,7 +231,9 @@ async function runTurn(trigger: Trigger): Promise<AgentResult> {
 
   // Time, window map, quiet hours, surface — all volatile, so they ride in the
   // trigger message (NOT the system prompt or the log) to keep caches stable.
-  const ctx = contextLine(history, Boolean(dig?.covered_until), surface, live);
+  let ctx = contextLine(history, Boolean(dig?.covered_until), surface, live);
+  const workId = workContext.getStore();
+  if (workId) ctx += await resumeContext(workId).catch(() => '\nWorkstream context unavailable; do not guess its status.');
 
   // The triggering turn.
   if (trigger.kind === 'inbound') {

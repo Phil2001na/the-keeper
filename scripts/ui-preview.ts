@@ -1,3 +1,5 @@
+import { workstreamApi } from '../src/web/workstreams.js';
+import { empty, createStream, appendEvent } from '../src/workstreams/model.js';
 /**
  * Local preview harness for the web surface.
  *
@@ -24,6 +26,12 @@ import { DictationError, transcribe } from '../src/web/dictate.js';
 const WEB = fileURLToPath(new URL('../src/web/', import.meta.url));
 const PORT = Number(process.env.UI_PORT ?? 5173);
 const TOKEN = '1234';
+let workState = empty();
+const area = createStream(workState, {title:'Job Search'});
+const application = createStream(workState, {title:'Supabase application', parentId:area.id});
+createStream(workState, {title:'Roblox UGC sales'});
+appendEvent(workState,{streamId:application.id,kind:'result',text:'Sample agent result: application draft prepared, not submitted.',source:'agent:Preview Prime',certainty:'reported'});
+const previewWorkStore = {readState:async()=>structuredClone(workState),mutate:async <T>(fn:(s:typeof workState)=>T)=>{const draft=structuredClone(workState);const result=fn(draft);draft.revision++;workState=draft;return result;}};
 const PREVIEW_VERSION = `preview-${Date.now().toString(36)}`;
 
 /**
@@ -258,6 +266,14 @@ const server = createServer(async (req, res) => {
   const bearer = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim();
   const authed = (bearer || url.searchParams.get('t') || '') === TOKEN;
 
+  if (path === '/workstreams' || path === '/workstreams.js') {
+    res.writeHead(200, {'Content-Type':path.endsWith('.js')?'application/javascript':'text/html'});
+    res.end(readFileSync(join(WEB,path.endsWith('.js')?'workstreams.js':'workstreams.html')));return;
+  }
+  if (path === '/api/workstreams') {
+    if(!authed){res.writeHead(401).end();return;}
+    await workstreamApi(req,res,previewWorkStore);return;
+  }
   if (path === '/events') {
     if (!authed) { res.writeHead(401).end(); return; }
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
