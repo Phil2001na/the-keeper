@@ -104,6 +104,12 @@
   <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
     <path d="M5 12h14M12 5v14"/>
   </symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>
+  </symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor">
+    <rect x="7" y="7" width="10" height="10" rx="2.2"/>
+  </symbol>
   <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <path d="m5 12 7-7 7 7M12 19V5"/>
   </symbol>
@@ -193,8 +199,10 @@
     <div class="composer">
       <button class="round-btn" id="attachbtn" title="attach an image or PDF" aria-label="attach"><svg><use href="#i-plus"/></svg></button>
       <textarea id="box" rows="1" placeholder="Message the Keeper…" aria-label="message" aria-describedby="composer-hint"></textarea>
+      <button class="round-btn hidden" id="micbtn" type="button" title="dictate" aria-label="dictate" aria-pressed="false"><svg><use href="#i-mic"/></svg></button>
       <button class="round-btn" id="sendbtn" title="send" aria-label="send"><svg><use href="#i-send"/></svg></button>
     </div>
+    <div id="dictstatus" class="hidden" role="status" aria-live="polite"><span class="dot"></span><span class="txt"></span><button type="button" class="cancel">cancel</button></div>
     <div id="composer-hint">Images &amp; PDFs welcome<span>Enter to send · Shift + Enter for a new line</span></div>
     <div id="offlinebar" class="hidden"><svg><use href="#i-offline"/></svg><span>offline — you can read, but it can't hear you right now</span></div>
   </footer>

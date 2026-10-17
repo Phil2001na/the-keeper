@@ -21,6 +21,7 @@ import { getFile, putFile, safeFilename } from './files.js';
 import { bus, type KeeperEvent } from './bus.js';
 import { handleRemoteBrowser } from './remoteBrowser.js';
 import { handlePcBridge } from './pcBridge.js';
+import { DictationError, MAX_DICTATION_BYTES, transcribe } from './dictate.js';
 import {
   attachPushToBus,
   initPush,
@@ -39,6 +40,7 @@ import {
  *  GET  /files/<id>  download a file the agent generated this session
  *  POST /send        send a message to the agent from the browser
  *  GET  /api/snapshot  the keeper's mind: sectors, facts, plans, journal, history
+ *  POST /api/dictate    raw audio in, transcript out — for the composer, never sent on
  *  GET  /api/push/key           the VAPID public key a browser needs to subscribe
  *  POST /api/push/subscribe     register this device for notifications
  *  POST /api/push/unsubscribe   drop it again
@@ -192,6 +194,42 @@ async function readBody(req: IncomingMessage, maxBytes = 64 * 1024): Promise<str
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks).toString('utf-8');
+}
+
+async function readRaw(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > maxBytes) throw new DictationError('that recording is too long', 413);
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Dictation: the body is the recording itself, typed by its Content-Type. The
+ * transcript only comes back to the page — he reads it, edits it, sends it.
+ */
+async function handleDictate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const audio = await readRaw(req, MAX_DICTATION_BYTES);
+    const text = await transcribe({
+      apiKey: config.openaiApiKey,
+      model: config.dictationModel,
+      audio,
+      contentType: req.headers['content-type'],
+    });
+    console.log(`[web] dictation: ${(audio.length / 1024).toFixed(0)} KB → ${text.length} chars`);
+    json(res, 200, { ok: true, text });
+  } catch (err) {
+    if (err instanceof DictationError) {
+      json(res, err.status, { ok: false, error: err.message });
+      return;
+    }
+    console.error('[web] dictation failed:', err);
+    json(res, 500, { ok: false, error: 'transcription failed' });
+  }
 }
 
 /** Allowed image types map (mirrors the model's vision support). */
@@ -461,6 +499,10 @@ export function startWebServer(): void {
     }
     if (req.method === 'POST' && path === '/send') {
       void handleSend(req, res);
+      return;
+    }
+    if (req.method === 'POST' && path === '/api/dictate') {
+      void handleDictate(req, res);
       return;
     }
     if (req.method === 'GET' && path === '/api/snapshot') {

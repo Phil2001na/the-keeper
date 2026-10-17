@@ -159,6 +159,8 @@ export const config = {
   // friendly "I can't hear that yet" reply instead of crashing.
   groqApiKey: (process.env.GROQ_API_KEY ?? '').replace(/\s+/g, ''),
   groqTranscribeModel: optional('GROQ_TRANSCRIBE_MODEL', 'whisper-large-v3'),
+  // Web-composer dictation (src/web/dictate.ts) — rides on OPENAI_API_KEY.
+  dictationModel: optional('DICTATION_MODEL', 'gpt-4o-mini-transcribe'),
 
   telegramBotToken: requiredToken('TELEGRAM_BOT_TOKEN'),
   telegramOwnerChatId: requiredToken('TELEGRAM_OWNER_CHAT_ID'),

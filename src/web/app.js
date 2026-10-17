@@ -930,6 +930,7 @@
     $('offlinebar').classList.toggle('hidden', online);
     $('sendbtn').disabled = !online;
     $('attachbtn').disabled = !online;
+    if (!root.dataset.dictation || root.dataset.dictation === 'idle') $('micbtn').disabled = !online;
     if (!root.classList.contains('busy')) setStatus(online ? 'here' : 'offline');
   }
 
@@ -1139,6 +1140,188 @@
   sendbtn.addEventListener('click', send);
   box.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  });
+
+  // ── dictation ─────────────────────────────────────────────────────────
+  // Tap to record, tap to stop. The audio goes to /api/dictate (the server
+  // holds the OpenAI key) and the words land in the box at the caret — never
+  // sent on their own, so he can fix what it misheard first.
+  //
+  // iPhone Safari is the target: the mic is only asked for inside the tap,
+  // tracks are released the moment recording stops (or the orange dot stays
+  // on), and a page sent to the background stops and keeps what it heard.
+  const micbtn = $('micbtn');
+  const dictstatus = $('dictstatus');
+  const DICT_MAX_MS = 5 * 60 * 1000;
+  const DICT_MIN_MS = 600;
+  const dict = { state: 'idle', rec: null, stream: null, chunks: [], startedAt: 0, timer: null, caret: null };
+
+  const canDictate = !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+  micbtn.classList.toggle('hidden', !canDictate);
+
+  /** Whatever this browser records natively; Safari only does mp4. */
+  function recorderMime() {
+    for (const t of ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus']) {
+      if (MediaRecorder.isTypeSupported?.(t)) return t;
+    }
+    return '';
+  }
+
+  const clock = (ms) => {
+    const s = Math.floor(ms / 1000);
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  };
+
+  function setDict(state, text) {
+    dict.state = state;
+    root.dataset.dictation = state;
+    const on = state !== 'idle';
+    dictstatus.classList.toggle('hidden', !on);
+    $('composer-hint').classList.toggle('hidden', on);
+    dictstatus.querySelector('.txt').textContent = text || '';
+    dictstatus.querySelector('.cancel').classList.toggle('hidden', state !== 'recording');
+    micbtn.setAttribute('aria-pressed', String(state === 'recording'));
+    const label = state === 'recording' ? 'stop and transcribe' : state === 'transcribing' ? 'transcribing' : 'dictate';
+    micbtn.title = label;
+    micbtn.setAttribute('aria-label', label);
+    micbtn.querySelector('use').setAttribute('href', state === 'recording' ? '#i-stop' : '#i-mic');
+    micbtn.disabled = state === 'transcribing' || !navigator.onLine;
+  }
+
+  function releaseMic() {
+    clearInterval(dict.timer);
+    dict.timer = null;
+    dict.stream?.getTracks().forEach((t) => t.stop());
+    dict.stream = null;
+  }
+
+  function dictError(msg) {
+    releaseMic();
+    dict.rec = null;
+    setDict('idle');
+    toast(msg);
+  }
+
+  async function startDictation() {
+    if (!navigator.onLine) { toast('offline — dictation needs a connection'); return; }
+    // Where the words go: the caret as it is now, not wherever focus wanders.
+    dict.caret = document.activeElement === box ? [box.selectionStart, box.selectionEnd] : null;
+    setDict('starting', 'waiting for the microphone…');
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch (err) {
+      const name = err?.name || '';
+      dictError(
+        name === 'NotAllowedError' || name === 'SecurityError'
+          ? 'microphone blocked — allow it for this site (iPhone: Settings › Safari › Microphone)'
+          : name === 'NotFoundError' ? 'no microphone found'
+          : name === 'NotReadableError' ? 'the microphone is busy in another app'
+          : 'couldn’t start the microphone'
+      );
+      return;
+    }
+    // Cancelled while the permission prompt was up.
+    if (dict.state !== 'starting') { stream.getTracks().forEach((t) => t.stop()); return; }
+
+    let rec;
+    try {
+      const mime = recorderMime();
+      rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    } catch {
+      stream.getTracks().forEach((t) => t.stop());
+      dictError('this browser can’t record audio');
+      return;
+    }
+    dict.stream = stream;
+    dict.rec = rec;
+    dict.chunks = [];
+    rec.ondataavailable = (e) => { if (e.data?.size) dict.chunks.push(e.data); };
+    rec.onstop = () => finishDictation(rec);
+    rec.onerror = () => dictError('recording failed');
+    // A timeslice, because some iOS versions hand back nothing for a single
+    // end-of-recording chunk.
+    rec.start(1000);
+    dict.startedAt = Date.now();
+    const tick = () => {
+      const ms = Date.now() - dict.startedAt;
+      if (ms >= DICT_MAX_MS) { toast('that’s the 5-minute limit — transcribing what you said'); stopDictation(); return; }
+      dictstatus.querySelector('.txt').textContent = 'recording ' + clock(ms) + ' — tap the stop button when done';
+    };
+    setDict('recording');
+    tick();
+    dict.timer = setInterval(tick, 500);
+  }
+
+  function stopDictation(cancel = false) {
+    if (dict.state === 'starting') { setDict('idle'); return; }
+    if (dict.state !== 'recording' || !dict.rec) return;
+    const rec = dict.rec;
+    if (cancel) {
+      // Detach first, so the stop event that follows finds nothing to send.
+      dict.rec = null;
+      dict.chunks = [];
+      releaseMic();
+      setDict('idle');
+      try { rec.stop(); } catch { /* already stopped */ }
+      return;
+    }
+    clearInterval(dict.timer);
+    dict.timer = null;
+    setDict('transcribing', 'transcribing…');
+    try { rec.stop(); } catch { finishDictation(rec); }
+  }
+
+  async function finishDictation(rec) {
+    if (dict.rec !== rec) return;
+    const elapsed = Date.now() - dict.startedAt;
+    const type = (rec.mimeType || dict.chunks[0]?.type || 'audio/mp4').split(';')[0];
+    const blob = new Blob(dict.chunks, { type });
+    dict.chunks = [];
+    dict.rec = null;
+    releaseMic();
+    if (elapsed < DICT_MIN_MS || blob.size === 0) { dictError('too short — tap, speak, then tap stop'); return; }
+
+    setDict('transcribing', 'transcribing…');
+    try {
+      const res = await fetch('/api/dictate', {
+        method: 'POST',
+        headers: { 'Content-Type': type, Authorization: 'Bearer ' + token },
+        body: blob,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) { setDict('idle'); token = ''; enter(); return; }
+      if (!res.ok || !data.text) { dictError(data.error || 'transcription failed'); return; }
+      insertTranscript(data.text);
+      setDict('idle');
+    } catch {
+      dictError('no connection — the recording didn’t reach it');
+    }
+  }
+
+  /** Into the box at the remembered caret, with a space either side as needed. */
+  function insertTranscript(text) {
+    const v = box.value;
+    const [a, b] = dict.caret && dict.caret[0] <= v.length ? dict.caret : [v.length, v.length];
+    const before = v.slice(0, a);
+    const after = v.slice(Math.min(b, v.length));
+    const lead = before && !/\s$/.test(before) ? ' ' : '';
+    const trail = after && !/^\s/.test(after) ? ' ' : '';
+    box.value = before + lead + text + trail + after;
+    const pos = (before + lead + text).length;
+    autosize();
+    box.focus();
+    box.setSelectionRange(pos, pos);
+  }
+
+  micbtn.addEventListener('click', () => {
+    if (dict.state === 'idle') startDictation();
+    else if (dict.state === 'recording' || dict.state === 'starting') stopDictation();
+  });
+  dictstatus.querySelector('.cancel').addEventListener('click', () => stopDictation(true));
+  // iOS cuts the mic when the page goes to the background; keep what was said.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && dict.state === 'recording') stopDictation();
   });
 
   // ── jump to latest ────────────────────────────────────────────────────

@@ -1,3 +1,11 @@
+## 2026-10-17
+### 13:22
+- Reviewed the 10:55 dictation work (route behind the web token, key stays server-side, size/type checks before OpenAI, upstream error detail kept out of the response, service worker leaves the POST alone). Typecheck clean, `npm test` 46/46. Committed only the dictation files and pushed to main for the Railway deploy; the pc-agent standby work (10:15) stays uncommitted.
+
+### 10:55
+- **Dictation in the web composer.** New mic button: tap to record, tap to stop; the recording goes to a new token-protected `POST /api/dictate`, which transcribes it with OpenAI `gpt-4o-mini-transcribe` using the server's existing `OPENAI_API_KEY` (never sent to the browser). The text is inserted at the cursor in the message box and **not sent**, so it can be edited first. Clear recording (timer + stop icon + cancel), transcribing and error states; tuned for iPhone Safari (records audio/mp4, mic only requested on tap, mic released on stop, stops and keeps the audio if the app is backgrounded, 5-minute cap).
+- Files: `src/web/dictate.ts` (new), `server.ts`, `config.ts` (`DICTATION_MODEL`, default gpt-4o-mini-transcribe), `ui.html`, `app.js`, `app.css`, `scripts/ui-preview.ts` (route also in preview; real transcription if `OPENAI_API_KEY` is in the shell env), `test/dictate.test.ts` (5 tests). `npm test` 46/46, typecheck clean. Verified end to end in the preview: spoken clip → real OpenAI → "note: Remind me to send the wellwitch invoice tomorrow morning." in the box, nothing sent; denied mic, cancel and too-short paths checked. Not deployed, not committed.
+
 ## 2026-10-16
 ### 16:20
 - Confirmed the working bubble v2 (006ebe3) is live: Railway deploy a141b101 SUCCESS, the served `app.js` is byte-identical to the commit, and the live `/events` stream opens with `{"type":"sync","turns":[]}`. Re-ran typecheck (clean), `npm test` 29/29, and a preview pass (step hold, clock after 4 s, collapse to one line, silent reflection fades out, no console errors).

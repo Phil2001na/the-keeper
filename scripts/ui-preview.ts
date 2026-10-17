@@ -19,6 +19,7 @@ import webpush from 'web-push';
 import { generatePdf } from '../src/generate/pdf.js';
 import { generateMarkdown } from '../src/generate/markdown.js';
 import { getFile, putFile, safeFilename } from '../src/web/files.js';
+import { DictationError, transcribe } from '../src/web/dictate.js';
 
 const WEB = fileURLToPath(new URL('../src/web/', import.meta.url));
 const PORT = Number(process.env.UI_PORT ?? 5173);
@@ -372,6 +373,32 @@ const server = createServer(async (req, res) => {
       return;
     }
     res.writeHead(404).end();
+    return;
+  }
+
+  // Dictation. Real transcription when OPENAI_API_KEY is in the shell's env
+  // (it costs $0.003/min); otherwise a canned line, so the states can be seen.
+  if (path === '/api/dictate' && req.method === 'POST') {
+    if (!authed) { res.writeHead(401, { 'Content-Type': 'application/json' }).end('{"ok":false}'); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const audio = Buffer.concat(chunks);
+    const reply = (status: number, body: unknown) => {
+      res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(body));
+    };
+    console.log(`  dictation: ${(audio.length / 1024).toFixed(0)} KB of ${req.headers['content-type']}`);
+    if (!process.env.OPENAI_API_KEY) {
+      await sleep(1200);
+      reply(200, { ok: true, text: 'remind me to send the Welwitch invoice tomorrow morning' });
+      return;
+    }
+    try {
+      const text = await transcribe({ apiKey: process.env.OPENAI_API_KEY, audio, contentType: req.headers['content-type'] });
+      reply(200, { ok: true, text });
+    } catch (err) {
+      reply(err instanceof DictationError ? err.status : 500, { ok: false, error: (err as Error).message });
+    }
     return;
   }
 
