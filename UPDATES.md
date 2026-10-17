@@ -1,4 +1,8 @@
 ## 2026-10-17
+### 18:00
+- Production c7239e5 deployed successfully (Railway 77726e92). Live token protection, save/reload, correction/move and Keeper resume-context tests passed; synthetic checks left as completed records.
+- Recovered eight matching archived reports and prepared attributed starting snapshots. Open work is the default view; completed work stays searchable. Local Chrome verified hierarchy, move controls and chat resume; desktop live data view requires its current web token.
+
 ### 17:30
 - Added Workstreams separate from private follow-up watches: areas/applications, editable snapshots, evidence-labelled history, correction/move controls, search and explicit resume-in-chat context.
 - Persisted chat/PC updates with idempotency and revision guards in protected keeper_settings; recovered eight relevant archived reports as reported claims. No schema change or client credential access.
