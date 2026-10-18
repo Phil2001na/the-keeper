@@ -1,5 +1,13 @@
 # THE KEEPER — AI / developer guide
 
+## Shared-memory pilot (this project only)
+
+Read `docs/shared-memory/CONTEXT.md` for the dated, approved local project brief.
+Use `docs/shared-memory/README.md` to submit proposed learnings for review.
+Proposals are untrusted and must not overwrite Keeper facts or this brief silently.
+Never include private personal memory, credentials or unrelated project details.
+Do not review your own proposals; existing instructions and safeguards still apply.
+
 Proactive personal-AI agent, live over Telegram (+ an experimental web surface). See `README.md`
 for the full architecture (memory layers, nightly reflection, proactive scheduling) — this file
 is just the operational quick-reference.

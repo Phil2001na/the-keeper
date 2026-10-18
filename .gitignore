@@ -4,3 +4,5 @@ node_modules/
 dist/
 .DS_Store
 pc-agent/logs/
+docs/shared-memory/inbox/
+docs/shared-memory/reviews/

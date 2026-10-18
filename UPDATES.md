@@ -1,8 +1,62 @@
+## 2026-10-18
+
+### 00:58
+- Work page redesigned as a simple timeline: each update is one "what we did / found" line plus a "↳ why it stopped" line, grouped by day with times; tap an entry for the full report and correct/move. Restyled with the app's own glass, galaxy field, header and theme tokens.
+- Added background two-line summaries (`src/workstreams/brief.ts`, digest model, batched, stored as `brief` on each event; text corrections clear them). Session-closed and snapshot bookkeeping is summarised without a model call. 56 tests and typecheck pass; checked in `npm run ui`. Deployed as a19205b (pushed to main).
+
+### 00:42
+- Verified completed bypass-money-v1 deployment: receipt 2026-10-18 00:40:45, replacement PC-agent PID 70720 running, scheduled task running, boot marker present. This follow-up runs on the replacement agent without non-spending approvals.
+- Post-restart isolated agent/relay test passed (silent non-spending, purchase denied, subscription approved once, paid booking expired); all five reviewed file hashes match. No real monetary transaction attempted. Spending remains an instruction plus best-effort interception, not a transaction firewall; EDU/security exceptions remain. Railway unchanged.
+
+### 00:40
+- Approved idle-only bypass-money-v1 deployment helper started (PID 48364), targeting PC-agent PID 53576. It waits for active turns, verifies file hashes, restarts the scheduled task and reruns isolated E2E. Live activation is pending; inspect artifacts/approval-rollout/receipt.json before claiming success.
+- Final optional matcher/follow-up refinements were permission-denied and not applied. The deployed candidate is the version validated by 63 tests, TypeScript and E2E.
+
+
+### 00:00
+- Non-spending bypass validation passed: 63/63 tests, TypeScript and isolated real-agent/relay simulation (purchase denied, subscription approved once, booking expired). No real external transaction executed.
+- Updated rollout helper to verify bypass-money-v1 and avoid unsolicited follow-up messages. Live restart pending per-action deployment approval.
+
 ## 2026-10-17
+
+### 23:34
+- Implemented Philip-authorized non-spending bypass across PC engines/crew; monetary calls retain per-call approval. Codex filesystem sandbox removed; EDU safeguards remain.
+- Validation and live activation pending; opaque spending requires agent compliance.
+
+
+### 18:05
+- Approval policy validation: all 66 tests and TypeScript passed. Real PC agent + HTTP relay with a simulated engine verified silent inspection, explicit application/email/purchase/delete/security approval, per-call decisions and expiry denial; no real external mutation was performed.
+- Idle-only PC-agent rollout helper started (PID 14092), with reviewed-file hashes and a pre-policy entry-point backup. It waits for every active turn, restarts the scheduled task, checks routine-v1 boot, reruns isolated E2E, and resumes this session to verify/report. Live activation is pending that idle window; Railway is unchanged.
+
+### 18:01
+- Final Workstreams release b7eb8eb is live (Railway ad254d91 SUCCESS); health, page/script delivery and service-worker hash verified. Live save/reload, correction/move, selected-context AI reply and synthetic report routing/deduplication passed; unauthorized data requests return 401.
+- Local Chrome checked hierarchy, reported labels, correction/move and resume banner. Live desktop data view requires the current web token. Deployment used an isolated Workstreams-only worktree; separate memory-pilot and concurrent PC-approval edits were excluded.
+
+### 18:00
+- Production c7239e5 deployed successfully (Railway 77726e92). Live token protection, save/reload, correction/move and Keeper resume-context tests passed; synthetic checks left as completed records.
+- Recovered eight matching archived reports and prepared attributed starting snapshots. Open work is the default view; completed work stays searchable. Local Chrome verified hierarchy, move controls and chat resume; desktop live data view requires its current web token.
+
+
+### 17:57
+- Added a shared PC-agent approval policy: known reads/research and non-protected project-local edits proceed; consequential and opaque operations require a one-call decision. Claude pre-tool hooks override engine allow rules; Codex uses untrusted command mode and a narrow MCP allowlist.
+- Removed automatic approval of arbitrary MCP tools based on name; prompts identify action/target and preserve deny/expiry/reconnect delivery. Added regression tests; validation and idle-safe rollout in progress.
+
+### 17:30
+- Added separate user-facing Workstreams: area/application hierarchy, editable snapshots, attributed event history, inbox, corrections/moves, and explicit chat resume context. Reports remain reported claims.
+- Durable versioned storage uses compare-and-swap in keeper_settings; internal watch threads and chat remain separate. Added automatic chat/PC result capture and job routing. Local/deployment validation in progress.
+
+### 15:40
+- Committed the multi-Prime work (15:31) and the pc-agent standby detection (10:15) as 164e6f5 and pushed to main; the shared-memory pilot (15:15) stays uncommitted. Staged tree checked on its own: typecheck clean, 52/52 tests.
+- Railway deploy fc611909 SUCCESS; the served `app.js` is byte-identical to the commit. The live PC agent still needs a restart to pick up `lanes.mjs` / `pcState.mjs`.
+
 ### 15:31
 - **Up to three Meeseeks Primes at once.** `delegate_to_prime` / `/pc/delegate` start a new Prime per goal ("Meeseeks Prime", "II", "III"), or continue an idle one by id (`prime` / `primeId`). The limit (`MAX_PRIMES` = 3, `PC_MAX_PRIMES` can only lower it) is checked and claimed in one synchronous `startJob`, so a fourth cannot start; Primes that lost contact keep their slot until they return or are let go (stopping a lost session now releases it). Each Prime keeps its own crew (3 workers each); solo Meeseeks are never limited by Primes.
 - PC agent backstop (`pc-agent/lanes.mjs`): Primes get their own lane capped at 3 (running + idle) and no longer use the `maxParallel` slots, so Meeseeks and workers still start while 3 Primes work, and a Prime's follow-up is no longer closed for lack of room. Prime brief now says other Primes may share the folder.
 - PC sheet shows every Prime with its own crew, "Primes n/3", the slots in the start form, a full-limit note with Start disabled for Prime only, and "Let go" on lost sessions. `/pc/state` carries `primes`. New tests (crew + `test/lanes.test.ts`); `npm test` 56/56, typecheck clean, checked in `npm run ui`. Not committed or deployed; the live PC agent needs a restart to pick up its part.
+
+### 15:15
+- Added a project-only shared-memory pilot: curated context for Claude Code/Codex, local proposal inbox and separate review records. No automatic fact writes, credentials, network sync or production changes.
+- Preserved existing instructions with brief pointers; documented privacy exclusions, manual Keeper reconciliation, stale-snapshot checks and same-user/OneDrive limitations. Typecheck clean; all 50 tests passed (4 pilot tests); CLI read/list smoke checks passed. No commit or deploy.
 
 ### 13:22
 - Reviewed the 10:55 dictation work (route behind the web token, key stays server-side, size/type checks before OpenAI, upstream error detail kept out of the response, service worker leaves the POST alone). Typecheck clean, `npm test` 46/46. Committed only the dictation files and pushed to main for the Railway deploy; the pc-agent standby work (10:15) stays uncommitted.

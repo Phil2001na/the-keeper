@@ -18,6 +18,8 @@ import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
 import { readPcState, startNote, createBrowserWatch, screenshotNote, ffmpegReason } from './pcState.mjs';
 import { primeLimit, refusal } from './lanes.mjs';
+import { codexAsk } from './codexApproval.mjs';
+import { approvalPolicy, claudeApprovalHook, APPROVAL_BRIEF, POLICY_VERSION } from './approvalPolicy.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = readEnv(join(HERE, '..', '.env'));
@@ -186,19 +188,6 @@ function reportInterrupted() {
 
 // ─── What Philip sees on his phone when Claude asks ─────────────────────────
 
-function describe(tool, input) {
-  const s = (v, n = 600) => String(v ?? '').slice(0, n);
-  switch (tool) {
-    case 'Bash': return `Run a command:\n${s(input.command)}${input.description ? `\n(${s(input.description, 200)})` : ''}`;
-    case 'Write': return `Create/overwrite a file:\n${s(input.file_path, 300)}`;
-    case 'Edit': case 'MultiEdit': return `Edit a file:\n${s(input.file_path, 300)}`;
-    case 'WebFetch': return `Fetch a web page:\n${s(input.url, 300)}`;
-    default: {
-      const pretty = tool.startsWith('mcp__') ? tool.split('__').slice(1).join(' → ') : tool;
-      return `Use ${pretty}:\n${s(JSON.stringify(input), 700)}`;
-    }
-  }
-}
 
 function stepText(block) {
   const i = block.input ?? {};
@@ -243,7 +232,7 @@ function screenshotB64() {
 // The standing rules every session carries in its system prompt, so the task
 // itself can stay a goal. Whoever starts a session (the Keeper, Prime) states
 // what is wanted; how to get there is the session's own call.
-const BRIEF = `You were started by Philip's Keeper (his personal AI). He is NOT at the PC.
+const BRIEF = APPROVAL_BRIEF + `\nYou were started by Philip's Keeper (his personal AI). He is NOT at the PC.
 - You are given a goal, not a procedure. Work out the how yourself and use sensible defaults instead of stopping to ask.
 - Logins: his Chrome and Google account are signed in. Use an existing session, or "Sign in with Google" / the saved login, before calling a site locked. Stop and report only when it truly needs him: a password nobody saved, a 2FA code, a security prompt. Never invent, guess or print credentials.
 - Browser work: find your way by reading the page (text, accessibility tree) rather than screenshots. Take a screenshot only as evidence of something wrong, save it to a file, and cite the path; do not pile images into your context.
@@ -251,10 +240,8 @@ const BRIEF = `You were started by Philip's Keeper (his personal AI). He is NOT 
 
 // How risky actions are gated depends on the engine.
 const GATE = {
-  claude: `
-- Anything risky (sending messages or emails, deleting real data, payments, production deploys, anything on EDU prod) goes to his phone for Approve/Deny automatically. Just do it the normal way.`,
-  codex: `
-- You work in a sandbox: your project folder is writable and the network is open. Anything beyond it goes to his phone for Approve/Deny automatically, so just do it the normal way. For irreversible or outward-facing actions (sending messages or emails, deleting real data, payments, production deploys), request the escalation rather than finding a way around the sandbox.`,
+  claude: `\n- Non-spending tool permissions pass automatically except strict projects and EDU production actions, which always need explicit Philip approval. Request a per-call permission decision before spending money, including through generic scripts.`,
+  codex: `\n- Full filesystem/network access is enabled. Non-spending permission requests pass automatically except strict projects and EDU production actions, which always need explicit Philip approval. Before spending money, explicitly request tool escalation with the merchant, total/currency and recurring charges in the justification.`,
 };
 
 // Only added in the persistent mode. A one-task session never sees it.
@@ -298,9 +285,10 @@ const CREW_TOOLS = ['spawn_worker', 'crew_status', 'wait_for_crew', 'stop_worker
 
 async function runClaude(job, proj, me, hooks) {
   const canUseTool = async (toolName, input, { signal }) => {
-    if (CREW_TOOLS.includes(toolName)) return { behavior: 'allow', updatedInput: input };
+    const policy = approvalPolicy(toolName, input, { root: proj.path, strict: proj.strict });
+    if (policy.allow) return { behavior: 'allow', updatedInput: input };
     const approvalId = randomUUID();
-    const text = describe(toolName, input);
+    const text = policy.summary;
     const decision = new Promise((resolve) => {
       // Kept with its wording: every poll lists what is still waiting on him,
       // so a relay that restarted asks again instead of leaving this hanging.
@@ -313,7 +301,7 @@ async function runClaude(job, proj, me, hooks) {
     log('approval', job.id, toolName, d.allow ? 'ALLOW' : 'DENY');
     return d.allow
       ? { behavior: 'allow', updatedInput: input }
-      : { behavior: 'deny', message: `Philip denied this from his phone${d.note ? ` (${d.note})` : ''}. Don't retry it; find another way or explain in your summary.` };
+      : { behavior: 'deny', message: `This action was denied${d.note ? ` (${d.note})` : ''}. Do not repeat it through another tool, script or worker. Continue independent safe work or report the blocker.` };
   };
 
   let result = '';
@@ -325,9 +313,9 @@ async function runClaude(job, proj, me, hooks) {
       ...(job.resume ? { resume: job.resume } : {}),
       ...(job.model ? { model: job.model } : {}),
       abortController: me.abort,
-      // strict projects (EDU prod) ask for everything that isn't already allowed;
-      // everything else uses auto mode, where only genuinely risky actions ask.
-      permissionMode: proj.strict ? 'default' : 'auto',
+      // Inspect every tool; non-spending calls pass, possible spending asks.
+      permissionMode: 'default',
+      hooks: { PreToolUse: [{ hooks: [async (h) => claudeApprovalHook(approvalPolicy, h.tool_name, h.tool_input, { root: proj.path, strict: proj.strict })] }] },
       canUseTool,
       settingSources: ['user', 'project', 'local'],
       ...(job.role === 'prime'
@@ -389,38 +377,6 @@ function codexStep(item) {
 /** Codex items whose output comes from a tool that may be driving the browser. */
 const CODEX_TOOL_ITEMS = new Set(['functionCallOutput', 'mcpToolCall', 'dynamicToolCall']);
 
-const RISKY_TOOL =/send|delete|remove|trash|pay|purchase|buy|transfer|deploy|publish|post|submit|email|message|drop/i;
-
-/** What his phone shows for a Codex request, and how to answer it either way. */
-function codexAsk(method, p) {
-  const s = (v, n = 600) => String(v ?? '').slice(0, n);
-  const why = p.reason ? `\n(${s(p.reason, 300)})` : '';
-  switch (method) {
-    case 'item/commandExecution/requestApproval':
-      return { tool: 'Bash', text: `Run a command:\n${s(p.command ?? (p.commandActions ?? []).map((a) => a.command).join(' && '))}${why}`, yes: { decision: 'accept' }, no: { decision: 'decline' } };
-    case 'item/fileChange/requestApproval':
-      return { tool: 'Edit', text: `Change files${p.grantRoot ? ` under ${s(p.grantRoot, 300)}` : ''}${why || ' outside its project folder'}`, yes: { decision: 'accept' }, no: { decision: 'decline' } };
-    case 'item/permissions/requestApproval':
-      return { tool: 'Permissions', text: `Get extra permissions: ${s(JSON.stringify(p.permissions), 400)}${why}`, yes: { permissions: p.permissions ?? {}, scope: 'turn' }, no: { permissions: {}, scope: 'turn' } };
-    case 'mcpServer/elicitation/request': {
-      const yes = { action: 'accept', content: {}, _meta: null };
-      const no = { action: 'decline', content: null, _meta: null };
-      // Codex asks before every MCP tool call in this mode. Like Claude's auto mode, ordinary
-      // tool use (the crew, browser and desktop tools) just runs; only a tool whose name says
-      // it sends, deletes, pays or publishes something goes to his phone.
-      const tool = String(p.message ?? '').match(/run tool "([^"]+)"/)?.[1] ?? '';
-      if (p._meta?.codex_approval_kind === 'mcp_tool_call' && !RISKY_TOOL.test(tool)) return { auto: true, yes };
-      return { tool: `mcp ${s(p.serverName, 60)}`, text: `${s(p.serverName, 60)}${tool ? ` → ${tool}` : ''}: ${s(p.message, 400)}${p._meta?.tool_params ? `
-${s(JSON.stringify(p._meta.tool_params), 400)}` : ''}`, yes, no };
-    }
-    case 'execCommandApproval':
-      return { tool: 'Bash', text: `Run a command:\n${s((p.command ?? []).join(' '))}${why}`, yes: { decision: 'approved' }, no: { decision: { denied: { rejection: 'Philip denied this from his phone.' } } } };
-    case 'applyPatchApproval':
-      return { tool: 'Edit', text: `Change files: ${s(Object.keys(p.fileChanges ?? {}).join(', '), 400)}${why}`, yes: { decision: 'approved' }, no: { decision: { denied: { rejection: 'Philip denied this from his phone.' } } } };
-    default:
-      return null;
-  }
-}
 
 function runCodex(job, proj, me, hooks) {
   if (!existsSync(CODEX_JS)) return Promise.reject(new Error(`Codex is not installed where the agent looks (${CODEX_JS}). Set codexJs in projects.json.`));
@@ -458,14 +414,16 @@ function runCodex(job, proj, me, hooks) {
     }, { once: true });
 
     const approve = async (m) => {
-      const ask = codexAsk(m.method, m.params ?? {});
+      const ask = codexAsk(m.method, m.params ?? {}, proj);
       if (ask?.auto) {
         send({ id: m.id, result: ask.yes });
         return;
       }
       if (!ask) {
         // A question we cannot put to him as a yes/no (free-text input): answer empty, never hang.
-        send({ id: m.id, result: m.method === 'item/tool/requestUserInput' ? { answers: {} } : {} });
+        send(m.method === 'item/tool/requestUserInput'
+          ? { id: m.id, result: { answers: {} } }
+          : { id: m.id, error: { code: -32601, message: 'Unsupported approval request; no permission granted.' } });
         return;
       }
       const approvalId = randomUUID();
@@ -527,9 +485,9 @@ function runCodex(job, proj, me, hooks) {
       send({ method: 'initialized' });
       const common = {
         cwd: proj.path,
-        approvalPolicy: proj.strict ? 'untrusted' : 'on-request',
+        approvalPolicy: 'untrusted',
         approvalsReviewer: 'user',
-        sandbox: 'workspace-write',
+        sandbox: 'danger-full-access',
         developerInstructions: systemBrief(job, 'codex'),
         ...(job.model ? { model: job.model } : {}),
       };
@@ -541,8 +499,8 @@ function runCodex(job, proj, me, hooks) {
       const turn = await call('turn/start', {
         threadId,
         input: [{ type: 'text', text: job.task, text_elements: [] }],
-        // Network on inside the project sandbox: web work should not need his OK, writes elsewhere should.
-        sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+        // No filesystem sandbox approval prompts; spending still requires explicit escalation.
+        sandboxPolicy: { type: 'dangerFullAccess' },
       });
       turnId = turn?.turn?.id ?? turnId;
     })().catch((e) => finish(reject, e));
@@ -702,6 +660,7 @@ setInterval(() => {
 // ─── Poll loop ──────────────────────────────────────────────────────────────
 
 async function loop() {
+  log(`Approval policy ${POLICY_VERSION}`);
   log(`PC agent up → ${BASE} | projects: ${Object.keys(projects()).length} | parallel: ${MAX_PARALLEL} | primes: ${MAX_PRIMES}`);
   reportInterrupted();
   restoreIdle();
