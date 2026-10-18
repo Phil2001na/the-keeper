@@ -13,6 +13,20 @@
   const stream = $('stream');
 
   let token = localStorage.getItem('keeper_token') || '';
+  let workstreamId = new URLSearchParams(location.search).get('workstream');
+  if (workstreamId) {
+    const banner = document.createElement('div');
+    banner.style.cssText = 'padding:8px 14px;display:flex;gap:12px;align-items:center;font-size:12px';
+    banner.textContent = 'Chatting in selected workstream';
+    const leave = document.createElement('button'); leave.textContent = 'Switch to general chat';
+    leave.onclick = () => { workstreamId = null; history.replaceState(null,"","/"); banner.remove(); };
+    banner.append(leave); document.getElementById('stream').before(banner);
+    fetch('/api/workstreams', { headers: { Authorization: 'Bearer ' + token } })
+      .then(r => r.ok ? r.json() : null).then(data => {
+        const selected = data?.streams?.find(s => s.id === workstreamId);
+        if (selected) banner.firstChild.textContent = 'Workstream: ' + selected.title;
+      }).catch(() => {});
+  }
   let es = null;
   let lastRole = null;
   // Newest message on screen, and what the last few said — catchUp() fills in
@@ -1114,7 +1128,7 @@
       const res = await fetch('/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-        body: JSON.stringify({ text, files }),
+        body: JSON.stringify({ text, files, workstreamId }),
       });
       delivered = res.ok;
       if (!res.ok) {

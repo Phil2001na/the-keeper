@@ -131,6 +131,8 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  // Workstreams are live-only; never replace the cached chat shell or cache private records.
+  if (url.pathname === '/workstreams' || url.pathname === '/workstreams.js' || url.pathname.startsWith('/api/workstreams')) return;
   // SSE must stream straight through; /send is a POST and already excluded.
   if (url.pathname === '/events' || url.pathname === '/send') return;
   // The remote-login page is live-only, and caching its navigation would overwrite the app shell at '/'.

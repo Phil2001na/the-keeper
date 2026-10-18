@@ -1,3 +1,4 @@
+import { captureReport } from '../workstreams/service.js';
 import { bus } from './bus.js';
 import { pcEvents, relaysThroughKeeper, type PcEvent } from './pcBridge.js';
 import { interactions } from '../db/repositories.js';
@@ -18,6 +19,10 @@ export function attachPcToKeeper(): void {
     if (e.type !== 'job') return;
     const { job, event } = e;
     const ts = new Date(event.at).toISOString();
+    if (['done', 'turn_done', 'error'].includes(event.kind)) {
+      void captureReport(job, event.text || `Session ended: ${job.status}; no report supplied.`, event.at)
+        .catch(err => console.error('[workstreams] report persistence failed', err));
+    }
     const say = (content: string) => {
       bus.publish({ type: 'message', role: 'agent', content, ts, source: 'inbound:pc' });
       void interactions

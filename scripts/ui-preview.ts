@@ -1,3 +1,5 @@
+import { workstreamApi } from '../src/web/workstreams.js';
+import { empty, createStream, appendEvent } from '../src/workstreams/model.js';
 /**
  * Local preview harness for the web surface.
  *
@@ -24,6 +26,27 @@ import { DictationError, transcribe } from '../src/web/dictate.js';
 const WEB = fileURLToPath(new URL('../src/web/', import.meta.url));
 const PORT = Number(process.env.UI_PORT ?? 5173);
 const TOKEN = '1234';
+let workState = empty();
+const area = createStream(workState, {title:'Job Search'});
+const application = createStream(workState, {title:'Supabase application', parentId:area.id});
+createStream(workState, {title:'Roblox UGC sales'});
+// A realistic thread: two days, briefs on most entries, one left without so the
+// first-sentence fallback is visible too.
+const sample: [string, string, string, number, import('../src/workstreams/model.js').Brief | undefined][] = [
+  [area.id, 'Workstreams setup', 'Found the job-scout automation in corporate life/job-scout. It reads the daily opportunity brief and prepares applications, but only submits after an explicit "send N". The Supabase Support Engineer listing is still awaiting choose/skip; KoBold is prepared but has conflicting employment dates.', 30, {what:'Found the job-scout automation; it prepares applications but waits for "send N"', stop:'Supabase listing still needs your choose/skip', state:'stopped'}],
+  [area.id, 'agent:Meeseeks Prime', 'Three of the five active listings look worth applying to now: Supabase (best skills match), Sticker Mule (a stretch), and the Centre for Effective Altruism (deadline October 22, weaker fit). The two Micro1 roles need official details checked first because key terms conflict.\n\nNo applications were submitted.', 26, {what:'Reviewed five listings — Supabase, Sticker Mule and CEA worth applying to', stop:'Micro1 terms conflict; needs checking first', state:'info'}],
+  [application.id, 'agent:Meeseeks Prime II', 'Supabase is still open and looks like a match, but **the application was not submitted**. The form needs your passport country and confirmation you are over 18, a "Why Supabase?" answer, a resume choice, and a vacancy-source option (ChatGPT is not listed).', 24, {what:'Opened the Supabase form — still open and a good match', stop:'Needs passport country, motivation and a vacancy source', state:'stopped'}],
+  [application.id, 'agent:Meeseeks Prime II', 'Supabase was **not submitted**. The PC entered Modern Standby and Chrome froze; someone needs to wake it physically before Prime II can continue. He used the confirmed September 2024 start date and drafted the motivation.', 23, {what:'Drafted the motivation and fixed the September 2024 start date', stop:'PC went into standby and Chrome froze', state:'stopped'}],
+  [application.id, 'Philip', 'Passport country is Namibia, found it through ChatGPT.', 22, {what:'You confirmed Namibia as passport country and ChatGPT as the source', stop:null, state:'info'}],
+  [application.id, 'agent:Meeseeks Prime II', 'Supabase still has not been submitted. Prime II tried again, but Chrome stopped responding while the PC was awake but locked, so he stopped without submitting or touching the other applications.', 2, undefined],
+];
+for (const [streamId, source, text, hoursAgo, brief] of sample) {
+  const e = appendEvent(workState,{streamId,kind:source.startsWith('agent:')?'result':'update',text,source,certainty:'reported'});
+  e.at = new Date(Date.now() - hoursAgo * 3600_000).toISOString();
+  if (brief) e.brief = brief;
+}
+Object.assign(application, {status:'waiting', where:'Form is filled except the vacancy-source field, which has no truthful option.', next:'Ask Supabase how to answer the source field, then submit', blocked:'Source field has no ChatGPT/Other option', owner:'Philip'});
+const previewWorkStore = {readState:async()=>structuredClone(workState),mutate:async <T>(fn:(s:typeof workState)=>T)=>{const draft=structuredClone(workState);const result=fn(draft);draft.revision++;workState=draft;return result;}};
 const PREVIEW_VERSION = `preview-${Date.now().toString(36)}`;
 
 /**
@@ -258,6 +281,14 @@ const server = createServer(async (req, res) => {
   const bearer = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim();
   const authed = (bearer || url.searchParams.get('t') || '') === TOKEN;
 
+  if (path === '/workstreams' || path === '/workstreams.js') {
+    res.writeHead(200, {'Content-Type':path.endsWith('.js')?'application/javascript':'text/html'});
+    res.end(readFileSync(join(WEB,path.endsWith('.js')?'workstreams.js':'workstreams.html')));return;
+  }
+  if (path === '/api/workstreams') {
+    if(!authed){res.writeHead(401).end();return;}
+    await workstreamApi(req,res,previewWorkStore);return;
+  }
   if (path === '/events') {
     if (!authed) { res.writeHead(401).end(); return; }
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });

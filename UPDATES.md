@@ -1,5 +1,10 @@
 ## 2026-10-18
 
+### 13:24
+- Finished the project-only shared-memory pilot: reject mismatched record IDs and claimed self-review; preserve manual review, stale-snapshot rejection and no automatic fact promotion.
+- Strict EDU approval now overrides non-spending autonomy across Claude/Codex; monetary, denial/expiry, security and production safeguards retained. No deployment or EDU production action.
+- Integrated all four fetched origin/main Workstreams commits (the previously reported three plus the header-button fix) on a review branch; unrelated local work preserved in a named Git stash.
+
 ### 00:58
 - Work page redesigned as a simple timeline: each update is one "what we did / found" line plus a "↳ why it stopped" line, grouped by day with times; tap an entry for the full report and correct/move. Restyled with the app's own glass, galaxy field, header and theme tokens.
 - Added background two-line summaries (`src/workstreams/brief.ts`, digest model, batched, stored as `brief` on each event; text corrections clear them). Session-closed and snapshot bookkeeping is summarised without a model call. 56 tests and typecheck pass; checked in `npm run ui`. Deployed as a19205b (pushed to main).
