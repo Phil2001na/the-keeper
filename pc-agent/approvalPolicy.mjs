@@ -6,7 +6,7 @@ const money = /purchas|payment|\bpay\b|\bbuy\b|checkout|check_out|subscri|paid[ 
 export function approvalPolicy(tool, input = {}, context = {}) {
   const i = input && typeof input === 'object' ? input : {};
   // Inspect action-bearing fields, never unrelated secrets or arbitrary file contents.
-  const action = [tool, i.command, i.code, i.action, i.operation, i.url, i.message].filter(Boolean).join(' ');
+  const action = [tool, i.command, i.cmd, i.code, i.script, i.action, i.operation, i.url, i.message, i.reason, i.justification].filter(Boolean).join(' ');
   // Strict projects fail closed, including reads and opaque tools. Cross-project
   // targeting must not escape the exception just because the session root is Keeper.
   const targets = [context.root, action, i.file_path, i.path, i.target, i.host,
@@ -14,7 +14,7 @@ export function approvalPolicy(tool, input = {}, context = {}) {
   const edu = /\bedu(?:[-_ ](?:frontend|backend)(?:[-_ ]1[.]0)?)?\b|welwitch/i;
   if (context.strict || targets.some(v => typeof v === 'string' && edu.test(v))) {
     return { allow: false, reason: 'Strict/EDU action requires explicit Philip approval',
-      summary: `Philip approval required: strict/EDU action (${compact(tool, 70)}).\n${compact(i.command || i.action || i.file_path || i.target || context.root, 300)}\nConfirm the concrete action and target; retain all production safeguards and spending approval details when applicable. This call only.` };
+      summary: `Philip approval required: strict/EDU action (${compact(tool, 70)}).\n${compact(i.command || i.action || i.file_path || i.target || context.root, 300)}\nConfirm the concrete action and target; retain all production safeguards.${money.test(action) ? ` Spending also requires merchant/payee, item/service, exact total/currency and recurring charges: ${compact(i.merchant || i.target, 80)}; ${compact(i.amount, 30)} ${compact(i.currency, 10)}. Resolve unknown costs before requesting approval.` : ''} This call only.` };
   }
   if (!money.test(action)) return { allow: true, reason: 'Philip authorized non-spending bypass' };
   const details = [i.target || i.merchant || i.recipient || i.to || i.url,

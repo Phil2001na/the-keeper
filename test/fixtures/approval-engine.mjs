@@ -2,7 +2,7 @@
 import { createInterface } from 'node:readline';
 const send = (m) => process.stdout.write(JSON.stringify(m) + '\n');
 const outcomes = [];
-const tools = ['take_snapshot', 'submit_application', 'send_email', 'purchase', 'delete_file', 'change_security_settings', 'subscription', 'paid_booking'];
+const tools = ['take_snapshot', 'submit_application', 'send_email', 'purchase', 'delete_file', 'change_security_settings', 'subscription', 'paid_booking', 'edu_production_action'];
 let index = 0;
 function request() {
   if (index === tools.length) {
@@ -12,7 +12,7 @@ function request() {
   }
   send({ id: `approval-${index}`, method: 'mcpServer/elicitation/request', params: {
     serverName: 'chrome-devtools', message: `Allow to run tool "${tools[index]}"?`,
-    _meta: { codex_approval_kind: 'mcp_tool_call', tool_params: { target: 'SIMULATED recipient', body: 'SIMULATED content', amount: tools[index] === 'purchase' || tools[index] === 'subscription' || tools[index] === 'paid_booking' ? 10 : undefined, currency: 'NAD' } },
+    _meta: { codex_approval_kind: 'mcp_tool_call', tool_params: { target: tools[index] === 'edu_production_action' ? 'SIMULATED recipient EDU-BACKEND-1.0 production' : 'SIMULATED recipient', body: 'SIMULATED content', amount: tools[index] === 'purchase' || tools[index] === 'subscription' || tools[index] === 'paid_booking' ? 10 : undefined, currency: 'NAD' } },
   } });
 }
 createInterface({ input: process.stdin }).on('line', line => {

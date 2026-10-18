@@ -1,5 +1,9 @@
 ## 2026-10-18
 
+### 13:28
+- Final merged-tree validation passed: 68/68 tests, TypeScript, CLI read/list and isolated real-agent/relay simulation (money denial, single-call approval, expiry denial and cross-project EDU denial); no real external action.
+- Added reviewer notes in docs/shared-memory/REVIEW.md. Publishing only the review branch; main and running services remain unchanged. Unrelated helpers preserved in stash f282e2179ad08bbb39c46b30818c66a80fd9ea67; pre-existing .tmp/artifacts retained via local excludes.
+
 ### 13:24
 - Finished the project-only shared-memory pilot: reject mismatched record IDs and claimed self-review; preserve manual review, stale-snapshot rejection and no automatic fact promotion.
 - Strict EDU approval now overrides non-spending autonomy across Claude/Codex; monetary, denial/expiry, security and production safeguards retained. No deployment or EDU production action.

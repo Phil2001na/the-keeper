@@ -77,3 +77,5 @@ not the full inbox. Local CLI status alone does not mean Keeper has learned it.
 - This is local-only. Offline use works; Keeper will not know a proposal exists
   until someone explicitly brings it for review. Deletions/corrections require
   deliberate edits to this projection; no automatic resurrection/import occurs.
+
+Record IDs must match their filenames and reviews must match their proposals; malformed records fail closed. Matching declared author/reviewer labels cannot self-review. These checks do not authenticate identities or prevent an agent from lying about its label; the prohibition on reviewing your own proposals still applies to every agent.

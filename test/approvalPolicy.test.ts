@@ -50,7 +50,7 @@ test('strict EDU exception overrides bypass in both engines and every Codex appr
 });
 
 test('EDU targeting from non-strict sessions still asks, including patches and legacy commands', () => {
-  for (const input of [{ command: 'ssh EDU-BACKEND-1.0 pm2 restart app' },
+  for (const input of [{ command: 'ssh EDU-BACKEND-1.0 pm2 restart app' }, { cmd: 'ssh EDU-FRONTEND pm2 restart app' },
     { file_path: 'C:/EDU-FRONTEND/app.ts' }, { target: 'Welwitch production' }]) {
     assert.equal(policy('generic', input).allow, false);
   }
@@ -58,4 +58,12 @@ test('EDU targeting from non-strict sessions still asks, including patches and l
   assert.equal(codexAsk('execCommandApproval', { command: ['ssh', 'EDU-BACKEND-1.0', 'pm2', 'restart'] }).auto, false);
   assert.equal(codexAsk('item/fileChange/requestApproval', { grantRoot: 'C:/EDU-FRONTEND' }).auto, false);
   assert.equal(codexAsk('mcpServer/elicitation/request', { serverName: 'unknown', message: 'opaque request' }).auto, undefined);
+});
+
+test('EDU spending keeps transaction details mandatory', () => {
+  const d = policy('purchase', { target: 'EDU vendor', amount: 100, currency: 'NAD' });
+  assert.equal(d.allow, false);
+  assert.match(d.summary, /100 NAD/);
+  assert.match(d.summary, /recurring charges/);
+  assert.equal(policy('exec_command', { cmd: 'curl https://shop/checkout' }).allow, false);
 });

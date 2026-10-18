@@ -43,7 +43,7 @@ pc.pcEvents.on('event', e => {
       } else pc.decide(e.approval.id, false);
     }
     if (e.type === 'job' && e.event.kind === 'done') {
-      assert.equal(requests, 3, 'only three spending actions ask');
+      assert.equal(requests, 4, 'three spending actions and the EDU production action ask');
       assert.deepEqual(JSON.parse(e.event.text!), [
         { tool: 'take_snapshot', action: 'accept' },
         { tool: 'submit_application', action: 'accept' },
@@ -53,6 +53,7 @@ pc.pcEvents.on('event', e => {
         { tool: 'change_security_settings', action: 'accept' },
         { tool: 'subscription', action: 'accept' },
         { tool: 'paid_booking', action: 'decline' },
+        { tool: 'edu_production_action', action: 'decline' },
       ]);
       settle();
     }
@@ -67,7 +68,7 @@ const poll = setInterval(() => {
 const deadline = setTimeout(() => fail(new Error(`E2E timeout: ${output.slice(-2000)}`)), 90_000);
 try {
   await done;
-  console.log('PASS: non-spending calls silent; purchase denied; subscription approved once; paid booking expired/denied. All actions simulated.');
+  console.log('PASS: non-spending calls silent; purchase denied; subscription approved once; paid booking expired/denied; cross-project EDU production action denied. All actions simulated.');
 } finally {
   clearInterval(poll); clearTimeout(deadline); child.kill(); server.closeAllConnections(); server.close();
 }
