@@ -79,6 +79,10 @@ separate public routes by `server.ts`, which holds them in memory and ETags them
 - **`backdrop-filter` is fenced twice**: `data-glass=off` below a threshold,
   and only on `#stream`'s last 4 children. A long transcript would otherwise
   stack dozens of blur layers and drop frames on mobile.
+- **Read-aloud (`src/web/speak.ts`) is tap-only by design** — no auto-play. The
+  page primes one shared `<audio>` with a silent clip inside the tap (iOS needs
+  the gesture); its `ended`/`error` handlers must ignore that primer or they
+  cancel the fetch it was priming for.
 - Icons and splash screens are **generated** (`npm run icons`), not hand-made.
   Edit the constants in `scripts/gen-icons.ts` and re-run.
 

@@ -1,5 +1,9 @@
 ## 2026-10-18
 
+### 18:35
+- Web read-aloud: a "listen" button on every Keeper reply (next to copy) voices it via OpenAI `gpt-4o-mini-tts` (voice `ash`; `TTS_MODEL`/`TTS_VOICE` override). New `POST /api/speak` behind the web token; key stays server-side. Markdown is turned into speakable prose (code skipped, URLs dropped, capped at 4096 chars). Tap-only: no auto-play, one voice at a time, replays use cached audio.
+- `npm run ui` serves a tone instead of real speech unless OPENAI_API_KEY is in the shell. 75/75 tests (7 new), typecheck and a browser check of loading/playing/stop/replay in the preview passed; no live OpenAI call made.
+
 ### 14:13
 - Philip explicitly authorized review-branch merge/deployment and approval-policy activation; no EDU production operation is included. Preparing idle-only PC-agent rollout with reviewed hashes and backups.
 - Rollout receipt now records exact commit, old/new process and running scheduled-task state; optional selected-session continuation verifies activation after restart without interrupting an active turn. Updated activation/review notes. Validation: 68/68 tests, TypeScript, isolated EDU/money approval E2E, simulated selected-session continuation and PowerShell syntax check passed; final runtime receipts remain in local artifacts.

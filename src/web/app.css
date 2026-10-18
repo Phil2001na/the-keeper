@@ -1986,7 +1986,8 @@ input[type='range']::-moz-range-thumb {
 }
 
 /* ── copy buttons ─────────────────────────────────────────────────────── */
-.copybtn {
+.copybtn,
+.speakbtn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -2001,12 +2002,15 @@ input[type='range']::-moz-range-thumb {
   transition: color var(--d-2) var(--ease), border-color var(--d-2) var(--ease),
     background var(--d-2) var(--ease), opacity var(--d-2) var(--ease);
 }
-.copybtn:hover {
+.copybtn:hover,
+.speakbtn:hover {
   color: var(--accent-hi);
   border-color: var(--accent-line);
   background: var(--accent-soft);
 }
-.copybtn.copied {
+.copybtn.copied,
+.speakbtn.playing,
+.speakbtn[data-state="loading"] {
   color: var(--accent-hi);
   border-color: var(--accent-line);
 }
@@ -2030,7 +2034,9 @@ input[type='range']::-moz-range-thumb {
 .turn:hover .msg-copy,
 .msg-copy:focus-visible,
 .msg-copy.copied,
-.msg-copy.failed {
+.msg-copy.failed,
+.speakbtn[data-state="loading"],
+.speakbtn.playing {
   opacity: 1;
 }
 @media (hover: none) {

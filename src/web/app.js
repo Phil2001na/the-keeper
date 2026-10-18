@@ -488,6 +488,16 @@
       btn.title = 'copy this message';
       btn.dataset.copy = content;
       stamp.appendChild(btn);
+
+      // Read-aloud, same quiet affordance. Only ever plays on this tap.
+      const say = el('button', 'speakbtn msg-copy',
+        icon('speaker', 12) + '<span class="cb-label">listen</span>');
+      say.type = 'button';
+      say.title = 'read this message aloud';
+      say.setAttribute('aria-label', 'read this message aloud');
+      say.setAttribute('aria-pressed', 'false');
+      say.dataset.say = content;
+      stamp.appendChild(say);
     }
     turn.appendChild(stamp);
 
@@ -890,6 +900,94 @@
     };
 
     copyText(btn.dataset.copy || '').then(flash);
+  });
+
+  // ── read-aloud ────────────────────────────────────────────────────────
+  // Tap "listen" on a reply: the text goes to /api/speak (the server holds
+  // the OpenAI key), MP3 comes back and plays. One voice at a time; tapping
+  // again stops it. The audio is kept per message so a replay costs nothing.
+  //
+  // One shared <audio>, primed inside the tap: iOS only lets an element play
+  // once a gesture has touched it, and the real audio arrives after a fetch.
+  const voice = new Audio();
+  const SILENCE = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+  const spoken = new WeakMap();
+  const say = { btn: null, ctl: null };
+
+  function setSay(btn, state) {
+    btn.dataset.state = state;
+    btn.classList.toggle('playing', state === 'playing');
+    btn.setAttribute('aria-pressed', String(state !== 'idle'));
+    btn.disabled = false;
+    const label = state === 'loading' ? 'voicing…' : state === 'playing' ? 'stop' : 'listen';
+    btn.querySelector('.cb-label').textContent = label;
+    btn.querySelector('use').setAttribute('href', state === 'playing' ? '#i-stop' : '#i-speaker');
+    btn.title = state === 'idle' ? 'read this message aloud' : 'stop reading';
+  }
+
+  function stopSaying() {
+    if (say.ctl) say.ctl.abort();
+    voice.pause();
+    if (say.btn) setSay(say.btn, 'idle');
+    say.btn = null;
+    say.ctl = null;
+  }
+
+  // Only real playback counts: the silent primer ends (or errors) at once,
+  // and must not cancel the fetch it was priming for.
+  const isPlaying = () => !!say.btn && say.btn.dataset.state === 'playing';
+  voice.addEventListener('ended', () => { if (isPlaying()) stopSaying(); });
+  voice.addEventListener('error', () => {
+    if (isPlaying()) { stopSaying(); toast('couldn’t play that'); }
+  });
+
+  async function startSaying(btn) {
+    stopSaying();
+    say.btn = btn;
+    voice.src = SILENCE;
+    voice.play().catch(() => {});
+
+    let url = spoken.get(btn);
+    if (!url) {
+      if (!navigator.onLine) { stopSaying(); toast('offline — read-aloud needs a connection'); return; }
+      setSay(btn, 'loading');
+      const ctl = (say.ctl = new AbortController());
+      try {
+        const res = await fetch('/api/speak', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+          body: JSON.stringify({ text: btn.dataset.say || '' }),
+          signal: ctl.signal,
+        });
+        if (res.status === 401) { stopSaying(); token = ''; enter(); return; }
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          stopSaying();
+          toast(data.error || 'couldn’t voice that');
+          return;
+        }
+        url = URL.createObjectURL(await res.blob());
+        spoken.set(btn, url);
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        stopSaying();
+        toast('no connection — couldn’t voice that');
+        return;
+      }
+      if (say.btn !== btn) return;
+      say.ctl = null;
+    }
+    voice.src = url;
+    setSay(btn, 'playing');
+    voice.play().catch(() => { stopSaying(); toast('tap listen again to play'); });
+  }
+
+  stream.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('.speakbtn');
+    if (!btn) return;
+    e.preventDefault();
+    if (say.btn === btn) stopSaying();
+    else startSaying(btn);
   });
 
   // ══ events ════════════════════════════════════════════════════════════

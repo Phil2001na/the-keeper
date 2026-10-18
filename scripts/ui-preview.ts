@@ -22,6 +22,23 @@ import { generatePdf } from '../src/generate/pdf.js';
 import { generateMarkdown } from '../src/generate/markdown.js';
 import { getFile, putFile, safeFilename } from '../src/web/files.js';
 import { DictationError, transcribe } from '../src/web/dictate.js';
+import { SpeechError, synthesize } from '../src/web/speak.js';
+
+/** A soft fading 330 Hz tone as 16-bit mono WAV — the preview's stand-in voice. */
+function toneWav(seconds: number): Buffer {
+  const rate = 16000;
+  const n = Math.floor(rate * seconds);
+  const buf = Buffer.alloc(44 + n * 2);
+  buf.write('RIFF', 0); buf.writeUInt32LE(36 + n * 2, 4); buf.write('WAVE', 8);
+  buf.write('fmt ', 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(rate, 24); buf.writeUInt32LE(rate * 2, 28); buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34);
+  buf.write('data', 36); buf.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) {
+    const env = Math.sin((Math.PI * i) / n);
+    buf.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 330 * i) / rate) * env * 6000), 44 + i * 2);
+  }
+  return buf;
+}
 
 const WEB = fileURLToPath(new URL('../src/web/', import.meta.url));
 const PORT = Number(process.env.UI_PORT ?? 5173);
@@ -433,6 +450,30 @@ const server = createServer(async (req, res) => {
       reply(200, { ok: true, text });
     } catch (err) {
       reply(err instanceof DictationError ? err.status : 500, { ok: false, error: (err as Error).message });
+    }
+    return;
+  }
+
+  // Read-aloud. Real speech when OPENAI_API_KEY is in the shell's env (about
+  // $0.015/min); otherwise a short tone, so the button's states can be seen.
+  if (path === '/api/speak' && req.method === 'POST') {
+    if (!authed) { res.writeHead(401, { 'Content-Type': 'application/json' }).end('{"ok":false}'); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    let text = '';
+    try { text = String(JSON.parse(Buffer.concat(chunks).toString('utf-8')).text ?? ''); } catch { /* empty */ }
+    console.log(`  read-aloud: ${text.length} chars`);
+    if (!process.env.OPENAI_API_KEY) {
+      await sleep(900);
+      res.writeHead(200, { 'Content-Type': 'audio/wav' }).end(toneWav(1.6));
+      return;
+    }
+    try {
+      const audio = await synthesize({ apiKey: process.env.OPENAI_API_KEY, text });
+      res.writeHead(200, { 'Content-Type': 'audio/mpeg' }).end(audio);
+    } catch (err) {
+      res.writeHead(err instanceof SpeechError ? err.status : 500, { 'Content-Type': 'application/json' })
+        .end(JSON.stringify({ ok: false, error: (err as Error).message }));
     }
     return;
   }

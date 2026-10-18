@@ -26,6 +26,7 @@ import { bus, type KeeperEvent } from './bus.js';
 import { handleRemoteBrowser } from './remoteBrowser.js';
 import { handlePcBridge } from './pcBridge.js';
 import { DictationError, MAX_DICTATION_BYTES, transcribe } from './dictate.js';
+import { SpeechError, synthesize } from './speak.js';
 import {
   attachPushToBus,
   initPush,
@@ -45,6 +46,7 @@ import {
  *  POST /send        send a message to the agent from the browser
  *  GET  /api/snapshot  the keeper's mind: sectors, facts, plans, journal, history
  *  POST /api/dictate    raw audio in, transcript out — for the composer, never sent on
+ *  POST /api/speak      {text} in, MP3 out — read-aloud for one reply, on a tap
  *  GET  /api/push/key           the VAPID public key a browser needs to subscribe
  *  POST /api/push/subscribe     register this device for notifications
  *  POST /api/push/unsubscribe   drop it again
@@ -237,6 +239,38 @@ async function handleDictate(req: IncomingMessage, res: ServerResponse): Promise
     }
     console.error('[web] dictation failed:', err);
     json(res, 500, { ok: false, error: 'transcription failed' });
+  }
+}
+
+/**
+ * Read-aloud: the page sends the reply's text, gets MP3 back. Only ever one
+ * tap on one message — there's no auto-play and nothing is stored.
+ */
+async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    let text = '';
+    try {
+      const body = JSON.parse(await readBody(req)) as { text?: unknown };
+      text = typeof body.text === 'string' ? body.text : '';
+    } catch {
+      throw new SpeechError('bad request', 400);
+    }
+    const audio = await synthesize({
+      apiKey: config.openaiApiKey,
+      model: config.ttsModel,
+      voice: config.ttsVoice,
+      text,
+    });
+    console.log(`[web] read-aloud: ${text.length} chars → ${(audio.length / 1024).toFixed(0)} KB`);
+    res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': audio.length, 'Cache-Control': 'no-store' });
+    res.end(audio);
+  } catch (err) {
+    if (err instanceof SpeechError) {
+      json(res, err.status, { ok: false, error: err.message });
+      return;
+    }
+    console.error('[web] read-aloud failed:', err);
+    json(res, 500, { ok: false, error: 'couldn’t voice that' });
   }
 }
 
@@ -519,6 +553,10 @@ export function startWebServer(): void {
     }
     if (req.method === 'POST' && path === '/api/dictate') {
       void handleDictate(req, res);
+      return;
+    }
+    if (req.method === 'POST' && path === '/api/speak') {
+      void handleSpeak(req, res);
       return;
     }
     if (req.method === 'GET' && path === '/api/snapshot') {

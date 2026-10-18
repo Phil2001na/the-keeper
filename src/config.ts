@@ -161,6 +161,9 @@ export const config = {
   groqTranscribeModel: optional('GROQ_TRANSCRIBE_MODEL', 'whisper-large-v3'),
   // Web-composer dictation (src/web/dictate.ts) — rides on OPENAI_API_KEY.
   dictationModel: optional('DICTATION_MODEL', 'gpt-4o-mini-transcribe'),
+  // Web read-aloud (src/web/speak.ts) — same key, only ever on a tap.
+  ttsModel: optional('TTS_MODEL', 'gpt-4o-mini-tts'),
+  ttsVoice: optional('TTS_VOICE', 'ash'),
 
   telegramBotToken: requiredToken('TELEGRAM_BOT_TOKEN'),
   telegramOwnerChatId: requiredToken('TELEGRAM_OWNER_CHAT_ID'),
