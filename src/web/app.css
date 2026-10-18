@@ -2568,6 +2568,9 @@ input[type='range']::-moz-range-thumb {
 .header-tools { display: flex; align-items: center; gap: 6px; }
 .header-tools .icon-btn { display: flex; justify-content: center; gap: 7px; width: auto; min-width: 44px; height: 44px; padding: 0 12px; }
 .nav-label { font-size: 12px; font-weight: 550; }
+/* Work is a link to its own page, not a sheet toggle: drop the link underline so it
+   reads as the same kind of control as its neighbours. */
+a.icon-btn { text-decoration: none; }
 .header-tools .icon-btn[aria-expanded="true"] { color: var(--accent-hi); border-color: var(--accent-line); background: var(--accent-soft); }
 #statusline { margin-top: 4px; color: var(--text-dim); }
 #composer-hint { display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px 0; color: var(--text-dim); font-size: 11px; }
