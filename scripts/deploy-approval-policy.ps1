@@ -64,8 +64,14 @@ try {
     & $newProcess[0].ExecutablePath (Join-Path $project 'node_modules\tsx\dist\cli.mjs') (Join-Path $project 'scripts\approval-e2e.ts') *> (Join-Path $rollout 'e2e-after-deploy.log')
     if ($LASTEXITCODE -ne 0) { throw 'Post-deploy isolated end-to-end test failed.' }
   } finally { Pop-Location }
-  Receipt 'deployed-and-tested' @{ processId=$newProcess[0].ProcessId; evidence='e2e-after-deploy.log'; externalActions='None: consequential tools were simulated.' }
-  # No unsolicited message or follow-up is sent. Inspect the receipt after activation.
+  $commit = (& git -C $project rev-parse HEAD).Trim()
+  $taskState = (Get-ScheduledTask -TaskName 'Keeper PC Agent').State.ToString()
+  if ($taskState -ne 'Running') { throw 'Replacement scheduled task is not running.' }
+  Receipt 'deployed-and-tested' @{ processId=$newProcess[0].ProcessId; previousProcessId=$AgentProcessId; commit=$commit; taskState=$taskState; evidence='e2e-after-deploy.log'; externalActions='None: consequential tools were simulated.' }
+  if ($SessionId) {
+    & $newProcess[0].ExecutablePath (Join-Path $project 'scripts\approval-rollout-resume.mjs') $SessionId *> (Join-Path $rollout 'resume.log')
+    if ($LASTEXITCODE -ne 0) { throw 'Policy activated and tested, but session follow-up failed; inspect receipt and resume.log.' }
+  }
 } catch {
   Receipt 'needs-review' $_.Exception.Message
   exit 1

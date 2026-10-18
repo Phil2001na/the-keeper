@@ -45,10 +45,12 @@ new paid services/upgrades/usage commitments require approval.
 
 Unit tests exercise non-spending bypass, spending categories, Claude hook and Codex
 adapters. The isolated agent/relay simulation exercises silent non-spending calls,
-purchase denial, one-call subscription approval and unpaid booking approval expiry.
+purchase denial, one-call subscription approval and paid booking approval expiry and cross-project EDU denial.
 No real external action is used in testing. Existing relay tests cover reconnect,
 expiry and decision delivery. Live activation requires an idle PC-agent scheduled-task
 restart; no Railway change is needed. Check the bypass-money-edu-v2 boot marker and
 post-restart isolated E2E receipt before claiming deployment.
 
-This revision is review-only and has not been activated. Keyword detection cannot identify every opaque cross-project action; agents must explicitly escalate EDU production actions even when no target is visible to the classifier. No production action or restart is authorized by the brief.
+Philip authorized merge/deployment and activation on 2026-10-18. Actual activation requires a deployed-and-tested receipt for bypass-money-edu-v2; the prior bypass-money-v1 receipt is insufficient. Keyword detection cannot identify every opaque cross-project action; agents must explicitly escalate EDU production actions even when no target is visible to the classifier. No production action or restart is authorized by the brief.
+
+The idle rollout validates reviewed hashes, waits for three idle samples, rechecks immediately before restart, verifies a replacement process and running scheduled task, checks the versioned boot marker and reruns the isolated approval test. With an explicitly selected SessionId, it then queues a verification continuation after that session has been restored idle.

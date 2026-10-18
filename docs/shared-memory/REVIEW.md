@@ -10,3 +10,7 @@ The pilot is ready for Philip to review, with no deployment or EDU production ac
 The review branch integrates four incoming origin/main commits, including the three Workstreams commits and the subsequent header-button fix. Main is intentionally untouched to avoid triggering Railway. Unrelated local helpers and older Workstreams copies are preserved in the named reconciliation stash; pre-existing .tmp worktrees and artifacts remain locally, excluded through .git/info/exclude.
 
 Philip still needs to review the brief and any future proposals before promotion. Merging to main/deployment and PC-agent policy activation are deferred for a separate explicit instruction. Every future EDU production action and spending transaction still needs its own approval.
+
+## Authorized activation ? 2026-10-18
+
+Philip explicitly authorized reviewing and merging this branch, deploying Keeper and activating the PC approval policy. The earlier deferral above is historical. Activation uses an idle-only restart with reviewed-file hashes, a versioned boot marker and post-restart isolated approval tests. This authorizes no EDU production operation beyond changing/activating this approval policy.

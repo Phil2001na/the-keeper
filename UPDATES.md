@@ -1,5 +1,9 @@
 ## 2026-10-18
 
+### 14:13
+- Philip explicitly authorized review-branch merge/deployment and approval-policy activation; no EDU production operation is included. Preparing idle-only PC-agent rollout with reviewed hashes and backups.
+- Rollout receipt now records exact commit, old/new process and running scheduled-task state; optional selected-session continuation verifies activation after restart without interrupting an active turn. Updated activation/review notes. Validation: 68/68 tests, TypeScript, isolated EDU/money approval E2E, simulated selected-session continuation and PowerShell syntax check passed; final runtime receipts remain in local artifacts.
+
 ### 13:28
 - Final merged-tree validation passed: 68/68 tests, TypeScript, CLI read/list and isolated real-agent/relay simulation (money denial, single-call approval, expiry denial and cross-project EDU denial); no real external action.
 - Added reviewer notes in docs/shared-memory/REVIEW.md. Publishing only the review branch; main and running services remain unchanged. Unrelated helpers preserved in stash f282e2179ad08bbb39c46b30818c66a80fd9ea67; pre-existing .tmp/artifacts retained via local excludes.
