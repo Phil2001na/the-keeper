@@ -28,17 +28,18 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
  *  POST /pc/agent/poll    long-poll: {projects} in → {jobs, decisions, stops} out   (agent)
  *  POST /pc/agent/event   one event from a running session                          (agent)
  *  GET  /pc/state         online?, projects, recent jobs, open approvals           (viewer)
- *  POST /pc/start         {project, task, mode?}  mode: 'meeseeks' (default) | 'persistent'  (viewer)
+ *  POST /pc/start         {project, task, mode?, engine?}  mode: 'meeseeks' (default) | 'persistent'  (viewer)
  *  POST /pc/send          {jobId, message}        follow-up to an idle persistent session   (viewer)
  *  POST /pc/approve       {id, allow}                                               (viewer)
  *  POST /pc/stop          {jobId}                 ends the session (idle or running)        (viewer)
- *  POST /pc/delegate      {goal, primeId?}        a goal for a new Meeseeks Prime, or for that idle one (viewer)
+ *  POST /pc/delegate      {goal, primeId?, engine?}  a goal for a new Meeseeks Prime, or for that idle one (viewer)
  *  POST /pc/agent/crew    {op, parentId, ...}     Prime's crew tools: spawn / status / stop    (agent)
  *
  * The crew. Every job has a role:
  *   solo    a Meeseeks the Keeper (or he) started directly. Reports straight to him.
  *   prime   Meeseeks Prime, the chief of staff. Up to MAX_PRIMES (3) at once, each on
  *           its own goal with its own crew; always persistent, runs on
+ *           the engine it was started with (claude | codex); without one,
  *           PRIME_ENGINE/PRIME_MODEL (Codex + gpt-6.1-sol by default).
  *           He hears when each comes online and goes offline. Solo Meeseeks never
  *           count against the Prime limit (and pc-agent/lanes.mjs keeps it that way on the PC).
@@ -542,17 +543,24 @@ export function sendToJob(
  * while there is a free slot; once all MAX_PRIMES are up he is told who is on
  * what. A busy Prime is never interrupted.
  */
-export function delegateToPrime(goal: string, primeId?: string): { ok: true; job: Job; started: boolean } | { ok: false; error: string } {
+export function delegateToPrime(
+  goal: string,
+  primeId?: string,
+  engine?: Engine
+): { ok: true; job: Job; started: boolean } | { ok: false; error: string } {
+  if (engine !== undefined && !ENGINES.includes(engine)) return { ok: false, error: `Unknown engine "${String(engine)}". Use one of: ${ENGINES.join(', ')}.` };
   const want = primeId?.trim();
   if (want) {
     const p = getJob(want);
     if (!p || p.role !== 'prime') return { ok: false, error: `No single ${PRIME_NAME} matches "${want}". Up now: ${primeRoster() || 'none'}.` };
     if (!isLive(p)) return { ok: false, error: `${p.name} (${p.id}) has already ended (${jobPhase(p)}). Leave the id out to start a new Prime.` };
+    // A running session cannot change engine: its context lives in that engine.
+    if (engine && engine !== p.engine) return { ok: false, error: `${p.name} (${p.id}) runs on ${p.engine}, not ${engine}. Leave the id out to start a new Prime on ${engine}.` };
     if (p.status !== 'idle') return { ok: false, error: `${p.name} (${p.id}) is busy (${p.status}) on: ${p.brief}. Wait for its report, or stop it first.` };
     const r = sendToJob(p.id, goal);
     return r.ok ? { ...r, started: false } : r;
   }
-  const r = startJob(PRIME_PROJECT, goal, 'persistent', { role: 'prime' });
+  const r = startJob(PRIME_PROJECT, goal, 'persistent', { role: 'prime', engine });
   return r.ok ? { ...r, started: true } : r;
 }
 
@@ -1133,9 +1141,12 @@ export function handlePcBridge(req: IncomingMessage, res: ServerResponse, path: 
     return true;
   }
   if (req.method === 'POST' && path === '/pc/delegate') {
-    void readJson<{ goal?: unknown; primeId?: unknown }>(req, 32 * 1024)
+    void readJson<{ goal?: unknown; primeId?: unknown; engine?: unknown }>(req, 32 * 1024)
       .then((b) => {
-        const r = delegateToPrime(String(b.goal ?? ''), typeof b.primeId === 'string' ? b.primeId : undefined);
+        // No engine sent: Prime's own default (PRIME_ENGINE), not parseEngine's 'claude'.
+        const engine = b.engine === undefined || b.engine === null || b.engine === '' ? undefined : parseEngine(b.engine);
+        if (engine === null) return json(res, 400, { ok: false, error: `Unknown engine. Use one of: ${ENGINES.join(', ')}.` });
+        const r = delegateToPrime(String(b.goal ?? ''), typeof b.primeId === 'string' ? b.primeId : undefined, engine);
         json(res, r.ok ? 200 : 400, r.ok ? { ok: true, started: r.started, job: jobSummary(r.job) } : r);
       })
       .catch(() => json(res, 400, { ok: false }));

@@ -241,3 +241,69 @@ test('a relay restart adopts several Primes under their own names', () => {
   assert.ok(third.ok && third.job.name === 'Meeseeks Prime III');
   clearPrimes();
 });
+
+/** One request through the real route handler, as the phone sends it. */
+function call(path: string, body: unknown, authed = true): Promise<{ status: number; body: Record<string, unknown> }> {
+  return new Promise((resolve) => {
+    let status = 0;
+    const res = { writeHead(s: number) { status = s; return res; }, end(b: string) { resolve({ status, body: JSON.parse(b) }); }, on() {} };
+    const req = Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]), { method: 'POST', headers: authed ? {} : { 'x-agent-token': 'test-token' } });
+    pc.handlePcBridge(req as never, res as never, path, authed);
+  });
+}
+
+/** The jobs the PC is handed on its next poll. */
+async function handedOut(): Promise<Array<{ id: string; role: string; engine: string; model?: string }>> {
+  const r = await call('/pc/agent/poll', { projects: ['the-keeper', 'sitepms'], running: [] }, false);
+  return r.body.jobs as Array<{ id: string; role: string; engine: string; model?: string }>;
+}
+
+test('the engine he picks at launch is the one the PC is told to run, for a Prime and a Meeseeks', async () => {
+  clearPrimes();
+  await handedOut(); // drain anything earlier tests queued
+
+  // Meeseeks Prime on Claude: no Codex model rides along with it.
+  const claudePrime = await call('/pc/delegate', { goal: 'plan the launch', engine: 'claude' });
+  assert.equal(claudePrime.status, 200);
+  const cp = claudePrime.body.job as { id: string; engine: string; role: string; model?: string };
+  assert.equal(cp.role, 'prime');
+  assert.equal(cp.engine, 'claude');
+  assert.equal(cp.model, undefined);
+
+  // Meeseeks Prime on Codex keeps the Codex model.
+  const codexPrime = await call('/pc/delegate', { goal: 'drive the desktop app', engine: 'codex' });
+  const xp = codexPrime.body.job as { id: string; engine: string; model?: string };
+  assert.equal(xp.engine, 'codex');
+  assert.equal(xp.model, 'gpt-6.1-sol');
+
+  // A one-job Meeseeks, each way.
+  const solo = (await call('/pc/start', { project: 'sitepms', task: 'one fix', mode: 'meeseeks', engine: 'codex' })).body.job as { id: string };
+  const solo2 = (await call('/pc/start', { project: 'sitepms', task: 'another fix', mode: 'meeseeks', engine: 'claude' })).body.job as { id: string };
+
+  const jobs = await handedOut();
+  const engineOf = (id: string) => jobs.find((j) => j.id === id);
+  assert.deepEqual([engineOf(cp.id)?.role, engineOf(cp.id)?.engine, engineOf(cp.id)?.model], ['prime', 'claude', undefined]);
+  assert.deepEqual([engineOf(xp.id)?.role, engineOf(xp.id)?.engine, engineOf(xp.id)?.model], ['prime', 'codex', 'gpt-6.1-sol']);
+  assert.equal(engineOf(solo.id)?.engine, 'codex');
+  assert.equal(engineOf(solo2.id)?.engine, 'claude');
+
+  // An unknown engine starts nothing.
+  const bad = await call('/pc/delegate', { goal: 'x', engine: 'gemini' });
+  assert.equal(bad.status, 400);
+  assert.equal(pc.primeSlots().used, 2);
+
+  // No engine sent (an older page, or the Keeper leaving it out): Prime's own default.
+  const plain = await call('/pc/delegate', { goal: 'whatever is default' });
+  assert.equal((plain.body.job as { engine: string }).engine, 'codex');
+
+  // A running Prime cannot switch engine mid-context; it says how to get one on the other.
+  pc.onAgentEvent({ jobId: cp.id, kind: 'started', eid: `s-${cp.id}` });
+  pc.onAgentEvent({ jobId: cp.id, kind: 'turn_done', eid: `t-${cp.id}`, text: 'plan made' });
+  const swap = pc.delegateToPrime('now do it', cp.id, 'codex');
+  assert.ok(!swap.ok && /runs on claude/.test(swap.error));
+  assert.ok(pc.delegateToPrime('now do it', cp.id, 'claude').ok);
+
+  pc.stopJob(solo.id);
+  pc.stopJob(solo2.id);
+  clearPrimes();
+});

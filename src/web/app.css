@@ -2260,7 +2260,9 @@ input[type='range']::-moz-range-thumb {
 .pc-start .seg input:checked + span b { color: var(--text); }
 .pc-start .seg input:focus-visible + span { outline: 2px solid var(--accent-hi); outline-offset: 1px; }
 .pc-start .row { display: grid; grid-template-columns: 1.4fr 1fr; gap: 10px; }
-.pc-start .row[hidden] { display: none; }
+.pc-start .row[hidden], .pc-start .pc-field[hidden] { display: none; }
+/* Prime has no project to pick: the engine takes the whole row. */
+.pc-start .row:has(> [data-pc-solo][hidden]) { grid-template-columns: 1fr; }
 .pc-start .pc-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .pc-start .pc-field > span:first-child { font-size: 11px; font-weight: 550; letter-spacing: 0.04em; color: var(--text-faint); }
 .pc-start .select { position: relative; display: block; }

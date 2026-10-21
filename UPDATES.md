@@ -1,3 +1,9 @@
+## 2026-10-21
+
+### 13:40
+- PC start form: the Engine picker (Claude / Codex) now shows for Meeseeks Prime too, not just one-job Meeseeks; `/pc/delegate` and the Keeper's `delegate_to_prime` accept `engine`. A Prime started on Claude gets no Codex model; leaving engine out keeps the PRIME_ENGINE default (Codex). An idle Prime can't be switched to the other engine mid-context.
+- New HTTP-level test checks the engine sent at launch is the engine handed to the PC on its poll, for Prime and Meeseeks. Typecheck clean, 76/76 tests; checked in `npm run ui`.
+
 ## 2026-10-18
 
 ### 18:35

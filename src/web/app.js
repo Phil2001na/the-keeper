@@ -1662,8 +1662,9 @@
       '<label><input type="radio" name="pc-mode" value="meeseeks" data-pc-mode checked><span><b>Meeseeks</b><small>one job, then gone</small></span></label>' +
       '<label><input type="radio" name="pc-mode" value="prime" data-pc-mode><span><b>Meeseeks Prime</b><small>chief of staff, runs a crew<span data-pc-prime-slots></span></small></span></label></div>' +
       '<div class="pc-full" data-pc-prime-full role="status" hidden></div>' +
-      '<div class="row" data-pc-solo>' +
-      '<label class="pc-field"><span>Project</span><span class="select"><select data-pc-project></select>' + chevron + '</span></label>' +
+      '<div class="row">' +
+      '<label class="pc-field" data-pc-solo><span>Project</span><span class="select"><select data-pc-project></select>' + chevron + '</span></label>' +
+      // Both kinds run on the engine picked here; a Prime does not silently mean Codex.
       '<label class="pc-field"><span>Engine</span><span class="select"><select data-pc-engine><option value="claude">Claude</option><option value="codex">Codex (desktop)</option></select>' +
       chevron + '</span></label></div>' +
       '<div class="ask"><input type="text" maxlength="2000" data-pc-task placeholder="What do you want done?" aria-label="Goal" enterkeyhint="go">' +
@@ -1890,7 +1891,7 @@
     t.dataset.busy = '1';
     try {
       const r = mode === 'prime'
-        ? await pcCall('/pc/delegate', { goal: task })
+        ? await pcCall('/pc/delegate', { goal: task, engine })
         : await pcCall('/pc/start', { project, task, mode: 'meeseeks', engine });
       if (!r.ok) toast(r.error || 'couldn’t start that session');
       else { taskEl.value = ''; pcShowTab('active'); }

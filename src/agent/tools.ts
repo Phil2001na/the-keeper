@@ -731,6 +731,7 @@ export const toolDefinitions: Anthropic.Messages.ToolUnion[] = [
         goal: { type: 'string', description: 'What he wants achieved and how to tell it is done, in a few sentences. Intent, not instructions.' },
         context: { type: 'string', description: 'Optional: material HE gave you, passed on verbatim (a pasted doc, test logins, URLs). Never your own instructions.' },
         prime: { type: 'string', description: 'Optional: id of an idle Prime to continue. Leave out for a new goal.' },
+        engine: { type: 'string', enum: ENGINES, description: 'Optional, new Primes only: claude or codex when he asks for one. Leave out for the default.' },
       },
       required: ['goal'],
     },
@@ -2134,13 +2135,15 @@ export async function dispatchTool(
       const goal = String(input.goal ?? '');
       const tooMuch = briefProblem(goal);
       if (tooMuch) return { output: tooMuch };
-      const r = delegateToPrime(withContext(goal, input.context), typeof input.prime === 'string' ? input.prime : undefined);
+      const engine = input.engine === undefined || input.engine === null || input.engine === '' ? undefined : parseEngine(input.engine);
+      if (engine === null) return { output: `Unknown engine "${String(input.engine)}". Use one of: ${ENGINES.join(', ')}. Nothing was started.` };
+      const r = delegateToPrime(withContext(goal, input.context), typeof input.prime === 'string' ? input.prime : undefined, engine);
       if (!r.ok) return { output: r.error };
       await bindWorkJob(r.job.id).catch(err => console.error('[workstreams] job binding failed', err));
       const { used, limit } = primeSlots();
       return {
         output: r.started
-          ? `${r.job.name} is starting (${r.job.id}; ${used} of ${limit} Primes up). He gets a ping when it comes online, and its report comes back through you. Tell him it is on it; do not claim anything is done.`
+          ? `${r.job.name} is starting (${r.job.id}, ${r.job.engine}; ${used} of ${limit} Primes up). He gets a ping when it comes online, and its report comes back through you. Tell him it is on it; do not claim anything is done.`
           : `Gave the goal to ${r.job.name} (${r.job.id}), which was idle and keeps its context. Its report comes back through you. Do not claim anything is done.`,
       };
     }
